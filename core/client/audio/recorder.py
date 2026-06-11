@@ -71,12 +71,18 @@ class AudioRecorder:
                 self.state.pop_audio_file(message.task_id)
                 console.print('    服务端未连接，无法发送\n')
                 logger.warning("服务端未连接，无法发送音频数据")
+                # 最终包发送失败时，悬浮提示改为错误状态并自动隐藏。
+                from core.client.ui import show_recording_indicator_error
+                show_recording_indicator_error("服务端未连接，无法发送音频")
             return
         
         # 使用 WebSocketManager 发送协议消息
         success = await self._ws_manager.send(message)
         if not success and message.is_final:
             self.state.pop_audio_file(message.task_id)
+            # WebSocketManager 返回发送失败时，用悬浮提示反馈给用户。
+            from core.client.ui import show_recording_indicator_error
+            show_recording_indicator_error("音频发送失败")
             # 具体错误日志由 WebSocketManager 记录
     
     async def record_and_send(self) -> None:

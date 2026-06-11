@@ -86,6 +86,13 @@ class CapsWriterClient:
         """
         logger.info("正在执行 CapsWriterClient 资源释放...")
 
+        try:
+            # 退出客户端时先隐藏悬浮提示，避免异常退出后窗口残留。
+            from core.client.ui import hide_recording_indicator
+            hide_recording_indicator()
+        except Exception:
+            pass
+
         # 1. 停止核心运行组件
         self.udp.stop()
         self.shortcut.stop()
@@ -137,5 +144,3 @@ class CapsWriterClient:
             self.loop.run_until_complete(runner.run())
         except RuntimeError:
             ...
-
-

@@ -28,6 +28,16 @@ from core.ui import (
     stop_tray,
 )
 
+# 录音悬浮提示门面：快捷键、识别结果处理、音频发送错误都会通过这些函数更新 UI。
+from core.client.ui.recording_indicator import (
+    show_recording_indicator,
+    show_waiting_indicator,
+    show_processing_indicator,
+    update_recording_indicator_progress,
+    show_recording_indicator_error,
+    hide_recording_indicator,
+)
+
 # 4. 导出菜单处理器（供 Startup 使用）
 from core.ui.hotword_menu_handler import on_add_hotword
 from core.ui.context_menu_handler import on_edit_context
@@ -41,6 +51,12 @@ __all__ = [
     'ToastMessageManager',
     'enable_min_to_tray',
     'stop_tray',
+    'show_recording_indicator',
+    'show_waiting_indicator',
+    'show_processing_indicator',
+    'update_recording_indicator_progress',
+    'show_recording_indicator_error',
+    'hide_recording_indicator',
     'on_add_hotword',
     'on_edit_context',
 ]

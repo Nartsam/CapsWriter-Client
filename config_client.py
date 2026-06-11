@@ -12,7 +12,7 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 # 客户端配置
 class ClientConfig:
     addr = '10.102.33.100'          # Server 地址
-    port = '6023'               # Server 端口
+    port = '6000'               # Server 端口
 
     # 快捷键配置列表
     shortcuts = [
@@ -32,7 +32,7 @@ class ClientConfig:
         },
     ]
 
-    threshold    = 0.3          # 快捷键触发阈值（秒）
+    threshold    = 0.5          # 快捷键触发阈值（秒）
 
     paste        = False        # 是否以写入剪切板然后模拟 Ctrl-V 粘贴的方式输出结果
     restore_clip = True         # 模拟粘贴后是否恢复剪贴板
@@ -64,7 +64,7 @@ class ClientConfig:
     enable_tray = True          # 客户端默认启用托盘图标功能
 
     # 日志配置
-    log_level = 'DEBUG'          # 日志级别：'DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'
+    log_level = 'INFO'          # 日志级别：'DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'
 
     mic_seg_duration = 60       # 麦克风听写时分段长度：60秒
     mic_seg_overlap = 4         # 麦克风听写时分段重叠：4秒

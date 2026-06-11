@@ -87,6 +87,10 @@ class ShortcutTask:
         # 更新录音状态
         self.state.start_recording(self.recording_start_time)
 
+        # 显示录音悬浮提示：传入快捷键名，提示器会转成中文名称。
+        from core.client.ui import show_recording_indicator
+        show_recording_indicator(self.recording_start_time, self.shortcut.key)
+
         # 打印动画：正在录音
         self._status.start()
 
@@ -104,6 +108,9 @@ class ShortcutTask:
         self.is_recording = False
         self.state.stop_recording()
         self._status.stop()
+        # 短按取消录音时同步隐藏悬浮提示，避免空提示残留。
+        from core.client.ui import hide_recording_indicator
+        hide_recording_indicator()
 
         self.task.cancel()
         self.task = None
@@ -113,8 +120,11 @@ class ShortcutTask:
         logger.info(f"[{self.shortcut.key}] 释放：完成录音")
 
         self.is_recording = False
-        self.state.stop_recording()
+        duration = self.state.stop_recording()
         self._status.stop()
+        # 松开快捷键后进入等待服务端最终结果阶段。
+        from core.client.ui import show_waiting_indicator
+        show_waiting_indicator(duration)
 
         asyncio.run_coroutine_threadsafe(
             self.state.queue_in.put({

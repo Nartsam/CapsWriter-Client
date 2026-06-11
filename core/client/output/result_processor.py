@@ -24,6 +24,13 @@ from core.client.udp.udp_broadcaster import broadcast_output_udp
 from core.tools.zhconv import convert as zhconv_convert
 from core.client.audio.file_manager import AudioFileManager
 from core.client.llm.llm_write_md import write_llm_md
+# 悬浮录音提示：用于显示等待、进度、错误和处理完成后的隐藏。
+from core.client.ui import (
+    hide_recording_indicator,
+    show_processing_indicator,
+    show_recording_indicator_error,
+    update_recording_indicator_progress,
+)
 
 if TYPE_CHECKING:
     from core.client.state import ClientState
@@ -168,9 +175,14 @@ class ResultProcessor:
             while not self._exit_event.is_set():
                 try:
                     message = await self.ws.receive()
-                    if message is None: break
+                    if message is None:
+                        # 连接断开时给用户一个可见提示，避免等待状态一直挂着。
+                        show_recording_indicator_error("服务端连接已断开")
+                        break
                     await self._handle_message(message)
                 except Exception as e:
+                    # WebSocket 异常同样通过悬浮提示反馈给用户。
+                    show_recording_indicator_error("服务端连接异常")
                     logger.debug(f"连接异常中断: {e}")
                     break
 
@@ -199,7 +211,12 @@ class ResultProcessor:
 
         # 如果非最终结果，继续等待
         if not message.is_final:
+            # 非最终结果用于刷新悬浮提示上的处理进度和预览文本。
+            update_recording_indicator_progress(message.duration, text)
             return
+
+        # 最终结果已返回，后续还要做热词、LLM 和输出处理
+        show_processing_indicator()
 
         # 繁体转换
         if Config.traditional_convert:
@@ -280,6 +297,9 @@ class ResultProcessor:
             await self.output.output(text, paste=paste)
             self.state.set_output_text(text)
             broadcast_output_udp(text)
+
+        # 文本已经完成输出，此时关闭悬浮提示。
+        hide_recording_indicator()
 
         # 保存录音与写入 md 文件
         file_audio = None
