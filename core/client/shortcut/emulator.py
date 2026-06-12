@@ -47,6 +47,7 @@ class ShortcutEmulator:
             self._keyboard_controller.release(key_obj)
             logger.debug(f"[{key_name}] 补发按键成功")
         else:
+            self._emulating_keys.discard(key_name)
             logger.warning(f"[{key_name}] 无法识别的按键，跳过补发")
 
     def emulate_mouse_click(self, button_name: str) -> None:
@@ -70,4 +71,5 @@ class ShortcutEmulator:
             self._mouse_controller.release(button)
             logger.debug(f"[{button_name}] 补发鼠标按键成功")
         else:
+            self._emulating_keys.discard(button_name)
             logger.warning(f"[{button_name}] 无法识别的鼠标按键，跳过补发")

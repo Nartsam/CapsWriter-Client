@@ -113,14 +113,16 @@ class ShortcutManager:
             task = self.tasks[key_name]
 
             # 处理按键事件
-            if msg in KEY_DOWN_MESSAGES:
-                self._event_handler.handle_keydown(key_name, task)
-            elif msg in KEY_UP_MESSAGES:
-                self._event_handler.handle_keyup(key_name, task)
-
-            # 阻塞事件
-            if task.shortcut.suppress and self.keyboard_listener:
-                self.keyboard_listener.suppress_event()
+            try:
+                if msg in KEY_DOWN_MESSAGES:
+                    self._event_handler.handle_keydown(key_name, task)
+                elif msg in KEY_UP_MESSAGES:
+                    self._event_handler.handle_keyup(key_name, task)
+            except Exception as e:
+                logger.error(f"[{key_name}] 事件处理异常: {e}")
+            finally:
+                if task.shortcut.suppress and self.keyboard_listener:
+                    self.keyboard_listener.suppress_event()
 
             return True
 
@@ -148,14 +150,16 @@ class ShortcutManager:
             task = self.tasks[button_name]
 
             # 处理鼠标事件
-            if msg == WM_XBUTTONDOWN:
-                self._event_handler.handle_keydown(button_name, task)
-            elif msg == WM_XBUTTONUP:
-                self._handle_mouse_keyup(button_name, task)
-
-            # 阻塞事件
-            if task.shortcut.suppress and self.mouse_listener:
-                self.mouse_listener.suppress_event()
+            try:
+                if msg == WM_XBUTTONDOWN:
+                    self._event_handler.handle_keydown(button_name, task)
+                elif msg == WM_XBUTTONUP:
+                    self._handle_mouse_keyup(button_name, task)
+            except Exception as e:
+                logger.error(f"[{button_name}] 事件处理异常: {e}")
+            finally:
+                if task.shortcut.suppress and self.mouse_listener:
+                    self.mouse_listener.suppress_event()
 
             return True
 

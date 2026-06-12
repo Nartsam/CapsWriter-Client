@@ -91,15 +91,18 @@ class ShortcutTask:
         from core.client.ui import show_recording_indicator
         show_recording_indicator(self.recording_start_time, self.shortcut.key)
 
-        # 打印动画：正在录音
-        self._status.start()
-
         # 启动识别任务
         recorder = self._get_recorder()
         self.task = asyncio.run_coroutine_threadsafe(
             recorder.record_and_send(),
             self.app.loop,
         )
+
+        # 控制台动画移到线程池，避免在键盘钩子回调中创建线程导致超时
+        if self.pool:
+            self.pool.submit(self._status.start)
+        else:
+            self._status.start()
 
     def cancel(self) -> None:
         """取消录音任务（时间过短）"""
