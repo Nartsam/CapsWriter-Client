@@ -228,6 +228,15 @@ class LLMHandler:
                                 token_count=0, polish_time=0, input_text=text)
 
 
+        # 3. Companion 转发：连接 Electron 时，跳过本地 LLM，将清洗后的文本转发
+        if self.app.companion.has_connections:
+            role_name = role_config.display_name or RoleConfig.DEFAULT_ROLE_NAME
+            await self.app.companion.emit_user_message(content, role_name)
+            logger.info(f"已转发至 Companion: [{role_name}] {content[:50]}")
+            return LLMResult(
+                result=content, role_name=role_name, processed=True,
+                token_count=0, polish_time=0, input_text=content)
+
         # 4. 根据输出模式分发处理
         if role_config.output_mode == 'toast':
             result, token_count, gen_time = await handle_toast_mode(self, text, role_config, matched_hotwords, content)

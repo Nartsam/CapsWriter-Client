@@ -83,6 +83,8 @@ class ToastMessage:
     stop_callback: Optional[Callable[[], None]] = None
     markdown: bool = False
     editable: bool = False  # Markdown 渲染后是否允许编辑
+    window_alpha: float = 1.0  # 窗口透明度，1.0 表示不透明
+    corner_radius: int = 0     # 窗口圆角半径，0 表示不启用圆角
 
 
 # ============================================================
@@ -184,7 +186,9 @@ class ToastMessageManager:
                     streaming=msg.streaming,
                     stop_callback=msg.stop_callback,
                     markdown=msg.markdown,
-                    editable=msg.editable
+                    editable=msg.editable,
+                    window_alpha=msg.window_alpha,
+                    corner_radius=msg.corner_radius
                 )
 
                 # 保存消息ID到窗口对象

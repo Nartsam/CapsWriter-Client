@@ -57,6 +57,15 @@ RESTORABLE_KEYS = {
     'scroll_lock',  # 滚动锁定
 }
 
+# 被阻塞的修饰键如果只吞掉原始 keyup，Windows 可能保留“仍按下”的状态。
+# 录音结束后会主动补发一次 keyup，用于清理 Ctrl/Alt/Shift/Win 的系统状态。
+MODIFIER_KEYS = {
+    'ctrl', 'ctrl_l', 'ctrl_r',
+    'shift', 'shift_l', 'shift_r',
+    'alt', 'alt_l', 'alt_gr',
+    'cmd', 'cmd_r',
+}
+
 
 class KeyMapper:
     """按键映射器"""

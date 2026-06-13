@@ -7,6 +7,7 @@
 
 import time
 from . import logger
+from core.client.shortcut.key_mapper import MODIFIER_KEYS
 
 
 
@@ -55,10 +56,12 @@ class ShortcutEventHandler:
                 task.pressed = False
                 task.released = True
                 task.event.set()
+            self._release_suppressed_modifier(key_name, task)
             return
 
         # 长按模式
         if not task.is_recording:
+            self._release_suppressed_modifier(key_name, task)
             return
 
         duration = time.time() - task.recording_start_time
@@ -67,7 +70,10 @@ class ShortcutEventHandler:
         if duration < task.threshold:
             self._handle_short_press(key_name, task)
         else:
-            task.finish()
+            try:
+                task.finish()
+            finally:
+                self._release_suppressed_modifier(key_name, task)
 
     def _handle_short_press(self, key_name, task) -> None:
         """处理短按情况"""
@@ -79,6 +85,14 @@ class ShortcutEventHandler:
         if task.shortcut.suppress:
             logger.debug(f"[{key_name}] 安排异步补发按键")
             self.pool.submit(self.emulator.emulate_key, key_name)
+
+    def _release_suppressed_modifier(self, key_name, task) -> None:
+        """释放被阻塞的修饰键，防止系统保留 Ctrl/Alt/Shift 按下状态"""
+        if not task.shortcut.suppress or key_name not in MODIFIER_KEYS:
+            return
+
+        logger.debug(f"[{key_name}] 安排异步释放修饰键")
+        self.pool.submit(self.emulator.release_key, key_name)
 
     def _count_down(self, task) -> None:
         """倒计时（单击模式）"""

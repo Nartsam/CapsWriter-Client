@@ -47,16 +47,20 @@ class MicRunner:
 
     async def run(self):
         """麦克风模式主入口"""
-        
+
         logger.info("=" * 50)
         logger.info(f"CapsWriter Offline Client {__version__} (麦克风模式)")
         logger.info(f"日志级别: {Config.log_level}")
-        
+
         # 1. 资源启动
         self.start_resources()
-        
-        # 2. 启动核心处理器 (内部处理连接与循环)
-        
+
+        # 2. 启动 Companion 服务器（如果启用）
+        if Config.companion_enabled:
+            await self.app.companion.start()
+
+        # 3. 启动核心处理器 (内部处理连接与循环)
+
         from ..output import ResultProcessor
         self.processor = ResultProcessor(self.app)
         await self.processor.start()

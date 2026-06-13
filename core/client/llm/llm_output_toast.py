@@ -11,6 +11,13 @@ from core.tools.asyncio_to_thread import to_thread
 
 logger = logging.getLogger(__name__)
 
+LLM_TOAST_FONT_FAMILY = "Microsoft YaHei UI"
+LLM_TOAST_FONT_SIZE = 30
+LLM_TOAST_BG = "#f7fbff"
+LLM_TOAST_FG = "black"
+LLM_TOAST_ALPHA = 0.92
+LLM_TOAST_CORNER_RADIUS = 12
+
 
 async def handle_toast_mode(handler, text: str, role_config=None, matched_hotwords=None, content=None) -> tuple:
     """Toast 浮动窗口模式"""
@@ -32,10 +39,11 @@ async def handle_toast_mode(handler, text: str, role_config=None, matched_hotwor
         # 创建初始 toast
         msg = ToastMessage(
             text="",
-            font_family=role_config.toast_font_family,
-            font_size=role_config.toast_font_size,
-            bg=role_config.toast_bg_color,
-            fg=role_config.toast_font_color,
+            # LLM 角色弹窗统一使用新的白色亚克力外观，避免旧角色缓存继续显示蓝底楷体。
+            font_family=LLM_TOAST_FONT_FAMILY,
+            font_size=max(role_config.toast_font_size, LLM_TOAST_FONT_SIZE),
+            bg=LLM_TOAST_BG,
+            fg=LLM_TOAST_FG,
             duration=role_config.toast_duration,
             initial_width=role_config.toast_initial_width,
             initial_height=role_config.toast_initial_height,
@@ -43,6 +51,8 @@ async def handle_toast_mode(handler, text: str, role_config=None, matched_hotwor
             window_type='text',
             markdown=True,
             editable=role_config.toast_editable,
+            window_alpha=LLM_TOAST_ALPHA,
+            corner_radius=LLM_TOAST_CORNER_RADIUS,
             stop_callback=lambda: task_stop_event.set()
         )
 

@@ -1,6 +1,7 @@
 """
 默认角色 - 进行热词替换和润色，修正语音识别错误
 """
+from LLM.secrets import DEEPSEEK_API_KEY
 
 # ==================== 基本信息 ====================
 name = ''                           # 角色名称（留空表示默认）
@@ -9,7 +10,7 @@ enabled = False                      # 是否启用此角色
 # ==================== API 配置 ====================
 provider = 'deepseek'                   # API 提供商：'ollama', 'openai', 'deepseek', 'moonshot', 'zhipu', 'claude', 'gemini'
 api_url = ''                            # 留空则自动使用 provider 对应的默认值
-api_key = 'sk-4c756***********************36fb' # API Key
+api_key = DEEPSEEK_API_KEY              # API Key
 model = 'deepseek-v4-flash'             # 模型名称
 
 # ==================== 上下文管理 ====================
@@ -28,12 +29,14 @@ output_mode = 'typing'                  # 输出方式：'typing' 直接打字, 
 # ==================== Toast 弹窗配置（仅在 output_mode='toast' 时有效） ====================
 toast_initial_width = 0.5               # 窗口初始宽度（0.5 = 50% 屏幕宽度）
 toast_initial_height = 0                # 窗口初始高度（0 表示自动计算）
-toast_font_family = '楷体'
-toast_font_size = 23                    # 字体大小
-toast_font_color = 'white'              # 字体颜色
-toast_bg_color = '#075077'              # 背景颜色
+toast_font_family = '微软雅黑'
+toast_font_size = 30                     # 字体大小
+toast_font_color = 'black'              # 字体颜色
+toast_bg_color = '#f7fbff'              # 背景颜色
 toast_duration = 3000                   # 显示时长（毫秒）
 toast_editable = False                  # 是否可编辑（Markdown 渲染后）
+toast_window_alpha = 0.92               # 窗口透明度，营造半透明亚克力效果
+toast_corner_radius = 12                # 窗口圆角半径
 
 # ==================== 生成参数 ====================
 temperature = 0.7                       # 温度（0-2，越高越随机）
@@ -86,3 +89,4 @@ system_prompt = '''
 用户输入：嗨嗨，这个世界真美好
 润色输出：嗨嗨，这个世界真美好
 '''
+

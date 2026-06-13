@@ -27,6 +27,7 @@ from .shortcut.shortcut_manager import ShortcutManager
 from .shortcut.shortcut_config import Shortcut
 
 from .udp.udp_control import UDPController
+from .companion import CompanionServer
 
 from .hotword.manager import HotwordManager
 from .llm.llm_handler import LLMHandler
@@ -76,6 +77,7 @@ class CapsWriterClient:
         self.stream = AudioStreamManager(self)
         self.shortcut = ShortcutManager(self, [Shortcut(**sc) for sc in Config.shortcuts])
         self.udp = UDPController(self.shortcut)
+        self.companion = CompanionServer(self)
 
         # 内存清理
         empty_current_working_set()
@@ -94,6 +96,7 @@ class CapsWriterClient:
             pass
 
         # 1. 停止核心运行组件
+        self.companion.stop()
         self.udp.stop()
         self.shortcut.stop()
         self.stream.stop()

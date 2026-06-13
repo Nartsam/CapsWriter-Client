@@ -37,12 +37,14 @@ output_mode: str = 'typing'                  # 输出方式: 'typing' 或 'toast
 # Toast 弹窗配置
 toast_initial_width: float = 0.5             # Toast 窗口初始宽度（0.5 = 50% 屏幕宽度）
 toast_initial_height: int = 0                # Toast 窗口初始高度（0 表示自动计算）
-toast_font_family: str = ''                  # Toast 字体（空字符串表示使用系统默认）
-toast_font_size: int = 16                    # Toast 字体大小
-toast_font_color: str = 'white'              # Toast 字体颜色
-toast_bg_color: str = '#075077'              # Toast 背景颜色
+toast_font_family: str = '微软雅黑'          # Toast 字体
+toast_font_size: int = 30                     # Toast 字体大小
+toast_font_color: str = 'black'              # Toast 字体颜色
+toast_bg_color: str = '#f7fbff'              # Toast 背景颜色
 toast_duration: int = 3000                   # Toast 显示时长（毫秒）
-toast_editable = True                  # 是否可编辑（Markdown 渲染后）
+toast_editable = True                        # 是否可编辑（Markdown 渲染后）
+toast_window_alpha: float = 0.92             # Toast 窗口透明度，营造半透明亚克力效果
+toast_corner_radius: int = 12                # Toast 窗口圆角半径
 
 # 生成参数
 temperature: float = 0.7                     # 温度（0-2）
@@ -63,3 +65,4 @@ system_prompt: str = ''                      # 系统提示词
 
 
 """
+

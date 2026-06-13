@@ -30,6 +30,7 @@ CapsWriter-Offline 是一个 Windows 离线语音输入工具（GitHub: HaujetZh
 │   │   ├── hotword/           # 热词系统（音素 RAG + 正则规则）
 │   │   ├── llm/               # LLM 润色系统（多角色、流式输出）
 │   │   ├── clipboard/         # 剪贴板工具
+│   │   ├── companion/          # Companion WebSocket 服务器（Electron 伴侣应用通信）
 │   │   ├── diary/             # 日记归档
 │   │   ├── transcribe/        # 文件转录
 │   │   ├── udp/               # UDP 控制与广播
@@ -74,7 +75,7 @@ CapsWriter-Offline 是一个 Windows 离线语音输入工具（GitHub: HaujetZh
 | `config_client.py` | 所有客户端配置项。快捷键列表 `shortcuts`、服务端地址、LLM 开关、热词阈值、粘贴模式等 |
 | `core/client/app.py` | **CapsWriterClient** 门面类。`__init__` 实例化所有子系统，`start()` 根据命令行参数选择 MicRunner 或 FileRunner |
 | `core/client/state.py` | **ClientState** dataclass。共享状态：`queue_in`（音频队列）、`websocket`、`recording`、`audio_files` 等 |
-| `core/client/manager/mic_runner.py` | 麦克风模式运行器。启动顺序：托盘→提示→音频流→快捷键→UDP→热词→LLM→ResultProcessor |
+| `core/client/manager/mic_runner.py` | 麦克风模式运行器。启动顺序：托盘→提示→音频流→快捷键→UDP→热词→LLM→Companion→ResultProcessor |
 | `core/client/manager/file_runner.py` | 文件转录模式运行器。遍历文件，对媒体文件调用 FileTranscriber，对文本文件调用 SrtAdjuster |
 
 ### 2. 快捷键子系统 (`core/client/shortcut/`)
@@ -88,7 +89,7 @@ CapsWriter-Offline 是一个 Windows 离线语音输入工具（GitHub: HaujetZh
 | `shortcut_manager.py` | **ShortcutManager**。创建 keyboard/mouse Listener，在 `win32_event_filter` 中处理按键事件。包含防自捕获逻辑（`_emulating_keys`、`_restoring_keys`） |
 | `event_handler.py` | **ShortcutEventHandler**。处理 keydown/keyup 逻辑。hold_mode：按下→launch()，松开→判断时长→finish()/cancel()+补发。click_mode：单击切换录音 |
 | `emulator.py` | **ShortcutEmulator**。使用 pynput Controller 补发被阻塞的按键/鼠标点击。`_emulating_keys` 标志防止补发的按键被自身钩子再次捕获 |
-| `task.py` | **ShortcutTask**。单个快捷键的录音任务状态。`launch()`：记录时间→设状态→显示 UI→启动 AudioRecorder。`cancel()`/`finish()`：停止录音 |
+| `task.py` | **ShortcutTask**。单个快捷键的录音任务状态。`launch()`：记录时间→设状态→显示 UI→通知 Companion→启动 AudioRecorder。`finish()`：通知 Companion 结束录音→停止录音。`cancel()`：取消录音 |
 
 **数据流**：`win32_event_filter` → `ShortcutEventHandler.handle_keydown/up` → `ShortcutTask.launch/cancel/finish` → `AudioRecorder.record_and_send`
 
@@ -132,8 +133,8 @@ CapsWriter-Offline 是一个 Windows 离线语音输入工具（GitHub: HaujetZh
 
 | 文件 | 职责 |
 |---|---|
-| `llm_handler.py` | **LLMHandler** 协调器。`process_and_output()`：角色检测 → LLM 调用 → 输出。管理角色加载、上下文、客户端池 |
-| `llm_role_config.py` | **RoleConfig** dataclass。角色配置字段：provider、model、system_prompt、output_mode(typing/toast)等 |
+| `llm_handler.py` | **LLMHandler** 协调器。`process_and_output()`：角色检测 → Companion 转发（若已连接则跳过 LLM）→ LLM 调用 → 输出。管理角色加载、上下文、客户端池 |
+| `llm_role_config.py` | **RoleConfig** dataclass。角色配置字段：provider、model、system_prompt、output_mode(typing/toast)、Toast 样式（字体、颜色、透明度、圆角）等 |
 | `llm_role_loader.py` | **RoleLoader**。扫描 `LLM/` 目录下的 .py 文件，每个文件作为一个角色模块加载 |
 | `llm_role_detector.py` | **RoleDetector**。根据输入文本前缀匹配角色（如 "翻译 xxx" → 翻译角色） |
 | `llm_processor.py` | **LLMProcessor**。执行 LLM API 调用（支持 OpenAI/Ollama/DeepSeek 等），流式输出 |
@@ -141,7 +142,7 @@ CapsWriter-Offline 是一个 Windows 离线语音输入工具（GitHub: HaujetZh
 | `llm_message_builder.py` | 构建发送给 LLM 的消息列表（system prompt + 热词 + 选中文字 + 用户输入） |
 | `llm_context.py` | **ContextManager**。管理对话历史记录 |
 | `llm_output_typing.py` | typing 模式输出（直接模拟打字/粘贴） |
-| `llm_output_toast.py` | toast 模式输出（弹窗显示，支持 Markdown 渲染） |
+| `llm_output_toast.py` | toast 模式输出（弹窗显示，支持 Markdown 渲染，并按角色配置传入字体、颜色、透明度、圆角等样式） |
 | `llm_stop_monitor.py` | **StopMonitor**。监听 ESC 键中断 LLM 输出 |
 | `llm_watcher.py` | 监视 LLM/ 目录变化，自动重载角色 |
 | `llm_get_selection.py` | 通过 Ctrl+C 获取选中文字 |
@@ -156,8 +157,11 @@ CapsWriter-Offline 是一个 Windows 离线语音输入工具（GitHub: HaujetZh
 | `core/client/ui/recording_indicator.py` | **RecordingIndicator**。录音悬浮指示器（Tk 实现，单例，线程安全）。显示录音时长、等待状态、处理进度、错误提示。通过 Windows API 获取输入光标位置定位 |
 | `core/client/ui/tips.py` | **TipsDisplay**。启动时的 Rich 控制台提示信息 |
 | `core/ui/toast.py` | Toast 浮动消息通知（Tk 实现，支持 Markdown 渲染） |
+| `core/ui/toast_base.py` | Toast 窗口基类。负责置顶无边框窗口、透明度、Canvas 透明色圆角背景、拖动、滚轮、复制，以及文字区域选择和空白/边缘区域拖动的事件隔离 |
+| `core/ui/toast_text.py` | 基于 Text 的 Toast 窗口。用于 LLM 流式输出，支持增量更新、自动增高、选中文字和复制 |
+| `core/ui/toast_label.py` | 基于 Label 的 Toast 窗口。用于普通提示，支持自动换行、自动增高和 Markdown 转换 |
 | `core/ui/tray.py` | 系统托盘图标（pystray） |
-| `core/ui/toast_manager.py` | Toast 窗口管理器 |
+| `core/ui/toast_manager.py` | Toast 窗口管理器。`ToastMessage` 支持字体、颜色、持续时间、Markdown、可编辑、透明度和圆角配置 |
 
 ### 9. 其他客户端模块
 
@@ -169,6 +173,8 @@ CapsWriter-Offline 是一个 Windows 离线语音输入工具（GitHub: HaujetZh
 | `core/client/transcribe/srt_adjuster.py` | **SrtAdjuster**。调整 SRT 字幕时间轴 |
 | `core/client/udp/udp_control.py` | **UDPController**。监听 UDP 端口，接收 START/STOP 命令控制录音 |
 | `core/client/udp/udp_broadcaster.py` | 将识别结果通过 UDP 广播到配置的目标 |
+| `core/client/companion/companion_server.py` | **CompanionServer**。Companion WebSocket 服务器，管理与 Electron 伴侣应用的连接。当有客户端连接时，CapsWriter 跳过本地 LLM，将去前缀后的文本直接转发给 Electron |
+| `core/client/companion/companion_protocol.py` | Companion 通信协议。定义出站事件类型（`EventType`）和 JSON 消息构造函数（`make_event`） |
 | `core/client/global_hotkey/global_hotkey.py` | **GlobalHotkeyManager**。使用 pynput GlobalHotKeys 实现全局快捷键（单例） |
 
 ---
@@ -263,6 +269,33 @@ AudioRecorder (recorder.py)
   → ResultHandler.save_results() → 保存 SRT/TXT/JSON
 ```
 
+### Companion 模式（Electron 伴侣应用连接时）
+```
+Electron 应用连接到 ws://127.0.0.1:6019
+  → CompanionServer._handler() 注册客户端
+  → 发送 {"type": "status", "state": "connected"}
+
+用户按下快捷键
+  → ShortcutTask.launch()
+    → CompanionServer.emit_recording_start_threadsafe()
+    → 广播 {"type": "recording_start"}
+
+服务端返回识别结果
+  → ResultProcessor → 热词替换 → LLMHandler.process_and_output()
+  → RoleDetector 检测角色前缀（如 "助理 xxx"）
+  → 检测到 companion 已连接 → 跳过本地 LLM
+  → CompanionServer.emit_user_message(content, role)
+    → 广播 {"type": "user_message", "text": "xxx", "role": "助理"}
+  → 返回 LLMResult（不执行打字/Toast 输出）
+
+用户松开快捷键
+  → ShortcutTask.finish()
+    → CompanionServer.emit_recording_end_threadsafe()
+    → 广播 {"type": "recording_end"}
+
+注意：无角色前缀的普通文本仍走常规打字输出路径，不经过 Companion。
+```
+
 ---
 
 ## 关键设计模式与约定
@@ -272,8 +305,9 @@ AudioRecorder (recorder.py)
 3. **防自捕获**：emulator 补发按键时设置 `_emulating_keys` 标志，钩子回调检测到该标志后放行不处理
 4. **单例模式**：RecordingIndicator、GlobalHotkeyManager 使用线程安全单例
 5. **配置方式**：用户通过修改 `config_client.py` / `config_server.py` 顶层变量配置，无 YAML/JSON
-6. **LLM 角色**：`LLM/` 目录下每个 .py 文件是一个角色，定义 RoleConfig 字段作为模块级变量
+6. **LLM 角色**：`LLM/` 目录下每个 .py 文件是一个角色，定义 RoleConfig 字段作为模块级变量；toast 输出角色可配置 `toast_font_family`、`toast_font_size`、`toast_font_color`、`toast_bg_color`、`toast_window_alpha`、`toast_corner_radius` 等样式字段
 7. **热词文件**：`hot.txt` 每行一个热词（音素模糊匹配），`hot-rule.txt` 每行 `正则 = 替换` 格式
+8. **Companion 模式**：当 Electron 伴侣应用连接到 CompanionServer 时，匹配角色前缀的文本跳过本地 LLM，直接转发给 Electron 处理
 
 ---
 
@@ -293,12 +327,15 @@ AudioRecorder (recorder.py)
 | 修改 LLM 处理逻辑 | `llm/llm_handler.py`, `llm/llm_processor.py` |
 | 修改热词匹配 | `hotword/hot_phoneme.py` |
 | 修改 UI 悬浮提示 | `core/client/ui/recording_indicator.py` |
-| 修改 Toast 弹窗 | `core/ui/toast.py`, `core/ui/toast_manager.py` |
+| 修改 Toast 弹窗 | `core/ui/toast.py`, `core/ui/toast_manager.py`, `core/ui/toast_base.py`, `core/ui/toast_text.py`, `core/ui/toast_label.py` |
 | 修改系统托盘 | `core/ui/tray.py`, `core/client/manager/tray_manager.py` |
 | 修改 ASR 引擎 | `core/server/engines/` 对应子目录 |
 | 修改识别流水线 | `core/server/worker/pipeline.py` |
 | 修改文本拼接算法 | `core/server/merger/` |
 | 修改 C/S 通信协议 | `core/protocol.py` + 两端收发代码 |
+| 修改 Companion 通信协议 | `core/client/companion/companion_protocol.py` |
+| 修改 Companion 服务器行为 | `core/client/companion/companion_server.py` |
+| 启用/禁用 Companion | `config_client.py` (`companion_enabled`, `companion_port`) |
 
 ---
 

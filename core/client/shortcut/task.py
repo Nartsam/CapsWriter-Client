@@ -91,6 +91,10 @@ class ShortcutTask:
         from core.client.ui import show_recording_indicator
         show_recording_indicator(self.recording_start_time, self.shortcut.key)
 
+        # 通知 Companion 开始录音
+        if self.app.companion.has_connections:
+            self.app.companion.emit_recording_start_threadsafe()
+
         # 启动识别任务
         recorder = self._get_recorder()
         self.task = asyncio.run_coroutine_threadsafe(
@@ -128,6 +132,10 @@ class ShortcutTask:
         # 松开快捷键后进入等待服务端最终结果阶段。
         from core.client.ui import show_waiting_indicator
         show_waiting_indicator(duration)
+
+        # 通知 Companion 结束录音
+        if self.app.companion.has_connections:
+            self.app.companion.emit_recording_end_threadsafe()
 
         asyncio.run_coroutine_threadsafe(
             self.state.queue_in.put({

@@ -87,6 +87,11 @@ class ClientConfig:
     udp_control_addr = '127.0.0.1'  # UDP 控制监听地址（'0.0.0.0' 允许外部访问）
     udp_control_port = 6018         # UDP 控制监听端口
 
+    # Companion 桌面伴侣应用 WebSocket 配置
+    companion_enabled = True                # 是否启用 Companion WebSocket 服务器
+    companion_addr = '127.0.0.1'            # 监听地址
+    companion_port = 6019                   # 监听端口（端口被占用则自动禁用）
+
 
 # 快捷键配置说明
 r"""

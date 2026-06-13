@@ -50,7 +50,9 @@ class ToastWindowLabel(ToastWindowBase):
         streaming: bool = False,
         stop_callback: Optional[Callable[[], None]] = None,
         markdown: bool = False,
-        editable: bool = False
+        editable: bool = False,
+        window_alpha: float = 1.0,
+        corner_radius: int = 0
     ) -> None:
         """创建基于 Label 组件的浮动消息窗口
         
@@ -68,12 +70,14 @@ class ToastWindowLabel(ToastWindowBase):
             stop_callback: 窗口关闭时的回调函数
             markdown: 是否启用 Markdown 渲染
             editable: Markdown 渲染后是否允许编辑
+            window_alpha: 窗口透明度，1.0 表示不透明
+            corner_radius: 窗口圆角半径，0 表示不启用圆角
         """
         # 初始化基类
         super().__init__(
             parent_root, text, font_size, font_family, bg, fg,
             duration, initial_width, initial_height, streaming,
-            stop_callback, markdown, editable
+            stop_callback, markdown, editable, window_alpha, corner_radius
         )
 
         # 计算实际宽度
@@ -86,11 +90,11 @@ class ToastWindowLabel(ToastWindowBase):
         processed_text = add_zero_width_for_chinese(text) if text else text
 
         # 如果未指定字体，使用默认字体
-        font_name = font_family if font_family else DEFAULT_FONT_FAMILY
+        font_name = self.font_family
 
         # 创建文字标签
         self.label = tk.Label(
-            self.window,
+            self._get_content_parent(),
             text=processed_text,
             font=(font_name, font_size),
             fg=fg,
@@ -101,13 +105,16 @@ class ToastWindowLabel(ToastWindowBase):
         )
 
         # 使用 fill=BOTH 和 expand=True 填充窗口
-        self.label.pack(
-            side=tk.TOP,
-            fill=tk.BOTH,
-            expand=True,
-            padx=DEFAULT_PADDING_X,
-            pady=DEFAULT_PADDING_Y
-        )
+        if self.content_canvas is None:
+            self.label.pack(
+                side=tk.TOP,
+                fill=tk.BOTH,
+                expand=True,
+                padx=DEFAULT_PADDING_X,
+                pady=DEFAULT_PADDING_Y
+            )
+        else:
+            self._mount_content_widget(self.label)
 
         # 初始化字符计数
         if text:
@@ -160,6 +167,7 @@ class ToastWindowLabel(ToastWindowBase):
                 y = self.window.winfo_y()
 
             self.window.geometry(f'{window_width}x{window_height}+{x}+{y}')
+            self._apply_window_shape()
         except tk.TclError as e:
             logger.warning(f"设置窗口位置失败: {e}")
 
@@ -200,6 +208,7 @@ class ToastWindowLabel(ToastWindowBase):
                     curr_x = self.window.winfo_x()
                     curr_y = self.window.winfo_y()
                     self.window.geometry(f"{current_w}x{int(needed_h)}+{curr_x}+{curr_y}")
+                    self._apply_window_shape()
 
                 self.last_char_count = current_char_count
             except tk.TclError:

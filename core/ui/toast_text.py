@@ -52,7 +52,9 @@ class ToastWindowText(ToastWindowBase):
         streaming: bool = False,
         stop_callback: Optional[Callable[[], None]] = None,
         markdown: bool = False,
-        editable: bool = False
+        editable: bool = False,
+        window_alpha: float = 1.0,
+        corner_radius: int = 0
     ) -> None:
         """创建基于 Text 组件的浮动消息窗口
         
@@ -70,17 +72,18 @@ class ToastWindowText(ToastWindowBase):
             stop_callback: 窗口关闭时的回调函数
             markdown: 是否启用 Markdown 渲染
             editable: Markdown 渲染后是否允许编辑
+            window_alpha: 窗口透明度，1.0 表示不透明
+            corner_radius: 窗口圆角半径，0 表示不启用圆角
         """
         # 初始化基类
         super().__init__(
             parent_root, text, font_size, font_family, bg, fg,
             duration, initial_width, initial_height, streaming,
-            stop_callback, markdown, editable
+            stop_callback, markdown, editable, window_alpha, corner_radius
         )
 
         # 创建字体对象用于计算行高
-        font_name = self.font_family if self.font_family else DEFAULT_FONT_FAMILY
-        self.my_font = font.Font(family=font_name, size=self.font_size)
+        self.my_font = font.Font(family=self.font_family, size=self.font_size)
         self.line_height = self.my_font.metrics('linespace')
         self.last_char_count = 0
 
@@ -88,23 +91,24 @@ class ToastWindowText(ToastWindowBase):
         text_height = STREAMING_TEXT_HEIGHT if streaming else NON_STREAMING_TEXT_HEIGHT
         
         self.text_area = tk.Text(
-            self.window,
+            self._get_content_parent(),
             font=self.my_font,
             fg=self.fg,
             bg=self.bg,
-            padx=DEFAULT_PADDING_X,
-            pady=DEFAULT_PADDING_Y,
+            padx=0 if self.content_canvas is not None else DEFAULT_PADDING_X,
+            pady=0 if self.content_canvas is not None else DEFAULT_PADDING_Y,
             borderwidth=0,
             highlightthickness=0,
             wrap=TEXT_WRAP_MODE,
             insertofftime=0,
             state=tk.DISABLED,
-            cursor="arrow",
+            cursor="xterm",
             height=text_height
         )
 
         # 锚定在左上角，使用 fill=BOTH 填充窗口
-        self.text_area.pack(side=tk.TOP, anchor='nw', fill=tk.BOTH, expand=True)
+        self._mount_content_widget(self.text_area)
+        self._bind_selectable_text_widget(self.text_area)
 
         # 禁用 Text 组件的默认滚轮行为，让其传播到窗口
         # 通过将事件绑定到空函数来阻止 Text 的内置滚动，但不阻止传播
@@ -196,6 +200,7 @@ class ToastWindowText(ToastWindowBase):
                 y = self.window.winfo_y()
 
             self.window.geometry(f'{window_width}x{int(window_height)}+{x}+{y}')
+            self._apply_window_shape()
         except tk.TclError as e:
             logger.warning(f"设置窗口位置失败: {e}")
 
@@ -253,6 +258,7 @@ class ToastWindowText(ToastWindowBase):
                     curr_x = self.window.winfo_x()
                     curr_y = self.window.winfo_y()
                     self.window.geometry(f"{current_w}x{int(needed_h)}+{curr_x}+{curr_y}")
+                    self._apply_window_shape()
 
                 self.last_char_count = current_char_count
             except tk.TclError:

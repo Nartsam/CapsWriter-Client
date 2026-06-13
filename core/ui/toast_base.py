@@ -24,6 +24,8 @@ from .toast_constants import (
 )
 from . import logger
 
+TRANSPARENT_COLOR = "#010203"
+
 # DPI 感知设置（只调用一次，避免重复调用）
 try:
     ctypes.windll.shcore.SetProcessDpiAwareness(1)
@@ -87,7 +89,9 @@ class ToastWindowBase(ABC):
         streaming: bool,
         stop_callback: Optional[Callable[[], None]],
         markdown_enabled: bool,
-        editable: bool = False
+        editable: bool = False,
+        window_alpha: float = 1.0,
+        corner_radius: int = 0
     ) -> None:
         """初始化 Toast 窗口基类
         
@@ -105,6 +109,8 @@ class ToastWindowBase(ABC):
             stop_callback: 窗口关闭时的回调函数
             markdown_enabled: 是否启用 Markdown 渲染
             editable: Markdown 渲染后是否允许编辑
+            window_alpha: 窗口透明度，1.0 表示不透明
+            corner_radius: 窗口圆角半径，0 表示不启用圆角
         """
         # 保存基本属性
         self.parent_root = parent_root
@@ -115,6 +121,8 @@ class ToastWindowBase(ABC):
         self.duration = duration
         self.initial_width = initial_width
         self.initial_height = initial_height
+        self.window_alpha = max(0.2, min(float(window_alpha), 1.0))
+        self.corner_radius = max(0, int(corner_radius))
         
         # 状态标志
         self.pause = False
@@ -124,24 +132,31 @@ class ToastWindowBase(ABC):
         # 拖动位置
         self.x = 0
         self.y = 0
+        self._dragging_from_text_blank = False
         
         # 保存完整文本和样式配置（用于 Markdown 渲染）
         self.full_text = text
         self.font_size = font_size
-        self.font_family = font_family if font_family else DEFAULT_FONT_FAMILY
+        self.font_family = self._resolve_font_family(font_family)
         self.bg = bg
         self.fg = fg
         
         # 创建窗口
         self.window = tk.Toplevel(parent_root)
         self.window.hang_on = False
+        self.content_canvas: Optional[tk.Canvas] = None
+        self._content_window_item: Optional[int] = None
+        self._background_item: Optional[int] = None
         
         # 设置窗口属性
         self.window.overrideredirect(True)  # 无边框模式
         self.window.attributes('-topmost', True)  # 保持置顶
-        self.window.configure(bg=bg)
+        self.window.attributes('-alpha', self.window_alpha)
+        self.window.configure(bg=TRANSPARENT_COLOR if self.corner_radius > 0 else bg)
         self.window.resizable(True, True)
         self.window.pack_propagate(False)
+        if self.corner_radius > 0:
+            self._init_rounded_host()
         
         # 绑定通用事件
         self._bind_common_events()
@@ -201,6 +216,166 @@ class ToastWindowBase(ABC):
         inv_g = 255 - g
         inv_b = 255 - b
         return f"#{inv_r:02x}{inv_g:02x}{inv_b:02x}"
+
+    @staticmethod
+    def _resolve_font_family(font_family: str) -> str:
+        """把用户可读的中文字体名映射为 Tk 在 Windows 上更稳定识别的字体名。"""
+        if not font_family:
+            return DEFAULT_FONT_FAMILY
+
+        aliases = {
+            "微软雅黑": "Microsoft YaHei UI",
+            "Microsoft YaHei": "Microsoft YaHei UI",
+        }
+        return aliases.get(font_family, font_family)
+
+    def _init_rounded_host(self) -> None:
+        """创建透明 Canvas 宿主，用 Canvas 圆角背景避免 Windows 黑色边角。"""
+        try:
+            self.window.attributes('-transparentcolor', TRANSPARENT_COLOR)
+        except tk.TclError as e:
+            logger.debug(f"当前 Tk 环境不支持 transparentcolor: {e}")
+
+        self.content_canvas = tk.Canvas(
+            self.window,
+            bg=TRANSPARENT_COLOR,
+            highlightthickness=0,
+            bd=0
+        )
+        self.content_canvas.pack(fill=tk.BOTH, expand=True)
+        self._bind_drag_surface(self.content_canvas)
+
+    def _get_content_parent(self) -> tk.Misc:
+        """获取内容控件父级；圆角窗口使用 Canvas 承载内容控件。"""
+        return self.content_canvas if self.content_canvas is not None else self.window
+
+    def _mount_content_widget(self, widget: tk.Widget) -> None:
+        """挂载内容控件；圆角模式下在 Canvas 内留出可拖动边距。"""
+        if self.content_canvas is None:
+            widget.pack(side=tk.TOP, anchor='nw', fill=tk.BOTH, expand=True)
+            return
+
+        if self._content_window_item is not None:
+            self.content_canvas.delete(self._content_window_item)
+
+        self._content_window_item = self.content_canvas.create_window(
+            DEFAULT_PADDING_X,
+            DEFAULT_PADDING_Y,
+            anchor='nw',
+            window=widget,
+        )
+        self._apply_window_shape()
+
+    def _bind_drag_surface(self, widget: tk.Widget) -> None:
+        """让非文本区域可以拖动窗口。"""
+        widget.bind('<ButtonPress-1>', self._on_drag_start)
+        widget.bind('<ButtonRelease-1>', self._on_drag_stop)
+        widget.bind('<B1-Motion>', self._on_drag_motion)
+        widget.bind('<Enter>', self._on_mouse_enter)
+        widget.bind('<Leave>', self._on_mouse_leave)
+        widget.bind('<MouseWheel>', self._on_mouse_wheel)
+        widget.bind('<Button-4>', self._on_mouse_wheel)
+        widget.bind('<Button-5>', self._on_mouse_wheel)
+
+    def _apply_window_shape(self) -> None:
+        """按当前窗口尺寸刷新圆角背景和内容控件尺寸。
+
+        通过透明色 Canvas 绘制圆角矩形，不使用 SetWindowRgn，避免圆角处出现黑底。
+        """
+        if self.corner_radius <= 0 or self.content_canvas is None:
+            return
+
+        try:
+            self.window.update_idletasks()
+            width = self.window.winfo_width()
+            height = self.window.winfo_height()
+            if width <= 1 or height <= 1:
+                return
+
+            self.content_canvas.config(width=width, height=height)
+            self.content_canvas.delete(self._background_item)
+
+            radius = max(1, min(self.corner_radius, width // 2, height // 2))
+            points = [
+                radius, 0, width - radius, 0,
+                width, 0, width, radius,
+                width, height - radius, width, height,
+                width - radius, height, radius, height,
+                0, height, 0, height - radius,
+                0, radius, 0, 0,
+            ]
+            self._background_item = self.content_canvas.create_polygon(
+                points,
+                smooth=True,
+                splinesteps=18,
+                fill=self.bg,
+                outline="",
+            )
+            self.content_canvas.tag_lower(self._background_item)
+
+            if self._content_window_item is not None:
+                content_width = max(1, width - DEFAULT_PADDING_X * 2)
+                content_height = max(1, height - DEFAULT_PADDING_Y * 2)
+                self.content_canvas.coords(
+                    self._content_window_item,
+                    DEFAULT_PADDING_X,
+                    DEFAULT_PADDING_Y,
+                )
+                self.content_canvas.itemconfigure(
+                    self._content_window_item,
+                    width=content_width,
+                    height=content_height,
+                )
+        except tk.TclError as e:
+            logger.debug(f"应用 Toast 圆角失败: {e}")
+
+    def _bind_selectable_text_widget(self, widget: tk.Widget) -> None:
+        """让文本控件保留选择/复制能力，同时阻止事件继续触发窗口拖动。"""
+        # bindtag 不能用控件路径（如 ".!toplevel.!text"）拼接；
+        # 以 "." 开头会被 Tk 当成窗口路径，导致创建 Toast 时抛出 bad window path name。
+        tag = f"toast_selectable_{id(widget)}"
+        bindtags = widget.bindtags()
+        if tag not in bindtags:
+            insert_at = 2 if len(bindtags) > 1 else 1
+            widget.bindtags(bindtags[:insert_at] + (tag,) + bindtags[insert_at:])
+
+        widget.bind_class(tag, '<ButtonPress-1>', self._on_selectable_press)
+        widget.bind_class(tag, '<B1-Motion>', self._on_selectable_motion)
+        widget.bind_class(tag, '<ButtonRelease-1>', self._on_selectable_release)
+        widget.bind_class(tag, '<Control-c>', self._on_copy)
+
+    def _on_selectable_press(self, event: tk.Event) -> str:
+        """文字上拖动选择文本；文本控件空白处拖动窗口。"""
+        self._dragging_from_text_blank = not self._is_text_hit(event)
+        if self._dragging_from_text_blank:
+            self._on_drag_start(event)
+        return "break"
+
+    def _on_selectable_motion(self, event: tk.Event) -> str:
+        """根据按下位置决定是选择文字还是移动窗口。"""
+        if self._dragging_from_text_blank:
+            self._on_drag_motion(event)
+        return "break"
+
+    def _on_selectable_release(self, event: tk.Event) -> str:
+        """结束文本空白处窗口拖动。"""
+        if self._dragging_from_text_blank:
+            self._on_drag_stop(event)
+        self._dragging_from_text_blank = False
+        return "break"
+
+    def _is_text_hit(self, event: tk.Event) -> bool:
+        """判断鼠标是否点在真实文字字符上。"""
+        widget = event.widget
+        try:
+            index = widget.index(f"@{event.x},{event.y}")
+            line = index.split(".", 1)[0]
+            line_end = f"{line}.end"
+            if widget.compare(index, ">=", line_end):
+                return False
+            return widget.bbox(index) is not None
+        except tk.TclError:
+            return False
 
     # --------------------------------------------------------
     # 鼠标事件处理
@@ -318,6 +493,16 @@ class ToastWindowBase(ABC):
                         logger.info("已复制选中的文本到剪贴板")
                 except tk.TclError:
                     pass  # 没有选区或其他错误
+
+            # 流式输出阶段使用 Text 组件，也允许复制其中的选区
+            if text_to_copy is None and hasattr(self, 'text_area') and self.text_area:
+                try:
+                    sel_ranges = self.text_area.tag_ranges("sel")
+                    if sel_ranges:
+                        text_to_copy = self.text_area.get(sel_ranges[0], sel_ranges[1])
+                        logger.info("已复制选中的文本到剪贴板")
+                except tk.TclError:
+                    pass
             
             # 如果没有选中文本，复制全部内容
             if text_to_copy is None:
@@ -420,16 +605,19 @@ class ToastWindowBase(ABC):
             </div>
             """
 
-            # 先创建 HTMLLabel 组件，覆盖在原有组件上面
+            # 先销毁流式 Text，再创建 HTMLLabel，避免 Canvas 中残留旧窗口项。
+            self._destroy_content_widget()
+
             self.md_label = HTMLLabel(
-                self.window,
+                self._get_content_parent(),
                 html=full_html,
                 wrap="char",
                 background=self.bg,
-                padx=DEFAULT_PADDING_X,
-                pady=DEFAULT_PADDING_Y
+                padx=0 if self.content_canvas is not None else DEFAULT_PADDING_X,
+                pady=0 if self.content_canvas is not None else DEFAULT_PADDING_Y
             )
-            self.md_label.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
+            self._mount_content_widget(self.md_label)
+            self._bind_selectable_text_widget(self.md_label)
             
             # 根据 editable 参数设置是否可编辑
             # DISABLED 状态下仍可选择文字，但无法编辑
@@ -450,9 +638,6 @@ class ToastWindowBase(ABC):
             # HTMLLabel 使用 tag 设置文字样式，需要为所有 tag 也设置选中样式
             for tag in self.md_label.tag_names():
                 self.md_label.tag_config(tag, selectbackground=select_bg, selectforeground=select_fg)
-
-            # 现在 Markdown 组件已经显示，再销毁原有组件
-            self._destroy_content_widget()
 
             # 多次更新以确保布局完全计算
             self.window.update()
@@ -478,6 +663,7 @@ class ToastWindowBase(ABC):
             final_w = self._calculate_actual_width()
 
             self.window.geometry(f"{final_w}x{int(final_h)}+{cx}+{cy}")
+            self._apply_window_shape()
 
             # 更新布局后再次测量
             self.window.update()

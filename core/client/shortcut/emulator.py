@@ -32,6 +32,29 @@ class ShortcutEmulator:
         """清除模拟标志"""
         self._emulating_keys.discard(key_name)
 
+    def release_key(self, key_name: str) -> None:
+        """
+        异步释放键盘按键
+
+        阻塞修饰键快捷键时，原始 KEYUP 会被 suppress_event 吞掉。
+        主动补发一次释放事件，可以避免 Ctrl/Alt/Shift 在系统状态里卡住。
+
+        Args:
+            key_name: 按键名称（如 'ctrl_r', 'shift_l'）
+        """
+        key_obj = KeyMapper.name_to_key(key_name)
+        if key_obj is None:
+            logger.warning(f"[{key_name}] 无法识别的按键，跳过释放")
+            return
+
+        self._emulating_keys.add(key_name)
+        try:
+            self._keyboard_controller.release(key_obj)
+            logger.debug(f"[{key_name}] 补发释放事件成功")
+        except Exception as e:
+            self._emulating_keys.discard(key_name)
+            logger.error(f"[{key_name}] 补发释放事件失败: {e}")
+
     def emulate_key(self, key_name: str) -> None:
         """
         异步模拟键盘按键
