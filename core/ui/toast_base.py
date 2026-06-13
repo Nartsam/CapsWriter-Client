@@ -585,6 +585,38 @@ class ToastWindowBase(ABC):
         # 确保系数在合理范围内
         return max(coefficient, 1.1)
 
+    def _apply_markdown_text_style(self, select_bg: str, select_fg: str) -> None:
+        """强制同步 HTMLLabel 的 Tk 文本样式。
+
+        tkhtmlview 对 HTML/CSS 字体支持不完整，完成流式输出切换到 HTMLLabel 后，
+        仅写入 font-family/font-size 可能不会生效；这里直接配置 Text 本体和所有
+        已生成的 tag，确保 Markdown 最终显示阶段也使用角色配置的字体、字号和颜色。
+        """
+        self.markdown_font = font.Font(family=self.font_family, size=self.font_size)
+
+        self.md_label.config(
+            font=self.markdown_font,
+            foreground=self.fg,
+            bg=self.bg,
+            background=self.bg,
+            selectbackground=select_bg,
+            selectforeground=select_fg
+        )
+
+        for tag in self.md_label.tag_names():
+            if tag == "sel":
+                continue
+            try:
+                self.md_label.tag_config(
+                    tag,
+                    font=self.markdown_font,
+                    foreground=self.fg,
+                    selectbackground=select_bg,
+                    selectforeground=select_fg
+                )
+            except tk.TclError as e:
+                logger.debug(f"同步 Markdown 文本样式失败: tag={tag}, error={e}")
+
     def _switch_to_markdown(self) -> None:
         """将内容组件切换为 Markdown 渲染"""
         try:
@@ -633,11 +665,7 @@ class ToastWindowBase(ABC):
             # 设置选中文字的高亮样式（DISABLED 状态下默认选中样式不可见）
             select_bg = "#3399ff"
             select_fg = "white"
-            self.md_label.config(selectbackground=select_bg, selectforeground=select_fg)
-            
-            # HTMLLabel 使用 tag 设置文字样式，需要为所有 tag 也设置选中样式
-            for tag in self.md_label.tag_names():
-                self.md_label.tag_config(tag, selectbackground=select_bg, selectforeground=select_fg)
+            self._apply_markdown_text_style(select_bg, select_fg)
 
             # 多次更新以确保布局完全计算
             self.window.update()

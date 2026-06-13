@@ -29,8 +29,8 @@ output_mode = 'toast'                   # 输出方式：'typing' 直接打字, 
 # ==================== Toast 弹窗配置（仅在 output_mode='toast' 时有效） ====================
 toast_initial_width = 0.5               # 窗口初始宽度（0.5 = 50% 屏幕宽度）
 toast_initial_height = 0                # 窗口初始高度（0 表示自动计算）
-toast_font_family = '微软雅黑'
-toast_font_size = 30                     # 字体大小
+toast_font_family = 'Consolas'
+toast_font_size = 20                     # 字体大小
 toast_font_color = 'black'              # 字体颜色
 toast_bg_color = '#f7fbff'              # 背景颜色
 toast_duration = 3000                   # 显示时长（毫秒）
