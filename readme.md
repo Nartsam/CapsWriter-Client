@@ -49,7 +49,7 @@
 - [显卡加速的若干问题](docs/显卡加速的若干问题.md) — DirectML、Vulkan 加速配置
 - [模型下载的若干问题](docs/模型下载的若干问题.md) — 引擎选择、模型下载、目录结构
 - [常见问题](docs/常见问题.md) — FAQ
-- [更新日志](docs/CHANGELOG.md) 
+- [更新日志](docs/CHANGELOG.md)
 
 
 ## 💻 平台支持
@@ -86,47 +86,16 @@ CapsWriter 的特别之处在于追求：
 ## 🛠️ 常见问题
 
 
-**Q: 为什么按了没反应？**  
+**Q: 为什么按了没反应？**
 A: 请确认 `start_client.exe` 的黑窗口还在运行。若想在管理员权限运行的程序中输入，也需以管理员权限运行客户端。
 
-**Q: 为什么识别结果没字？**  
+**Q: 为什么识别结果没字？**
 A: 到 `年/月/assets` 文件夹中检查录音文件，看是不是没有录到音；听听录音效果，是不是麦克风太差，建议使用桌面 USB 麦克风；检查麦克风权限。
 
-**Q: 想要隐藏黑窗口？**  
+**Q: 想要隐藏黑窗口？**
 A: 点击托盘菜单即可隐藏黑窗口。
 
-**Q: 如何开机启动？**  
+**Q: 如何开机启动？**
 A: `Win+R` 输入 `shell:startup` 打开启动文件夹，将服务端、客户端的快捷方式放进去即可。
 
 更多问题请参阅 [docs/常见问题.md](docs/常见问题.md)。
-
-
-## 🚀 我的其他优质项目推荐
-
-| 项目名称 | 说明 | 体验地址 |
-| :--- | :--- | :--- |
-| [**IME_Indicator**](https://github.com/HaujetZhao/IME_Indicator) | Windows 输入法中英状态指示器 | [下载即用](https://github.com/HaujetZhao/IME_Indicator/releases/latest/download/IME-Indicator.exe) |
-| [**Rust-Tray**](https://github.com/HaujetZhao/Rust-Tray) | 将控制台最小化到托盘图标的工具 | [下载即用](https://github.com/HaujetZhao/Rust-Tray/releases/latest/download/Tray.exe) |
-| [**Gallery-Viewer**](https://github.com/HaujetZhao/Gallery-Viewer-HTML) | 网页端图库查看器，纯 HTML 实现 | [点击即用](https://haujetzhao.github.io/Gallery-Viewer-HTML/) |
-| [**全景图片查看器**](https://github.com/HaujetZhao/Panorama-Viewer-HTML) | 单个网页实现全景照片、视频查看 | [点击即用](https://haujetzhao.github.io/Panorama-Viewer-HTML/) |
-| [**图标生成器**](https://github.com/HaujetZhao/Font-Awesome-Icon-Generator-HTML) | 使用 Font-Awesome 生成网站 Icon | [点击即用](https://haujetzhao.github.io/Font-Awesome-Icon-Generator-HTML/) |
-| [**五笔编码反查**](https://github.com/HaujetZhao/wubi86-revert-query) | 86 五笔编码在线反查 | [点击即用](https://haujetzhao.github.io/wubi86-revert-query/) |
-| [**快捷键映射图**](https://github.com/HaujetZhao/ShortcutMapper_Chinese) | 可视化、交互式的快捷键映射图 (中文版) | [点击即用](https://haujetzhao.github.io/ShortcutMapper_Chinese/) |
-
-
-## ❤️ 致谢
-
-本项目基于以下优秀的开源项目：
-
--   [Sherpa-ONNX](https://github.com/k2-fsa/sherpa-onnx)
--   [FunASR](https://github.com/alibaba-damo-academy/FunASR)
-
-感谢 Google Antigravity、Anthropic Claude、GLM、DeepSeek，如果不是这些编程助手，许多功能（例如基于音素的热词检索算法）我是无力实现的。
-
-特别感谢那些慷慨解囊的捐助者，你们的捐助让我用在了购买这些优质的 AI 编程助手服务，并最终将这些成果反馈到了软件的更新里。
-
-
-如果觉得好用，欢迎点个 Star 或者打赏支持：
-
-
-![sponsor](assets/sponsor.jpg)	

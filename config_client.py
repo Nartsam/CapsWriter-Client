@@ -17,18 +17,18 @@ class ClientConfig:
     # 快捷键配置列表
     shortcuts = [
         {
-            'key': 'ctrl_r',     # 监听键 caps_lock (大写锁定)
+            'key': 'ctrl_r',     # 监听键，默认：caps_lock (大写锁定)
             'type': 'keyboard',     # 是键盘快捷键
             'suppress': True,      # 阻塞按键（短按会补发）
             'hold_mode': True,      # 长按模式
             'enabled': True         # 启用此快捷键
         },
         {
-            'key': 'x2',
+            'key': 'x2',     # 监听 鼠标前进 键
             'type': 'mouse',
             'suppress': True,
             'hold_mode': True,
-            'enabled': True
+            'enabled': False
         },
     ]
 
