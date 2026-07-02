@@ -12,7 +12,7 @@ from core.tools.asyncio_to_thread import to_thread
 logger = logging.getLogger(__name__)
 
 LLM_TOAST_FONT_FAMILY = "Microsoft YaHei UI"
-LLM_TOAST_FONT_SIZE = 30
+LLM_TOAST_FONT_SIZE = 20
 LLM_TOAST_BG = "#f7fbff"
 LLM_TOAST_FG = "black"
 LLM_TOAST_ALPHA = 0.92

@@ -44,7 +44,7 @@ class RoleConfig:
     toast_initial_width: float = 0.5              # Toast 窗口初始宽度（0.5 = 50% 屏幕宽度）
     toast_initial_height: int = 0                 # Toast 窗口初始高度（0 表示自动计算）
     toast_font_family: str = '微软雅黑'           # Toast 字体
-    toast_font_size: int = 30                     # Toast 字体大小
+    toast_font_size: int = 20                     # Toast 字体大小
     toast_font_color: str = 'black'               # Toast 字体颜色
     toast_bg_color: str = '#f7fbff'               # Toast 背景颜色
     toast_duration: int = 3000                    # Toast 显示时长（毫秒）
