@@ -335,8 +335,10 @@ class RecordingIndicator:
             # 不支持透明色时至少保持用户指定的 #F0F0F0 背景。
             self.window.configure(bg=PANEL_BG)
 
-        self.title_font = tkfont.Font(family="Microsoft YaHei UI", size=TITLE_FONT_SIZE, weight="bold")
-        self.detail_font = tkfont.Font(family="Microsoft YaHei UI", size=DETAIL_FONT_SIZE)
+        # root 必须显式指向本线程的 Tk：若命名字体落到其他线程的 _default_root 上，
+        # 本窗口只会拿到无效的字体名并静默回退成小号宋体
+        self.title_font = tkfont.Font(root=self.root, family="Microsoft YaHei UI", size=TITLE_FONT_SIZE, weight="bold")
+        self.detail_font = tkfont.Font(root=self.root, family="Microsoft YaHei UI", size=DETAIL_FONT_SIZE)
         # Canvas 负责全部绘制，确保布局由固定坐标控制。
         self.canvas = tk.Canvas(
             self.window,

@@ -83,7 +83,9 @@ class ToastWindowText(ToastWindowBase):
         )
 
         # 创建字体对象用于计算行高
-        self.my_font = font.Font(family=self.font_family, size=self.font_size)
+        # root 必须显式指向本窗口：命名字体默认建在全进程第一个 Tk（_default_root，
+        # 通常是录音指示器线程）上，跨解释器传到本窗口会退化成无效家族名 -> 小号宋体
+        self.my_font = font.Font(root=self.window, family=self.font_family, size=self.font_size)
         self.line_height = self.my_font.metrics('linespace')
         self.last_char_count = 0
 

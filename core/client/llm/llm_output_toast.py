@@ -39,11 +39,13 @@ async def handle_toast_mode(handler, text: str, role_config=None, matched_hotwor
         # 创建初始 toast
         msg = ToastMessage(
             text="",
-            # LLM 角色弹窗统一使用新的白色亚克力外观，避免旧角色缓存继续显示蓝底楷体。
-            font_family=LLM_TOAST_FONT_FAMILY,
-            font_size=max(role_config.toast_font_size, LLM_TOAST_FONT_SIZE),
-            bg=LLM_TOAST_BG,
-            fg=LLM_TOAST_FG,
+            # 优先使用角色配置的外观，空值回退到统一的白色亚克力默认值。
+            # 此前这里硬编码常量是为了掩盖"字体永远显示为宋体"的问题，
+            # 真正原因是命名字体跨 Tk 解释器失效，已在 toast_text/toast_base 中修复。
+            font_family=role_config.toast_font_family or LLM_TOAST_FONT_FAMILY,
+            font_size=role_config.toast_font_size or LLM_TOAST_FONT_SIZE,
+            bg=role_config.toast_bg_color or LLM_TOAST_BG,
+            fg=role_config.toast_font_color or LLM_TOAST_FG,
             duration=role_config.toast_duration,
             initial_width=role_config.toast_initial_width,
             initial_height=role_config.toast_initial_height,
@@ -51,8 +53,8 @@ async def handle_toast_mode(handler, text: str, role_config=None, matched_hotwor
             window_type='text',
             markdown=True,
             editable=role_config.toast_editable,
-            window_alpha=LLM_TOAST_ALPHA,
-            corner_radius=LLM_TOAST_CORNER_RADIUS,
+            window_alpha=role_config.toast_window_alpha,
+            corner_radius=role_config.toast_corner_radius,
             stop_callback=lambda: task_stop_event.set()
         )
 

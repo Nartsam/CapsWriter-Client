@@ -592,7 +592,9 @@ class ToastWindowBase(ABC):
         仅写入 font-family/font-size 可能不会生效；这里直接配置 Text 本体和所有
         已生成的 tag，确保 Markdown 最终显示阶段也使用角色配置的字体、字号和颜色。
         """
-        self.markdown_font = font.Font(family=self.font_family, size=self.font_size)
+        # root 必须显式指向本窗口，否则命名字体建到其他线程的 _default_root 上，
+        # 下面的 tag 覆盖只会写入无效字体名，静默回退为小号宋体
+        self.markdown_font = font.Font(root=self.window, family=self.font_family, size=self.font_size)
 
         self.md_label.config(
             font=self.markdown_font,
