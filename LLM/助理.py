@@ -14,7 +14,7 @@ api_key = DEEPSEEK_API_KEY                          # API Key
 model = 'deepseek-v4-flash'                         # 模型名称
 
 # ==================== 上下文管理 ====================
-max_context_length = 1024 * 1024               # 最大上下文长度（token 数）
+max_context_length = 1024 * 1024               # 最大上下文长度（token 数）历史累积超过它的 80% 时，从最旧的消息开始丢弃
 
 # ==================== 功能配置 ====================
 enable_hotwords = False                 # 是否启用热词

@@ -63,6 +63,11 @@ prompt_prefix_input: str = '用户输入：'         # 用户输入前缀
 # System Prompt
 system_prompt: str = ''                      # 系统提示词
 
+# OpenMate
+openmate_enabled: bool = True  # 默认 True
+openmate_character: str = ''   # 默认空
+# 新增的 OpenMate 接入项，没写就用默认值：允许 OpenMate 接管、角色 ID 用全局配置。
+# 想让助理永远只用本地弹窗，加一行 openmate_enabled = False 即可。
 
 """
 
