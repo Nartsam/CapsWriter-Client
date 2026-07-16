@@ -177,8 +177,11 @@ class LLMProcessor:
 
         # 更新历史
         if role_config.enable_history and context_manager:
+            from .llm_output_openmate import strip_state_tags
             context_manager.add_message('user', messages[-1]['content'])
-            context_manager.add_message('assistant', full_response)
+            # 状态标签是 OpenMate 展示层指令，进入历史会诱导后续回复在本地
+            # Toast 展示时也输出标签，污染显示，故存历史前统一剥离
+            context_manager.add_message('assistant', strip_state_tags(full_response))
             logger.debug(f"已更新历史记录")
 
         return result

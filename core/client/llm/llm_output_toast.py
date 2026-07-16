@@ -30,6 +30,12 @@ async def handle_toast_mode(handler, text: str, role_config=None, matched_hotwor
     if not role_config:
         return ("", 0, 0.0)
 
+    # OpenMate 接入：探测到 OpenMate 以 external 模式运行时，改由其展示，不弹本地 Toast
+    from .llm_output_openmate import try_openmate_mode
+    openmate_result = await try_openmate_mode(handler, role_config, content, matched_hotwords)
+    if openmate_result is not None:
+        return openmate_result
+
     handler.monitor.reset()  # 重置停止标志
     task_stop_event = handler.monitor.create_stop_callback()
     toast_manager = ToastMessageManager()
@@ -87,6 +93,7 @@ async def handle_toast_mode(handler, text: str, role_config=None, matched_hotwor
         if msg_id: toast_manager.close_toast(msg_id)
 
         from .llm_error_handler import handle_llm_error, should_fallback_to_original
+        from .llm_role_config import RoleConfig
         role_name = role_config.name or RoleConfig.DEFAULT_ROLE_NAME
 
         if should_fallback_to_original(e):

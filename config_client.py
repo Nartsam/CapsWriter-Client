@@ -92,6 +92,17 @@ class ClientConfig:
     companion_addr = '127.0.0.1'            # 监听地址
     companion_port = 6019                   # 监听端口（端口被占用则自动禁用）
 
+    # OpenMate 桌面看板 HTTP 接入配置（API 文档见 OpenMate/docs/api/external-http-api.md）
+    # 探测到 OpenMate 以 external 模式运行时，toast 角色的 LLM 输出改由 OpenMate 展示，
+    # 不再弹出本地 Toast 窗口；OpenMate 隐藏在托盘时会自行以无激活方式恢复显示
+    openmate_enabled = True                     # 是否启用 OpenMate 展示
+    openmate_url = 'http://127.0.0.1:18760'     # OpenMate HTTP 服务地址
+    openmate_token = ''                         # Bearer token（OpenMate 未配置 token 则留空）
+    openmate_character = ''                     # 目标角色 ID（留空使用 OpenMate 当前角色）。情绪状态
+                                                # 列表按此角色通过 HTTP 自动获取；留空时 API 无法得知
+                                                # 当前角色，按角色列表第一个获取，多角色时建议显式配置
+    openmate_health_timeout = 0.5               # 探测 /health 的超时（秒），超时视为 OpenMate 不可用
+
 
 # 快捷键配置说明
 r"""

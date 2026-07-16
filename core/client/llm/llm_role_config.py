@@ -52,6 +52,11 @@ class RoleConfig:
     toast_window_alpha: float = 0.92              # Toast 窗口透明度，营造半透明亚克力效果
     toast_corner_radius: int = 12                 # Toast 窗口圆角半径，0 表示不启用圆角
 
+    # OpenMate 桌面看板配置（仅 output_mode='toast' 时有效，需全局 openmate_enabled）
+    openmate_enabled: bool = True                 # 允许该角色使用 OpenMate 展示
+    openmate_character: str = ''                  # 覆盖全局的 OpenMate 角色 ID（留空用全局配置，
+                                                  # 情绪状态列表按最终角色通过 HTTP 自动获取）
+
     # 生成参数
     temperature: float = 0.7                      # 温度（0-2）
     top_p: float = 0.9                            # Top-p 采样
