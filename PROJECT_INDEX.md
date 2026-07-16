@@ -4,7 +4,7 @@
 
 ## 项目概览
 
-CapsWriter-Offline 是一个 Windows 离线语音输入工具（GitHub: HaujetZhao/CapsWriter-Offline）。本仓库是 Client 端的 Release 目录，同时包含 Server 端代码。整体由 Python 编写，使用 asyncio 事件循环、pynput 键盘/鼠标钩子、WebSocket 通信、sounddevice 音频采集。
+CapsWriter-Offline 是一个 Windows 离线语音输入工具（GitHub: HaujetZhao/CapsWriter-Offline）。本仓库是 Client 端的 Release 目录，附带 Server 端源码（`core/server/`）以供参考——但 `config_server.py` 和 `start_server.exe` **不在本目录**，服务端配置无法在此修改。整体由 Python 编写，使用 asyncio 事件循环、pynput 键盘/鼠标钩子、WebSocket 通信、sounddevice 音频采集。
 
 **核心流程**：用户按住快捷键 → 客户端录音 → 音频通过 WebSocket 发送到 Server → Server 用 ASR 引擎识别 → 结果返回客户端 → 客户端执行热词替换/LLM 润色 → 模拟键盘打字输出到当前窗口。
 
@@ -14,7 +14,6 @@ CapsWriter-Offline 是一个 Windows 离线语音输入工具（GitHub: HaujetZh
 
 ```
 ├── config_client.py          # 客户端配置（快捷键、服务端地址、功能开关等）
-├── config_server.py          # 服务端配置（模型路径、引擎类型、GPU 加速等）
 ├── core/
 │   ├── __init__.py            # 初始化 colorama，导出 logger
 │   ├── constants.py           # 音频格式常量（采样率 16kHz、float32）
@@ -59,8 +58,11 @@ CapsWriter-Offline 是一个 Windows 离线语音输入工具（GitHub: HaujetZh
 ├── hot.txt                    # 热词列表
 ├── hot-rule.txt               # 正则替换规则
 ├── hot-server.txt             # 服务端热词（部分引擎支持）
-├── internal/                  # 内嵌的第三方库（pypinyin, sounddevice 等）
-├── docs/                      # 用户文档
+├── internal/                  # 内嵌的 Python 3.8 运行时与第三方库（供 start_client.exe 使用）
+├── assets/                    # 图标等静态资源
+├── logs/                      # 运行日志（自动生成）
+├── docs/                      # 用户文档 + 开发笔记（DEV_NOTES.md）
+├── start_client.exe           # 客户端启动器
 └── 2026/                      # 日记归档目录（自动生成）
 ```
 
@@ -143,6 +145,7 @@ CapsWriter-Offline 是一个 Windows 离线语音输入工具（GitHub: HaujetZh
 | `llm_context.py` | **ContextManager**。管理对话历史记录 |
 | `llm_output_typing.py` | typing 模式输出（直接模拟打字/粘贴） |
 | `llm_output_toast.py` | toast 模式输出（弹窗显示，支持 Markdown 渲染，并按角色配置传入字体、颜色、透明度、圆角等样式） |
+| `llm_output_openmate.py` | OpenMate 桌面看板输出。toast 角色在探测到 OpenMate 以 external 模式运行（`GET /health`）时改由其展示：自动获取角色情绪状态列表（`GET /v1/characters/{id}/states`，带缓存）并注入 `<state:情绪ID>` 标签指令、后台线程聚合分片经流式 HTTP API 发送、ESC 中断映射为取消流、OpenMate 中途失效时剥离标签回退本地 Toast。API 文档见 OpenMate/docs/api/external-http-api.md |
 | `llm_stop_monitor.py` | **StopMonitor**。监听 ESC 键中断 LLM 输出 |
 | `llm_watcher.py` | 监视 LLM/ 目录变化，自动重载角色 |
 | `llm_get_selection.py` | 通过 Ctrl+C 获取选中文字 |
@@ -304,11 +307,24 @@ Electron 应用连接到 ws://127.0.0.1:6019
 2. **线程模型**：主线程运行 asyncio 事件循环；pynput 钩子在独立线程；UI（Tk）在独立线程；ThreadPoolExecutor 处理阻塞操作
 3. **防自捕获**：emulator 补发按键时设置 `_emulating_keys` 标志，钩子回调检测到该标志后放行不处理
 4. **单例模式**：RecordingIndicator、GlobalHotkeyManager 使用线程安全单例
-5. **配置方式**：用户通过修改 `config_client.py` / `config_server.py` 顶层变量配置，无 YAML/JSON
+5. **配置方式**：用户通过修改 `config_client.py` 顶层变量配置，无 YAML/JSON（`config_server.py` 属于服务端发行目录，不在本仓库）
 6. **LLM 角色**：`LLM/` 目录下每个 .py 文件是一个角色，定义 RoleConfig 字段作为模块级变量；toast 输出角色可配置 `toast_font_family`、`toast_font_size`、`toast_font_color`、`toast_bg_color`、`toast_window_alpha`、`toast_corner_radius` 等样式字段
 7. **热词文件**：`hot.txt` 每行一个热词（音素模糊匹配），`hot-rule.txt` 每行 `正则 = 替换` 格式
 8. **Companion 模式**：当 Electron 伴侣应用连接到 CompanionServer 时，匹配角色前缀的文本跳过本地 LLM，直接转发给 Electron 处理
 9. **多 Tk 解释器与字体约束**：录音指示器与 Toast 弹窗分别在独立线程运行各自的 Tk 解释器；创建 `tkinter.font.Font` 时必须显式传 `root=` 绑定所属窗口的解释器，否则命名字体会建到进程内第一个 Tk（`_default_root`）上，跨解释器引用时字体名会被当作不存在的字体家族，静默回退为小号宋体
+10. **OpenMate 展示**：toast 角色在 LLM 调用前探测 OpenMate（`config_client.py` 的 `openmate_*` 配置），可用则自动获取角色情绪状态列表、注入情绪标签指令（标签用状态 ID，别名作语义注解）并将流式输出转交 OpenMate 展示；`<state:...>` 标签由 OpenMate 解析剥离，本地存历史/广播前也统一剥离。OpenMate 隐藏在托盘时收到消息会自行无激活恢复显示，无需客户端干预。API 无"当前角色"查询端点，`openmate_character` 留空时按角色列表第一个获取情绪，多角色时应显式配置
+
+---
+
+## 开发环境与验证
+
+本目录是打包后的 Release 目录，不是可直接跑测试的源码工程：
+
+- **运行方式**：双击 `start_client.exe`，它使用 `internal/` 内嵌的 Python 3.8 运行时和依赖库
+- **系统 Python 不可直接使用**：没有本项目的依赖（rich、pynput、sounddevice 等），且 `import core` 会在包 `__init__` 中连锁导入 rich 而失败；单元测试需先在 `sys.modules` 预注入桩模块（伪造 `core`、`core.client.llm` 等包及其 `logger`），再用 `importlib` 按文件路径加载目标模块
+- **验证手段从轻到重**：`ast.parse` 语法检查 → 桩模块单元测试 → `start_client.exe` 实机验证
+- **严禁提交 pyc**：`__pycache__` 不得进仓库（历史上误提交过，见提交 71103d3）；语法检查用 `ast.parse` 而非 `py_compile`，避免生成缓存文件
+- **文档同步**：行为变更需同步更新本文档相关章节；跨会话的待办、决策与已知怪状态记录在 [docs/DEV_NOTES.md](docs/DEV_NOTES.md)
 
 ---
 
@@ -337,6 +353,7 @@ Electron 应用连接到 ws://127.0.0.1:6019
 | 修改 Companion 通信协议 | `core/client/companion/companion_protocol.py` |
 | 修改 Companion 服务器行为 | `core/client/companion/companion_server.py` |
 | 启用/禁用 Companion | `config_client.py` (`companion_enabled`, `companion_port`) |
+| 配置/修改 OpenMate 接入 | `config_client.py` (`openmate_*`), `llm/llm_output_openmate.py`；角色级覆盖字段 `openmate_enabled`/`openmate_character` |
 
 ---
 
