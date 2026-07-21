@@ -98,9 +98,9 @@ class ClientConfig:
     openmate_enabled = True                     # 是否启用 OpenMate 展示
     openmate_url = 'http://127.0.0.1:18760'     # OpenMate HTTP 服务地址
     openmate_token = ''                         # Bearer token（OpenMate 未配置 token 则留空）
-    openmate_character = ''                     # 目标角色 ID（留空使用 OpenMate 当前角色）。情绪状态
-                                                # 列表按此角色通过 HTTP 自动获取；留空时 API 无法得知
-                                                # 当前角色，按角色列表第一个获取，多角色时建议显式配置
+    openmate_character = ''                     # 目标角色 ID（留空跟随 OpenMate 当前角色，每次请求
+                                                # 通过 GET /v1/presentation 查询）。情绪状态列表按
+                                                # 最终角色通过 HTTP 自动获取，无需手工维护
     openmate_health_timeout = 0.5               # 探测 /health 的超时（秒），超时视为 OpenMate 不可用
 
 

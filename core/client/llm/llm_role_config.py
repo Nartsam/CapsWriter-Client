@@ -56,6 +56,10 @@ class RoleConfig:
     openmate_enabled: bool = True                 # 允许该角色使用 OpenMate 展示
     openmate_character: str = ''                  # 覆盖全局的 OpenMate 角色 ID（留空用全局配置，
                                                   # 情绪状态列表按最终角色通过 HTTP 自动获取）
+    enable_result_splitter: bool = False          # 回复分段：按分隔符把回复切成多条消息逐条展示，
+                                                  # 模仿人类连发多条 IM 消息（仅 OpenMate 展示路径
+                                                  # 生效；未连接 OpenMate 时回退普通完整显示）
+    result_split_delimiter: str = '\n\n'          # 分段分隔符；段落 trim 后为空则丢弃
 
     # 生成参数
     temperature: float = 0.7                      # 温度（0-2）

@@ -1,7 +1,5 @@
 # CapsWriter-Offline (v2.6)
 
-![demo](assets/demo.png)
-
 > **按住 CapsLock 说话，松开就上屏。就这么简单。**
 
 **CapsWriter-Offline** 是一个专为 Windows 打造的**完全离线**语音输入工具。

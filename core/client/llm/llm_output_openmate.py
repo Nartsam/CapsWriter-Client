@@ -6,15 +6,23 @@ LLM OpenMate 输出模式
 
 工作方式：
 1. 请求开始时探测 /health，OpenMate 以 external 模式运行且接受写入才走此路径；
-   通过 GET /v1/characters/{id}/states 自动获取角色情绪状态列表（带缓存，
-   状态来自 OpenMate 启动快照，改立绘需重启 OpenMate），注入 system prompt
-   末尾要求 LLM 输出情绪标签，标签用稳定状态 ID、别名仅作语义注解
+   未配置目标角色时通过 GET /v1/presentation 查询当前生效角色（每次都查，
+   角色可随时在 OpenMate 界面切换），再通过 GET /v1/characters/{id}/states
+   获取该角色的情绪状态列表（带缓存，状态来自 OpenMate 启动快照，改立绘需
+   重启 OpenMate），注入 system prompt 末尾要求 LLM 输出情绪标签，
+   标签用稳定状态 ID、别名仅作语义注解
 2. LLM 输出的 <state:情绪ID> 内联标签原样透传，由 OpenMate 解析立绘状态并从
    显示/历史中剥离，CapsWriter 无需自行解析
 3. 分片经后台线程聚合后再 PATCH，避免逐 chunk 请求触发 OpenMate 的
    速率限制（600 次/60 秒），也避免 HTTP 阻塞 LLM 流读取
-4. ESC 中断映射为 DELETE（取消流，不写历史）；中途发送失败时最终结果
+4. 角色开启 enable_result_splitter 时改走 open 分段队列：回复按分隔符
+   切成多条消息逐条展示（OpenMateSegmentSender），第一段就绪即开始，
+   边生成边追加；否则走流式正文（OpenMateStreamSender）
+5. ESC 中断映射为 DELETE（取消流/队列）；中途发送失败时最终结果
    剥离标签后回退本地 Toast 展示，不丢内容
+6. 接管确认后本地「正在处理结果」悬浮提示移交为 OpenMate 的 typing 指示
+   （PUT /v1/presentation/typing）：首条消息/分片到达自动熄灭，失败路径
+   显式关闭；typing 开启失败则保留本地提示（兼容旧版 OpenMate）
 """
 import json
 import queue
@@ -24,6 +32,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+import uuid
 
 from core.tools.asyncio_to_thread import to_thread
 from . import logger
@@ -98,12 +107,49 @@ class OpenMateClient:
                 and bool(info.get('ready'))
                 and bool(info.get('acceptsExternalMessages')))
 
-    def list_characters(self) -> list:
-        return self._request('GET', '/v1/characters').get('characters', [])
+    def get_presentation(self) -> dict:
+        """查询当前生效角色与活动流状态（含未传 character 时写请求的回退结果）"""
+        return self._request('GET', '/v1/presentation')
 
     def get_states(self, character_id: str) -> dict:
         return self._request(
             'GET', f'/v1/characters/{urllib.parse.quote(character_id, safe="")}/states')
+
+    def create_open_queue(self, segments: list, character: str = '', request_id: str = '') -> str:
+        """创建 open 分段消息队列（先创建、后追加、最终封口），返回消息 ID"""
+        body = {'protocolVersion': 1, 'segments': segments, 'open': True}
+        if character:
+            body['character'] = character
+        if request_id:
+            body['requestId'] = request_id
+        return self._request('POST', '/v1/messages', body)['id']
+
+    def post_message(self, text: str, character: str = '', request_id: str = '') -> str:
+        """提交一次性完整消息（回复未切出多段时的退化路径），返回消息 ID"""
+        body = {'protocolVersion': 1, 'text': text}
+        if character:
+            body['character'] = character
+        if request_id:
+            body['requestId'] = request_id
+        return self._request('POST', '/v1/messages', body)['id']
+
+    def append_segments(self, message_id: str, segments: list = None, close: bool = False):
+        """向 open 队列追加段落和/或封口。appendSegments 传空数组是 400，留空时必须省略"""
+        body = {}
+        if segments:
+            body['appendSegments'] = segments
+        if close:
+            body['close'] = True
+        self._request('PATCH',
+                      f'/v1/messages/{urllib.parse.quote(message_id, safe="")}', body)
+
+    def cancel_message(self, message_id: str):
+        """取消分段队列：剩余段停止展示、按 interrupted 入库"""
+        self._request('DELETE', f'/v1/messages/{urllib.parse.quote(message_id, safe="")}')
+
+    def set_typing(self, active: bool):
+        """开关「正在输入」指示（纯视觉：消息/流到达自动熄灭，30s 超时兜底）"""
+        self._request('PUT', '/v1/presentation/typing', {'active': active})
 
     def create_stream(self, character: str = '', preempt: bool = True) -> str:
         # preempt=True：新对话抢占残留的旧活动流，与本地新 Toast 顶掉旧窗口的行为一致
@@ -138,12 +184,34 @@ _emotion_cache: dict = {}   # (base_url, character) -> (过期时刻, payload �
 def fetch_emotion_info(client: OpenMateClient, character: str = ''):
     """获取角色情绪状态信息（带缓存）
 
+    Args:
+        character: 目标角色 ID；留空时通过 /v1/presentation 解析当前生效角色
+
     Returns:
-        {'states': [{'id', 'aliases'}, ...], 'default_state': str}；
+        {'character_id': str, 'states': [{'id', 'aliases'}, ...], 'default_state': str}；
         获取失败或可选状态少于 2 个（只有默认立绘，注入情绪指令无意义）时返回 None
     """
-    key = (client.base_url, character)
     now = time.monotonic()
+    char_id = character
+    if not char_id:
+        # 当前角色可随时在 OpenMate 界面切换，解析结果不缓存、每次请求都查；
+        # /v1/presentation 返回的就是写请求不传 character 时消息实际会展示
+        # 到的角色（API 文档 §5.4），避免把其他角色的状态 ID 注入给模型。
+        # 仅失败结果短暂缓存在 (base_url, '') 键下，避免每句话都刷警告日志
+        resolve_key = (client.base_url, '')
+        cached = _emotion_cache.get(resolve_key)
+        if cached and cached[0] > now:
+            return cached[1]
+        try:
+            current = client.get_presentation().get('character') or {}
+            char_id = current.get('id', '')
+        except Exception as e:
+            logger.warning(f'查询 OpenMate 当前角色失败，本次不注入情绪指令: {e}')
+        if not char_id:
+            _emotion_cache[resolve_key] = (now + _EMOTION_FAIL_TTL, None)
+            return None
+
+    key = (client.base_url, char_id)
     cached = _emotion_cache.get(key)
     if cached and cached[0] > now:
         return cached[1]
@@ -151,22 +219,16 @@ def fetch_emotion_info(client: OpenMateClient, character: str = ''):
     payload = None
     ttl = _EMOTION_CACHE_TTL
     try:
-        char_id = character
-        if not char_id:
-            # API 无法查询"当前角色"，与 OpenMate 无有效当前角色时的行为
-            # 保持一致：取角色列表第一个；多角色场景应显式配置 openmate_character
-            chars = client.list_characters()
-            char_id = chars[0]['id'] if chars else ''
-        if char_id:
-            info = client.get_states(char_id)
-            states = info.get('states') or []
-            if len(states) >= 2:
-                payload = {
-                    'states': states,
-                    'default_state': (info.get('character') or {}).get('defaultState', ''),
-                }
-            else:
-                logger.debug(f'OpenMate 角色 {char_id} 可选状态不足 2 个，不注入情绪指令')
+        info = client.get_states(char_id)
+        states = info.get('states') or []
+        if len(states) >= 2:
+            payload = {
+                'character_id': char_id,
+                'states': states,
+                'default_state': (info.get('character') or {}).get('defaultState', ''),
+            }
+        else:
+            logger.debug(f'OpenMate 角色 {char_id} 可选状态不足 2 个，不注入情绪指令')
     except Exception as e:
         ttl = _EMOTION_FAIL_TTL
         logger.warning(f'获取 OpenMate 情绪状态失败，本次不注入情绪指令: {e}')
@@ -201,6 +263,11 @@ class OpenMateStreamSender:
     @property
     def failed(self) -> bool:
         return self._failed
+
+    @property
+    def delivered(self) -> bool:
+        """是否已有内容实际发往 OpenMate 展示（用于判断 typing 指示会否自动熄灭）"""
+        return self._stream_id is not None
 
     def push(self, chunk: str):
         """LLM 流式回调入口（任意线程可调用）"""
@@ -278,12 +345,156 @@ class OpenMateStreamSender:
             self._failed = True
 
 
+class OpenMateSegmentSender:
+    """分段消息发送器：把 LLM 流式输出按分隔符切成多条消息，经 open 队列逐条展示
+
+    与 OpenMateStreamSender 接口一致（push/finish/abort/failed），按角色的
+    enable_result_splitter 二选一。切分只是发送层钩子：本地对话历史与 md 日志
+    仍保存未切分全文。第一段就绪即创建 open 队列开始展示（不等全文生成），
+    后续段落边生成边追加，生成结束随最后一段封口；段落 trim 后为空则丢弃；
+    全程未切出第二段时按 API 文档 §5.5 建议退化为一次性完整消息。
+    """
+
+    def __init__(self, client: OpenMateClient, character: str = '', delimiter: str = '\n\n'):
+        self.client = client
+        self.character = character
+        self.delimiter = delimiter
+        self._queue: queue.Queue = queue.Queue()
+        self._buffer = ''
+        self._message_id = None
+        self._posted = False    # 退化单条消息已发出（此时 _message_id 保持 None）
+        # 队列创建的幂等 ID：网络重试时避免同一回复被重复展示
+        self._request_id = f'capswriter-{uuid.uuid4()}'
+        self._failed = False
+        self._completed = False
+        self._thread = threading.Thread(
+            target=self._worker, daemon=True, name='OpenMateSegmentSender')
+        self._thread.start()
+
+    @property
+    def failed(self) -> bool:
+        return self._failed
+
+    @property
+    def delivered(self) -> bool:
+        """是否已有内容实际发往 OpenMate 展示（用于判断 typing 指示会否自动熄灭）"""
+        return self._message_id is not None or self._posted
+
+    def push(self, chunk: str):
+        """LLM 流式回调入口（任意线程可调用）"""
+        self._queue.put(('delta', chunk))
+
+    def finish(self, timeout: float = 10.0) -> bool:
+        """封口队列。返回内容是否已成功交给 OpenMate 展示"""
+        self._queue.put(('complete', None))
+        self._thread.join(timeout)
+        return self._completed
+
+    def abort(self, timeout: float = 5.0):
+        """取消队列（剩余段按 interrupted 入库），用于 ESC 中断和 LLM 异常"""
+        self._queue.put(('cancel', None))
+        self._thread.join(timeout)
+
+    def _worker(self):
+        # 与 OpenMateStreamSender 相同的聚合模式：合并积压分片后统一切分发送
+        while True:
+            kind, payload = self._queue.get()
+            if kind != 'delta':
+                self._finalize(kind)
+                return
+            parts = [payload]
+            control = None
+            while control is None:
+                try:
+                    nxt_kind, nxt_payload = self._queue.get_nowait()
+                except queue.Empty:
+                    break
+                if nxt_kind == 'delta':
+                    parts.append(nxt_payload)
+                else:
+                    control = nxt_kind
+            self._buffer += ''.join(parts)
+            self._dispatch(self._cut_segments())
+            if control is not None:
+                self._finalize(control)
+                return
+
+    def _cut_segments(self) -> list:
+        """从缓冲切出所有完整段落；trim 后为空的段落直接丢弃"""
+        segments = []
+        while self.delimiter in self._buffer:
+            head, self._buffer = self._buffer.split(self.delimiter, 1)
+            head = head.strip()
+            if head:
+                segments.append(head)
+        return segments
+
+    def _dispatch(self, segments: list):
+        if self._failed or not segments:
+            return
+        try:
+            if self._message_id is None:
+                self._message_id = self.client.create_open_queue(
+                    segments, self.character, self._request_id)
+                logger.debug(f'OpenMate 分段队列已创建: {self._message_id[:8]}')
+            else:
+                self.client.append_segments(self._message_id, segments)
+        except Exception as e:
+            logger.warning(f'OpenMate 分段发送失败，将回退本地展示: {e}')
+            self._failed = True
+
+    def _finalize(self, kind: str):
+        if kind != 'complete' or self._failed:
+            self._cancel_residual()
+            return
+        last = self._buffer.strip()
+        self._buffer = ''
+        try:
+            if self._message_id is None:
+                # 全程未切出段落：退化为一次性完整消息；完全无内容则无需请求
+                if last:
+                    self.client.post_message(last, self.character, self._request_id)
+                    self._posted = True
+                self._completed = True
+            else:
+                self.client.append_segments(
+                    self._message_id, [last] if last else None, close=True)
+                self._completed = True
+        except Exception as e:
+            logger.warning(f'OpenMate 分段收尾失败: {e}')
+            self._failed = True
+            self._cancel_residual()
+
+    def _cancel_residual(self):
+        # 队列已损坏或被中断：尽力取消，停止剩余段展示（404 表示已被抢占/播完，忽略）
+        if self._message_id is None:
+            return
+        try:
+            self.client.cancel_message(self._message_id)
+        except Exception:
+            pass
+
+
 # ======================================================================
 # --- 输出模式入口 ---
 
 def _make_client() -> OpenMateClient:
     from config_client import ClientConfig as Config
     return OpenMateClient(Config.openmate_url, Config.openmate_token)
+
+
+def _set_typing_safe(client: OpenMateClient, active: bool) -> bool:
+    """尽力开关 typing 指示：纯视觉锦上添花，失败不影响主流程
+
+    返回是否成功，供调用方决定是否隐藏本地提示（旧版 OpenMate 无此端点时
+    保留本地「正在处理结果」悬浮窗，行为向后兼容）
+    """
+    try:
+        client.set_typing(active)
+        return True
+    except Exception as e:
+        logger.debug(f'OpenMate typing 指示设置失败（忽略）: {e}')
+        return False
 
 
 async def try_openmate_mode(handler, role_config, content, matched_hotwords) -> tuple:
@@ -311,6 +522,12 @@ async def _handle_openmate_mode(handler, client, role_config, content, matched_h
     from config_client import ClientConfig as Config
     from .llm_role_config import RoleConfig
 
+    # 接管确认：本地「正在处理结果」悬浮提示移交为 OpenMate 的 typing 指示；
+    # typing 开启失败（如旧版 OpenMate 无此端点）则保留本地提示不移交
+    if await to_thread(_set_typing_safe, client, True):
+        from core.client.ui import hide_recording_indicator
+        hide_recording_indicator()
+
     character = role_config.openmate_character or Config.openmate_character
     emotion = await to_thread(fetch_emotion_info, client, character)
 
@@ -318,13 +535,22 @@ async def _handle_openmate_mode(handler, client, role_config, content, matched_h
     # 用副本追加，不改动角色原配置（角色对象会被后续请求复用）
     llm_config = role_config
     if emotion:
+        logger.info(f"已注入 OpenMate 角色 '{emotion['character_id']}' 的情绪指令"
+                    f"（{len(emotion['states'])} 个状态）")
         llm_config = dataclasses.replace(
             role_config,
             system_prompt=(role_config.system_prompt or '')
                           + build_emotion_prompt(emotion['states'], emotion['default_state']),
         )
 
-    sender = OpenMateStreamSender(client, character)
+    # 流/队列固定到已注入状态列表的角色：留空配置下若用户在生成期间于 OpenMate
+    # 切换角色，标签仍与展示角色一致，不会失配回退默认立绘
+    target_character = emotion['character_id'] if emotion else character
+    if role_config.enable_result_splitter:
+        sender = OpenMateSegmentSender(
+            client, target_character, role_config.result_split_delimiter or '\n\n')
+    else:
+        sender = OpenMateStreamSender(client, target_character)
     try:
         polished_text, token_count, gen_time = await to_thread(
             handler.process, llm_config, content, matched_hotwords, sender.push
@@ -333,6 +559,9 @@ async def _handle_openmate_mode(handler, client, role_config, content, matched_h
         if handler.monitor.should_stop():
             # 用户中断：取消流（OpenMate 不写历史），与本地关闭 Toast 行为一致
             await to_thread(sender.abort)
+            if not sender.delivered:
+                # 未发出任何内容，typing 不会被消息自动熄灭，显式关闭
+                await to_thread(_set_typing_safe, client, False)
             return (strip_state_tags(polished_text or content), token_count, gen_time)
 
         ok = await to_thread(sender.finish)
@@ -341,10 +570,14 @@ async def _handle_openmate_mode(handler, client, role_config, content, matched_h
             # OpenMate 中途失效（退出/布局编辑/超时）：本地 Toast 兜底展示完整结果
             logger.warning('OpenMate 展示未完成，回退本地 Toast')
             _show_fallback_toast(role_config, result)
+        if not ok or not sender.delivered:
+            # 内容未成功交给 OpenMate（失败回退或 LLM 无输出）：显式熄灭 typing
+            await to_thread(_set_typing_safe, client, False)
         return (result, token_count, gen_time)
 
     except Exception as e:
         await to_thread(sender.abort)
+        await to_thread(_set_typing_safe, client, False)
 
         from .llm_error_handler import handle_llm_error, should_fallback_to_original
         from core.client.output.text_output import TextOutput

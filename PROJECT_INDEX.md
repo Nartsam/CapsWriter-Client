@@ -145,7 +145,7 @@ CapsWriter-Offline 是一个 Windows 离线语音输入工具（GitHub: HaujetZh
 | `llm_context.py` | **ContextManager**。管理对话历史记录 |
 | `llm_output_typing.py` | typing 模式输出（直接模拟打字/粘贴） |
 | `llm_output_toast.py` | toast 模式输出（弹窗显示，支持 Markdown 渲染，并按角色配置传入字体、颜色、透明度、圆角等样式） |
-| `llm_output_openmate.py` | OpenMate 桌面看板输出。toast 角色在探测到 OpenMate 以 external 模式运行（`GET /health`）时改由其展示：自动获取角色情绪状态列表（`GET /v1/characters/{id}/states`，带缓存）并注入 `<state:情绪ID>` 标签指令、后台线程聚合分片经流式 HTTP API 发送、ESC 中断映射为取消流、OpenMate 中途失效时剥离标签回退本地 Toast。API 文档见 OpenMate/docs/api/external-http-api.md |
+| `llm_output_openmate.py` | OpenMate 桌面看板输出。toast 角色在探测到 OpenMate 以 external 模式运行（`GET /health`）时改由其展示：未配置目标角色时按 `GET /v1/presentation` 解析当前生效角色（每次都查），自动获取该角色情绪状态列表（`GET /v1/characters/{id}/states`，带缓存）并注入 `<state:情绪ID>` 标签指令、后台线程聚合分片发送（流/队列固定到已注入状态的角色）、ESC 中断映射为取消、OpenMate 中途失效时剥离标签回退本地 Toast。角色开启 `enable_result_splitter` 时走 open 分段队列（`POST /v1/messages` + `PATCH` 追加）：回复按 `result_split_delimiter` 切成多条消息逐条展示，边生成边追加；否则走流式正文。接管确认后本地「正在处理结果」悬浮提示移交为 OpenMate 的 typing 指示（`PUT /v1/presentation/typing`，开启失败则保留本地提示）。API 文档见 OpenMate/docs/api/external-http-api.md |
 | `llm_stop_monitor.py` | **StopMonitor**。监听 ESC 键中断 LLM 输出 |
 | `llm_watcher.py` | 监视 LLM/ 目录变化，自动重载角色 |
 | `llm_get_selection.py` | 通过 Ctrl+C 获取选中文字 |
@@ -353,7 +353,7 @@ Electron 应用连接到 ws://127.0.0.1:6019
 | 修改 Companion 通信协议 | `core/client/companion/companion_protocol.py` |
 | 修改 Companion 服务器行为 | `core/client/companion/companion_server.py` |
 | 启用/禁用 Companion | `config_client.py` (`companion_enabled`, `companion_port`) |
-| 配置/修改 OpenMate 接入 | `config_client.py` (`openmate_*`), `llm/llm_output_openmate.py`；角色级覆盖字段 `openmate_enabled`/`openmate_character` |
+| 配置/修改 OpenMate 接入 | `config_client.py` (`openmate_*`), `llm/llm_output_openmate.py`；角色级覆盖字段 `openmate_enabled`/`openmate_character`/`enable_result_splitter`/`result_split_delimiter` |
 
 ---
 
