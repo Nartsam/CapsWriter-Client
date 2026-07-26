@@ -290,7 +290,11 @@ class RecordingIndicator:
             self.state.auto_hide_at = 0.0
         elif action == "progress":
             # 服务端分段识别返回时刷新已处理时长和文字预览。
-            self.state.mode = "progress"
+            # 录音仍在进行时只记录数据、不切换模式：麦克风是边录边发的，服务端每攒够
+            # mic_seg_duration + mic_seg_overlap * 2（默认 68s）才切一段回传一次进度，
+            # 切到 progress 会让实时录音计时被一个一分钟内都不再变化的「已处理」时长顶掉。
+            if self.state.mode != "recording":
+                self.state.mode = "progress"
             self.state.progress_duration = payload.get("duration", 0.0)
             self.state.preview_text = payload.get("preview", "")
             self.state.auto_hide_at = 0.0
