@@ -1,0 +1,43 @@
+# 客户端热词文件，使用音素 RAG 匹配，支持中英文混合
+# 具备强制性，相似度高于阈值的一定会被替换
+# 井号开头的行为注释，会被忽略；每行一个热词，可以用 | 分割添加多个别名
+# 详细说明见：docs/热词功能如何使用.md
+
+# ====== 纠正示例 ======
+CapsWriter | Caps Rider
+Paraformer | performer
+Fun-ASR-Nano | 放 ASR Nano
+Qwen3-ASR | 千问ASR | 千问3ASR
+Qwen3-TTS | 千问TTS | 千问3TTS
+Claude | 克劳德 | 克劳得
+Claude Code | cloud cold | cloud code
+AstrBot | Aster boat | After button | Aster Boss | Azure Bot | After both | Afterboot
+API Key | APIK
+.py | 点 py
+.cpp | 点 CPP
+Llama | 拉马
+GPT-SoVITS | GPT service | GPT Solves
+Clash Verge | Clash Words | ClashWorx | Clash of Clans | Clash of Words | Clash Wars | Clash Watch
+tailscale | Palescale | Telescale
+gvisor | GWARSER | J. Watson | JWater | 这沃 sir | J. Walter | Jay Woehler
+CUDA | 酷的 | kuda
+3DMigoto | 3D 米高苏 | 3D 尼多夫 | 3D 米沟突 | 3D 米 Go Two
+PyTorch
+TensorRT
+DirectML
+TensorFlow
+Transformer
+v2rayN | 维图瑞恩
+Codex | CodeX
+ComfyUI | Coffee UI | 康菲 UI | Confi UI | Kanfi UI
+雾切响子 | 勿切祥子 | 不切祥子 | 不切小子
+雾切妹妹 | 胡切妹妹 | 吴切妹妹
+新岛真 | 心导针 | 青岛真 | 新岛针 | 洗澡针
+真学姐 | 甄学姐 | 甄姐姐
+灯姐 | 邓姐 | 戴梦姐 | 邓颖洁 | 登姐 | 邓杰 | 都姐 | 灯节 | 冬节 | 登雪
+
+
+# ====== 自定义短语示例 ======
+18200006666 | 我的手机号 | input my phone
+上海市浦东新区张江高科技园区 | input my address
+tmomaym@outlook.com | 我的邮箱 | input my email
