@@ -64,6 +64,12 @@ class ShortcutManager:
         # 按键恢复状态追踪
         self._restoring_keys = set()
 
+        # 打断键：录音中或等待识别结果时按下，本次输入作废。留空则禁用
+        from config_client import ClientConfig as Config
+        self._cancel_key = (getattr(Config, 'cancel_recording_key', '') or '').lower().strip()
+        # 打断键抑制决策的锁存位，保证同一次按键的按下与松开处理一致
+        self._cancel_suppressed = False
+
         # 事件处理器
         self._event_handler = ShortcutEventHandler(self.tasks, self._pool, self._emulator)
 
@@ -104,6 +110,18 @@ class ShortcutManager:
             if self._check_emulating(key_name, msg):
                 return True
             if self._check_restoring(key_name, msg):
+                return True
+
+            # 打断键单独处理，不进入 tasks 状态机
+            if self._cancel_key and key_name == self._cancel_key:
+                try:
+                    suppress = self._handle_cancel_key(msg)
+                except Exception as e:
+                    logger.error(f"[{key_name}] 打断键处理异常: {e}")
+                    # 异常时沿用锁存值，保证按下与松开的抑制决策仍然配对
+                    suppress = self._cancel_suppressed
+                if suppress and self.keyboard_listener:
+                    self.keyboard_listener.suppress_event()
                 return True
 
             # 查找匹配的快捷键
@@ -189,6 +207,72 @@ class ShortcutManager:
                 self._pool.submit(self._emulator.emulate_mouse_click, button_name)
         else:
             task.finish()
+
+    # ========== 打断键处理 ==========
+
+    def _handle_cancel_key(self, msg: int) -> bool:
+        """
+        处理打断键事件
+
+        Args:
+            msg: Windows 键盘消息
+
+        Returns:
+            本次事件是否需要拦截（不传给前台程序）
+
+        抑制决策在 KEYDOWN 时锁存、KEYUP 时无条件沿用：判据（是否正在录音）会被
+        打断动作本身翻转，若两次各自判断就会「吞掉按下、放行松开」，前台程序会收到
+        没有配对按下的松开事件，pynput 组合键监听器的内部按键集合也会随之失衡。
+        """
+        if msg in KEY_DOWN_MESSAGES:
+            # 没有待处理的输入时完全不介入，按键照常传给前台程序
+            if not self.state.pending_task_id:
+                self._cancel_suppressed = False
+                return False
+
+            # 只在录音阶段拦截。等待识别结果阶段放行：那个状态依赖远程服务端回包，
+            # 一旦服务端不回，拦截会让打断键全局失灵
+            self._cancel_suppressed = self.state.recording
+
+            # 长按会产生连续 KEYDOWN，abort 自身幂等，重复触发会被忽略
+            for task in self.tasks.values():
+                if task.is_recording:
+                    task.abort()
+                    break
+            else:
+                # 按键已松开、正在等结果：没有录音可停，只需丢弃即将到来的结果
+                self._abort_pending_result()
+
+            return self._cancel_suppressed
+
+        if msg in KEY_UP_MESSAGES:
+            suppressed = self._cancel_suppressed
+            self._cancel_suppressed = False
+            return suppressed
+
+        return False
+
+    def _abort_pending_result(self) -> None:
+        """打断已进入等待识别结果阶段的任务：录音早已结束，只需丢弃结果"""
+        task_id = self.state.pending_task_id
+        if not task_id:
+            return
+        # 钩子线程只做派发，实际处理交给线程池，避免低级钩子超时被系统摘掉
+        self._pool.submit(self._finish_pending_abort, task_id)
+
+    def _finish_pending_abort(self, task_id: str) -> None:
+        """等待阶段打断的实际处理，在线程池中执行"""
+        from core.client.ui import show_cancelled_indicator
+
+        try:
+            logger.info(f"手动打断等待中的识别结果，任务ID: {task_id}")
+            self.state.mark_task_cancelled(task_id)
+            show_cancelled_indicator(self._cancel_key)
+
+            if self.app.companion.has_connections:
+                self.app.companion.emit_recording_cancel_threadsafe()
+        except Exception as e:
+            logger.error(f"打断等待中的识别结果失败: {e}", exc_info=True)
 
     # ========== 按键恢复管理 ==========
 
@@ -284,6 +368,9 @@ class ShortcutManager:
                 mode = "长按" if shortcut.hold_mode else "单击"
                 toggle = "可恢复" if shortcut.is_toggle_key() else "普通键"
                 logger.info(f"  [{shortcut.key}] {mode}模式, 阻塞:{shortcut.suppress}, {toggle}")
+
+        if self._cancel_key:
+            logger.info(f"  [{self._cancel_key}] 打断键，录音中阻塞、等待结果时放行")
 
     def stop(self) -> None:
         """停止所有监听器和清理资源"""

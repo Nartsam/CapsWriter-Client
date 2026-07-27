@@ -76,7 +76,7 @@ CapsWriter-Offline 是一个 Windows 离线语音输入工具（GitHub: HaujetZh
 |---|---|
 | `config_client.py` | 所有客户端配置项。快捷键列表 `shortcuts`、服务端地址、LLM 开关、热词阈值、粘贴模式等 |
 | `core/client/app.py` | **CapsWriterClient** 门面类。`__init__` 实例化所有子系统，`start()` 根据命令行参数选择 MicRunner 或 FileRunner |
-| `core/client/state.py` | **ClientState** dataclass。共享状态：`queue_in`（音频队列）、`websocket`、`recording`、`audio_files` 等 |
+| `core/client/state.py` | **ClientState** dataclass。共享状态：`queue_in`（音频队列）、`websocket`、`recording`、`audio_files` 等；`pending_task_id`（当前可打断的任务）与 `cancelled_task_ids`（已打断待丢弃结果的定长名单，见约定 12） |
 | `core/client/manager/mic_runner.py` | 麦克风模式运行器。启动顺序：托盘→提示→音频流→快捷键→UDP→热词→LLM→Companion→ResultProcessor |
 | `core/client/manager/file_runner.py` | 文件转录模式运行器。遍历文件，对媒体文件调用 FileTranscriber，对文本文件调用 SrtAdjuster |
 
@@ -88,7 +88,7 @@ CapsWriter-Offline 是一个 Windows 离线语音输入工具（GitHub: HaujetZh
 |---|---|
 | `shortcut_config.py` | **Shortcut** dataclass。字段：`key`、`type`(keyboard/mouse)、`suppress`(阻塞)、`hold_mode`(长按/单击)、`enabled` |
 | `key_mapper.py` | VK 码 ↔ 按键名称转换。`vk_to_name()` 用于钩子回调识别按键，`name_to_key()` 用于补发时获取 pynput Key 对象。包含 Windows 消息常量定义 |
-| `shortcut_manager.py` | **ShortcutManager**。创建 keyboard/mouse Listener，在 `win32_event_filter` 中处理按键事件。包含防自捕获逻辑（`_emulating_keys`、`_restoring_keys`） |
+| `shortcut_manager.py` | **ShortcutManager**。创建 keyboard/mouse Listener，在 `win32_event_filter` 中处理按键事件。包含防自捕获逻辑（`_emulating_keys`、`_restoring_keys`）与打断键处理（`_handle_cancel_key`，抑制决策锁存，见约定 12） |
 | `event_handler.py` | **ShortcutEventHandler**。处理 keydown/keyup 逻辑。hold_mode：按下→launch()，松开→判断时长→finish()/cancel()+补发。click_mode：单击切换录音 |
 | `emulator.py` | **ShortcutEmulator**。使用 pynput Controller 补发被阻塞的按键/鼠标点击。`_emulating_keys` 标志防止补发的按键被自身钩子再次捕获 |
 | `task.py` | **ShortcutTask**。单个快捷键的录音任务状态。`launch()`：记录时间→设状态→显示 UI→通知 Companion→启动 AudioRecorder。`finish()`：通知 Companion 结束录音→停止录音。`cancel()`：取消录音 |
@@ -100,7 +100,7 @@ CapsWriter-Offline 是一个 Windows 离线语音输入工具（GitHub: HaujetZh
 | 文件 | 职责 |
 |---|---|
 | `stream.py` | **AudioStreamManager**。使用 sounddevice 创建 48kHz InputStream，回调中将音频数据放入 `state.queue_in` |
-| `recorder.py` | **AudioRecorder**。从 `queue_in` 读取数据，通过 WebSocket 发送到服务端。支持本地保存（MP3/WAV）。协议使用 `AudioMessage` |
+| `recorder.py` | **AudioRecorder**。从 `queue_in` 读取数据，通过 WebSocket 发送到服务端。支持本地保存（MP3/WAV）。协议使用 `AudioMessage`。收到 `abort` 任务时丢弃未发送缓存、删除录音文件，但仍静默发一个 `is_final` 冲掉服务端缓冲（见约定 12） |
 | `file_manager.py` | **AudioFileManager**。管理录音文件的创建（MP3 via FFmpeg / WAV）、写入、关闭、按识别文本重命名 |
 
 ### 4. 连接与通信 (`core/client/connection/`)
@@ -157,7 +157,7 @@ CapsWriter-Offline 是一个 Windows 离线语音输入工具（GitHub: HaujetZh
 | 文件 | 职责 |
 |---|---|
 | `core/client/ui/__init__.py` | 客户端 UI 门面。注入 logger，重新导出 toast/tray/recording_indicator |
-| `core/client/ui/recording_indicator.py` | **RecordingIndicator**。录音悬浮指示器（Tk 实现，单例，线程安全）。显示录音时长、等待状态、处理进度、错误提示。通过 Windows API 获取输入光标位置定位。状态优先级：录音进行中时服务端分段进度只记录不切换模式（见约定 11） |
+| `core/client/ui/recording_indicator.py` | **RecordingIndicator**。录音悬浮指示器（Tk 实现，单例，线程安全）。显示录音时长、等待状态、处理进度、错误提示。通过 Windows API 获取输入光标位置定位。状态优先级：录音进行中时服务端分段进度只记录不切换模式（见约定 11）。手动打断时原地换成 `cancelled` 文案（浅蓝 `CANCEL_ACCENT`），1.2s 后自动隐藏 |
 | `core/client/ui/tips.py` | **TipsDisplay**。启动时的 Rich 控制台提示信息 |
 | `core/ui/toast.py` | Toast 浮动消息通知（Tk 实现，支持 Markdown 渲染） |
 | `core/ui/toast_base.py` | Toast 窗口基类。负责置顶无边框窗口、透明度、Canvas 透明色圆角背景、拖动、滚轮、复制、Markdown 最终视图字体/tag 样式同步，以及文字区域选择和空白/边缘区域拖动的事件隔离 |
@@ -176,7 +176,7 @@ CapsWriter-Offline 是一个 Windows 离线语音输入工具（GitHub: HaujetZh
 | `core/client/transcribe/srt_adjuster.py` | **SrtAdjuster**。调整 SRT 字幕时间轴 |
 | `core/client/udp/udp_control.py` | **UDPController**。监听 UDP 端口，接收 START/STOP 命令控制录音 |
 | `core/client/udp/udp_broadcaster.py` | 将识别结果通过 UDP 广播到配置的目标 |
-| `core/client/companion/companion_server.py` | **CompanionServer**。Companion WebSocket 服务器，管理与 Electron 伴侣应用的连接。当有客户端连接时，CapsWriter 跳过本地 LLM，将去前缀后的文本直接转发给 Electron |
+| `core/client/companion/companion_server.py` | **CompanionServer**。Companion WebSocket 服务器，管理与 Electron 伴侣应用的连接。当有客户端连接时，CapsWriter 跳过本地 LLM，将去前缀后的文本直接转发给 Electron。事件：`recording_start` / `recording_end` / `recording_cancel`（作废与正常结束分开）/ `user_message` |
 | `core/client/companion/companion_protocol.py` | Companion 通信协议。定义出站事件类型（`EventType`）和 JSON 消息构造函数（`make_event`） |
 | `core/client/global_hotkey/global_hotkey.py` | **GlobalHotkeyManager**。使用 pynput GlobalHotKeys 实现全局快捷键（单例） |
 
@@ -253,8 +253,16 @@ AudioRecorder (recorder.py)
     → 是: task.finish() → state.queue_in.put(finish)
     → 否: task.cancel() → emulator.emulate_key() (补发按键)
 
+用户按下打断键（录音中 / 等待结果中，见约定 12）
+  → win32_event_filter → ShortcutManager._handle_cancel_key
+  → 录音中: task.abort() → state.queue_in.put(abort)
+             → AudioRecorder 丢缓存 + 删录音文件 + 静默发 is_final
+  → 等待中: ShortcutManager._abort_pending_result()
+  → state.mark_task_cancelled(task_id) + show_cancelled_indicator()
+
 服务端返回结果
   → ResultProcessor._handle_message (result_processor.py)
+  → 命中打断名单则整条流水线跳过（最终包同时移出名单）
   → 热词替换 (PhonemeCorrector + RuleCorrector)
   → 去标点 (TextOutput.strip_punc)
   → LLM 润色 (LLMHandler.process_and_output, 可选)
@@ -314,6 +322,7 @@ Electron 应用连接到 ws://127.0.0.1:6019
 9. **多 Tk 解释器与字体约束**：录音指示器与 Toast 弹窗分别在独立线程运行各自的 Tk 解释器；创建 `tkinter.font.Font` 时必须显式传 `root=` 绑定所属窗口的解释器，否则命名字体会建到进程内第一个 Tk（`_default_root`）上，跨解释器引用时字体名会被当作不存在的字体家族，静默回退为小号宋体
 10. **OpenMate 展示**：toast 角色在 LLM 调用前探测 OpenMate（`config_client.py` 的 `openmate_*` 配置），可用则自动获取角色情绪状态列表、注入情绪标签指令（标签用状态 ID，别名作语义注解）并将流式输出转交 OpenMate 展示；`<state:...>` 标签由 OpenMate 解析剥离，本地存历史/广播前也统一剥离。OpenMate 隐藏在托盘时收到消息会自行无激活恢复显示，无需客户端干预。`openmate_character` 留空时每次请求走 `GET /v1/presentation` 解析当前生效角色，按该角色取情绪状态并把流/分段队列固定到它
 11. **悬浮指示器状态优先级**：录音进行中（`mode == "recording"`）时服务端回传的分段进度只更新数据、不切换模式。麦克风边录边发，服务端每攒够 `mic_seg_duration + mic_seg_overlap * 2`（默认 68s）才切一段回传一次，切成 progress 会让实时录音计时被一个一分钟内都不变的「已处理」时长顶掉
+12. **录音打断**：`cancel_recording_key`（默认 esc，留空禁用）在录音中或等待识别结果时按下，本次输入彻底作废（不上屏、不触发角色、不写日记、删除录音文件）。服务端的 `AudioCache` 按连接持有、只有 `is_final` 才 reset，所以打断**必须仍发一个 `is_final`** 冲掉缓冲，否则残余音频会拼进下一次录音；结果回来后按 `cancelled_task_ids` 在 `_handle_message` 入口丢弃（含非最终包）。**抑制决策必须在 KEYDOWN 锁存、KEYUP 沿用**——判据 `state.recording` 会被打断动作自身翻转，两次分别判断会产生「吞掉按下、放行松开」的不配对事件，前台程序与 pynput 组合键状态都会因此错乱。只在录音阶段拦截，等待结果阶段放行（那个状态依赖远程服务端回包，拦截会让打断键全局失灵）。打断键分支运行在键盘钩子线程里，只做状态翻转和派发：低级钩子超过 300ms 会被系统摘掉，之后所有快捷键失效
 
 ---
 
@@ -338,6 +347,7 @@ Electron 应用连接到 ws://127.0.0.1:6019
 | 修改按键映射 | `shortcut/key_mapper.py` |
 | 修改按键补发逻辑 | `shortcut/emulator.py` |
 | 修改钩子事件处理 | `shortcut/shortcut_manager.py` |
+| 修改录音打断行为 | `config_client.py` (`cancel_recording_key`)、`shortcut/shortcut_manager.py` (`_handle_cancel_key`)、`shortcut/task.py` (`abort`)、`audio/recorder.py` (abort 分支) |
 | 修改录音/音频发送 | `audio/recorder.py`, `audio/stream.py` |
 | 修改识别结果处理 | `output/result_processor.py` |
 | 修改文本输出方式 | `output/text_output.py` |

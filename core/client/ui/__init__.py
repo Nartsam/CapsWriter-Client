@@ -34,6 +34,7 @@ from core.client.ui.recording_indicator import (
     show_waiting_indicator,
     show_processing_indicator,
     update_recording_indicator_progress,
+    show_cancelled_indicator,
     show_recording_indicator_error,
     hide_recording_indicator,
 )
@@ -55,6 +56,7 @@ __all__ = [
     'show_waiting_indicator',
     'show_processing_indicator',
     'update_recording_indicator_progress',
+    'show_cancelled_indicator',
     'show_recording_indicator_error',
     'hide_recording_indicator',
     'on_add_hotword',

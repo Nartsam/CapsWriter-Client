@@ -34,6 +34,11 @@ class ClientConfig:
 
     threshold    = 0.5          # 快捷键触发阈值（秒）
 
+    # 录音打断键：录音过程中或等待识别结果时按下，本次输入彻底作废（不上屏、不触发角色、不留录音）
+    # 录音期间该键会被拦截、不传给前台程序；等待结果期间放行（避免服务端不回包时该键全局失灵）
+    # 留空则禁用此功能。与中断 LLM 输出的 llm_stop_key 相互独立
+    cancel_recording_key = 'esc'
+
     paste        = False        # 是否以写入剪切板然后模拟 Ctrl-V 粘贴的方式输出结果
     restore_clip = True         # 模拟粘贴后是否恢复剪贴板
     paste_apps   = ['WeiXin.exe', 'Telegram.exe']  # 匹配时强制粘贴

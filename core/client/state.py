@@ -10,9 +10,10 @@ from __future__ import annotations
 
 import asyncio
 import time
+from collections import deque
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Optional, Dict, Any
+from typing import TYPE_CHECKING, Deque, Optional, Dict, Any
 
 if TYPE_CHECKING:
     import sounddevice as sd
@@ -63,6 +64,14 @@ class ClientState:
     recording_start_time: float = 0.0
     audio_files: Dict[str, Path] = field(default_factory=dict)
 
+    # 当前正在录音或等待识别结果的任务 ID：录音任务创建时写入，最终结果到达或被打断时清空。
+    # 打断键只在它非空时有效，这样「录音中」和「松开后等结果」两个阶段用同一个判据。
+    pending_task_id: Optional[str] = None
+
+    # 已被打断、结果需要丢弃的任务 ID。服务端对每个任务必定回一个最终包（残余音频
+    # 不足 0.1s 也会跳过推理直接回），收到即移除；定长队列兜底，避免服务端异常时条目滞留。
+    cancelled_task_ids: Deque[str] = field(default_factory=lambda: deque(maxlen=8))
+
     # 最近一次识别结果（用于手动添加纠错记录）
     last_recognition_text: Optional[str] = None
     
@@ -102,7 +111,9 @@ class ClientState:
         self.recording = False
         self.recording_start_time = 0.0
         self.audio_files.clear()
-        
+        self.pending_task_id = None
+        self.cancelled_task_ids.clear()
+
         logger.debug("客户端状态重置完成")
     
     def start_recording(self, start_time: float) -> None:
@@ -167,6 +178,31 @@ class ClientState:
         if file_path:
             logger.debug(f"获取音频文件: task_id={task_id}, path={file_path}")
         return file_path
+
+    def mark_task_cancelled(self, task_id: Optional[str]) -> None:
+        """
+        标记任务已被打断，其识别结果到达后应被丢弃
+
+        Args:
+            task_id: 任务ID；为空表示录音尚未拿到任务ID，无需登记
+        """
+        self.pending_task_id = None
+        if not task_id or task_id in self.cancelled_task_ids:
+            return
+        self.cancelled_task_ids.append(task_id)
+        logger.debug(f"任务已标记为打断: {task_id}")
+
+    def is_task_cancelled(self, task_id: str) -> bool:
+        """检查任务是否已被打断"""
+        return task_id in self.cancelled_task_ids
+
+    def release_cancelled_task(self, task_id: str) -> None:
+        """收到被打断任务的最终结果后，将其移出打断名单"""
+        try:
+            self.cancelled_task_ids.remove(task_id)
+            logger.debug(f"打断任务已收尾: {task_id}")
+        except ValueError:
+            pass
 
     def set_output_text(self, text: str) -> None:
         """

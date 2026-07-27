@@ -195,6 +195,14 @@ class ResultProcessor:
         if message is None:
             return
 
+        # 已被手动打断的任务：整条流水线都不执行（热词、角色识别、LLM、上屏、
+        # 日记、录音重命名一个都不做）。非最终结果一并丢弃，否则悬浮提示会在
+        # 「已打断」之后又被分段进度顶回去
+        if self.state.is_task_cancelled(message.task_id):
+            if message.is_final:
+                self.state.release_cancelled_task(message.task_id)
+                logger.info(f"丢弃已打断任务的识别结果，任务ID: {message.task_id}")
+            return
 
         # 使用 text 字段（简单拼接结果，用于语音输入）
         text = message.text
@@ -216,6 +224,9 @@ class ResultProcessor:
             return
 
         # 最终结果已返回，后续还要做热词、LLM 和输出处理
+        # 同时关闭打断窗口：从这里开始文本随时可能上屏，已经无法"作废"
+        if self.state.pending_task_id == message.task_id:
+            self.state.pending_task_id = None
         show_processing_indicator()
 
         # 繁体转换

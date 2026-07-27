@@ -86,6 +86,9 @@ class CompanionServer:
     async def emit_recording_end(self) -> None:
         await self.broadcast(make_event(EventType.RECORDING_END))
 
+    async def emit_recording_cancel(self) -> None:
+        await self.broadcast(make_event(EventType.RECORDING_CANCEL))
+
     async def emit_user_message(self, text: str, role: str) -> None:
         """发送去前缀后的用户文本，由 Electron 端接管后续处理"""
         await self.broadcast(make_event(
@@ -103,6 +106,11 @@ class CompanionServer:
         if not self._clients or not self._loop:
             return
         asyncio.run_coroutine_threadsafe(self.emit_recording_end(), self._loop)
+
+    def emit_recording_cancel_threadsafe(self) -> None:
+        if not self._clients or not self._loop:
+            return
+        asyncio.run_coroutine_threadsafe(self.emit_recording_cancel(), self._loop)
 
     # --- 内部方法 ---
 

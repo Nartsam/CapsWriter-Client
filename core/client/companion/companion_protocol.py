@@ -16,6 +16,8 @@ class EventType:
     STATUS = 'status'
     RECORDING_START = 'recording_start'
     RECORDING_END = 'recording_end'
+    # 录音被主动打断：与 RECORDING_END 分开，让对端能区分「说完了」和「作废了」
+    RECORDING_CANCEL = 'recording_cancel'
     USER_MESSAGE = 'user_message'
 
 

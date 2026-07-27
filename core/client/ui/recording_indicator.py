@@ -42,6 +42,8 @@ FG_TITLE = "#333333"
 FG_DETAIL = "#333333"
 ACCENT = "#0078D7"
 ERROR_ACCENT = "#dc2626"
+# 手动打断是用户主动行为而非故障，用提亮的浅蓝而不是错误红。
+CANCEL_ACCENT = "#7FB9E8"
 
 # 面板固定尺寸：固定布局能避免文字挤压、重排和越界。
 MARGIN = 0
@@ -105,7 +107,7 @@ class GUITHREADINFO(ctypes.Structure):
 class IndicatorState:
     """悬浮指示器的当前状态快照，所有字段都只在 Tk 线程中消费。"""
 
-    # hidden / recording / waiting / progress / processing / error
+    # hidden / recording / waiting / progress / processing / cancelled / error
     mode: str = "hidden"
     # 录音开始时间，用于持续计算录音秒数。
     start_time: float = 0.0
@@ -117,6 +119,8 @@ class IndicatorState:
     preview_text: str = ""
     # 内部快捷键名，渲染前会转成人类可读中文名称。
     shortcut_key: str = ""
+    # 触发手动打断的按键名，同样渲染前转成中文名称。
+    cancel_key: str = ""
     # 错误提示自动隐藏的截止时间戳。
     auto_hide_at: float = 0.0
     # 提示框锚点：输入光标位置或屏幕中心靠下的位置。
@@ -179,6 +183,10 @@ class RecordingIndicator:
     def update_progress(self, duration: Optional[float] = None, preview: str = "") -> None:
         """更新服务端已返回的识别进度。"""
         self._post("progress", duration=duration or 0.0, preview=preview or "")
+
+    def show_cancelled(self, cancel_key: str = "", duration_ms: int = 1200) -> None:
+        """显示手动打断状态，短暂停留后自动隐藏。"""
+        self._post("cancelled", cancel_key=cancel_key, duration_ms=duration_ms)
 
     def show_error(self, text: str, duration_ms: int = 2000) -> None:
         """显示错误并自动隐藏。"""
@@ -298,6 +306,15 @@ class RecordingIndicator:
             self.state.progress_duration = payload.get("duration", 0.0)
             self.state.preview_text = payload.get("preview", "")
             self.state.auto_hide_at = 0.0
+        elif action == "cancelled":
+            # 手动打断：沿用当前锚点让提示原地换文案，短暂停留后自动隐藏。
+            if not self.state.anchor:
+                self.state.anchor, self.state.anchor_source = self._get_anchor()
+            self.state.mode = "cancelled"
+            self.state.cancel_key = payload.get("cancel_key", "")
+            self.state.progress_duration = 0.0
+            self.state.preview_text = ""
+            self.state.auto_hide_at = time.time() + payload.get("duration_ms", 1200) / 1000
         elif action == "error":
             # 网络或发送失败时显示短暂错误提示。
             if not self.state.anchor:
@@ -563,6 +580,10 @@ class RecordingIndicator:
         if self.state.mode == "processing":
             return f"正在处理结果{dots}", "即将输出到当前窗口", ACCENT
 
+        if self.state.mode == "cancelled":
+            cancel_name = self._format_shortcut_name(self.state.cancel_key)
+            return f"已按 {cancel_name}手动打断", "识别结果已丢弃", CANCEL_ACCENT
+
         if self.state.mode == "error":
             return "识别未发送", self.state.preview_text or "服务端未连接", ERROR_ACCENT
 
@@ -666,11 +687,11 @@ class RecordingIndicator:
             "scroll_lock": "滚动锁定键",
             "space": "空格键",
             "enter": "回车键",
-            "tab": "Tab 键",
+            "tab": "制表键",
             "backspace": "退格键",
-            "delete": "Delete 键",
-            "insert": "Insert 键",
-            "esc": "Esc 键",
+            "delete": "删除键",
+            "insert": "插入键",
+            "esc": "退出键",
             "home": "Home 键",
             "end": "End 键",
             "page_up": "Page Up 键",
@@ -709,6 +730,10 @@ def show_processing_indicator() -> None:
 
 def update_recording_indicator_progress(duration: Optional[float] = None, preview: str = "") -> None:
     RecordingIndicator().update_progress(duration, preview)
+
+
+def show_cancelled_indicator(cancel_key: str = "", duration_ms: int = 1200) -> None:
+    RecordingIndicator().show_cancelled(cancel_key, duration_ms)
 
 
 def show_recording_indicator_error(text: str, duration_ms: int = 2000) -> None:

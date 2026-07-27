@@ -11,6 +11,8 @@ from __future__ import annotations
 import asyncio
 import base64
 import uuid
+from pathlib import Path
+from subprocess import Popen
 from typing import TYPE_CHECKING, Optional
 
 import numpy as np
@@ -21,6 +23,7 @@ from core.client.state import console
 from core.client.audio.file_manager import AudioFileManager
 from core.client.connection import WebSocketManager
 from core.protocol import AudioMessage
+from core.tools.asyncio_to_thread import to_thread
 from . import logger
 
 if TYPE_CHECKING:
@@ -64,25 +67,35 @@ class AudioRecorder:
         """快捷访问桥接到 app.ws"""
         return self.app.ws
     
-    async def _send_message(self, message: AudioMessage) -> None:
-        """发送消息到服务端"""
+    async def _send_message(self, message: AudioMessage, quiet: bool = False) -> None:
+        """
+        发送消息到服务端
+
+        Args:
+            message: 待发送的音频协议消息
+            quiet: 静默模式，发送失败不弹错误提示。用于手动打断——用户已经明确
+                   表示不要这次结果，服务端连没连上都无所谓，弹错误只会把
+                   「已手动打断」的提示顶掉
+        """
         if not self._ws_manager.is_connected:
             if message.is_final:
                 self.state.pop_audio_file(message.task_id)
                 console.print('    服务端未连接，无法发送\n')
                 logger.warning("服务端未连接，无法发送音频数据")
-                # 最终包发送失败时，悬浮提示改为错误状态并自动隐藏。
-                from core.client.ui import show_recording_indicator_error
-                show_recording_indicator_error("服务端未连接，无法发送音频")
+                if not quiet:
+                    # 最终包发送失败时，悬浮提示改为错误状态并自动隐藏。
+                    from core.client.ui import show_recording_indicator_error
+                    show_recording_indicator_error("服务端未连接，无法发送音频")
             return
-        
+
         # 使用 WebSocketManager 发送协议消息
         success = await self._ws_manager.send(message)
         if not success and message.is_final:
             self.state.pop_audio_file(message.task_id)
-            # WebSocketManager 返回发送失败时，用悬浮提示反馈给用户。
-            from core.client.ui import show_recording_indicator_error
-            show_recording_indicator_error("音频发送失败")
+            if not quiet:
+                # WebSocketManager 返回发送失败时，用悬浮提示反馈给用户。
+                from core.client.ui import show_recording_indicator_error
+                show_recording_indicator_error("音频发送失败")
             # 具体错误日志由 WebSocketManager 记录
     
     async def record_and_send(self) -> None:
@@ -95,6 +108,8 @@ class AudioRecorder:
         try:
             # 生成唯一任务 ID
             self.task_id = str(uuid.uuid1())
+            # 登记为待处理任务，打断键据此判断当前是否有可打断的输入
+            self.state.pending_task_id = self.task_id
             logger.debug(f"创建录音任务，任务ID: {self.task_id}")
             
             self._start_time = 0.0
@@ -205,9 +220,73 @@ class AudioRecorder:
                     )
                     asyncio.create_task(self._send_message(message))
                     break
-                    
+
+                elif task['type'] == 'abort':
+                    # 手动打断：未发送的缓存直接丢弃，但仍要发一个 is_final。
+                    # 服务端的 AudioCache 是按连接持有的，只有 is_final 才会 reset，
+                    # 不发的话这次录音的残余音频会拼到下一次录音前面去。
+                    self._cache.clear()
+                    self._discard_audio_file()
+
+                    console.print(f'任务标识：{self.task_id}')
+                    console.print('    已手动打断，识别结果将被丢弃\n')
+                    logger.info(f"录音任务被打断，任务ID: {self.task_id}, 已录 {self._duration:.2f}s")
+
+                    message = AudioMessage(
+                        task_id=self.task_id,
+                        source='mic',
+                        data='',
+                        is_final=True,
+                        time_start=self._start_time,
+                        seg_duration=Config.mic_seg_duration,
+                        seg_overlap=Config.mic_seg_overlap,
+                        context=Config.context,
+                        language=Config.language,
+                    )
+                    asyncio.create_task(self._send_message(message, quiet=True))
+                    break
+
         except Exception as e:
             logger.error(f"录音任务错误: {e}", exc_info=True)
+
+    def _discard_audio_file(self) -> None:
+        """关闭并删除本次录音文件（手动打断时调用）"""
+        if self.task_id:
+            self.state.pop_audio_file(self.task_id)
+
+        if not self._file_manager:
+            return
+
+        # finish() 会把 file_handle 置空，先取出来供后面判断是否需要等子进程退出
+        handle = self._file_manager.file_handle
+        file_path = self._file_manager.finish()
+        self._file_manager = None
+        if not file_path:
+            return
+
+        asyncio.create_task(self._delete_audio_file(Path(file_path), handle))
+
+    async def _delete_audio_file(self, file_path: Path, handle) -> None:
+        """等待文件句柄真正释放后删除录音文件
+
+        用 FFmpeg 保存时句柄是子进程，关掉 stdin 后它还要写完文件尾才退出，
+        立刻删会因文件被占用而失败。等待放到线程里做，不阻塞事件循环。
+        """
+        def _wait_and_delete() -> None:
+            if isinstance(handle, Popen):
+                try:
+                    handle.wait(timeout=5)
+                except Exception:
+                    logger.debug("等待 FFmpeg 退出超时，仍尝试删除录音文件")
+            try:
+                file_path.unlink()
+                logger.debug(f"已删除被打断的录音文件: {file_path}")
+            except FileNotFoundError:
+                pass
+            except Exception as e:
+                logger.warning(f"删除被打断的录音文件失败: {e}")
+
+        await to_thread(_wait_and_delete)
     
     def get_file_manager(self) -> Optional[AudioFileManager]:
         """获取当前的文件管理器"""
