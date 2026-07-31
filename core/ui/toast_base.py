@@ -4,9 +4,10 @@ Toast 窗口基础模块
 提供 Toast 窗口的抽象基类和通用工具函数。
 """
 import logging
+import math
 import tkinter as tk
 from tkinter import font
-from typing import Optional, Callable, Union
+from typing import Optional, Callable, Any, Tuple
 from abc import ABC, abstractmethod
 import ctypes
 
@@ -16,7 +17,10 @@ from tkhtmlview import HTMLLabel
 from .toast_constants import (
     DEFAULT_FONT_FAMILY,
     DEFAULT_PADDING_X,
-    DEFAULT_PADDING_Y,
+    DEFAULT_PADDING_TOP,
+    DEFAULT_PADDING_BOTTOM,
+    DEFAULT_MIN_WIDTH_PX,
+    DEFAULT_MAX_WIDTH_PX,
     MIN_WINDOW_HEIGHT,
     MARKDOWN_MIN_HEIGHT,
     SCROLL_STEP,
@@ -84,7 +88,10 @@ class ToastWindowBase(ABC):
         bg: str,
         fg: str,
         duration: int,
-        initial_width: Union[float, int],
+        min_width_px: Any,
+        max_width_px: Any,
+        min_width_ratio: Any,
+        max_width_ratio: Any,
         initial_height: int,
         streaming: bool,
         stop_callback: Optional[Callable[[], None]],
@@ -103,7 +110,10 @@ class ToastWindowBase(ABC):
             bg: 背景颜色
             fg: 前景色（文字颜色）
             duration: 自动关闭时长（毫秒）
-            initial_width: 初始宽度，0-1 为屏幕比例，>1 为像素值
+            min_width_px: 最小宽度像素值，合法时优先于比例值
+            max_width_px: 最大宽度像素值，合法时优先于比例值
+            min_width_ratio: 像素值无效时使用的最小屏幕宽度比例
+            max_width_ratio: 像素值无效时使用的最大屏幕宽度比例
             initial_height: 初始高度，0 表示自动计算
             streaming: 是否为流式输出模式
             stop_callback: 窗口关闭时的回调函数
@@ -119,7 +129,6 @@ class ToastWindowBase(ABC):
         self.markdown = markdown_enabled
         self.editable = editable
         self.duration = duration
-        self.initial_width = initial_width
         self.initial_height = initial_height
         self.window_alpha = max(0.2, min(float(window_alpha), 1.0))
         self.corner_radius = max(0, int(corner_radius))
@@ -129,10 +138,14 @@ class ToastWindowBase(ABC):
         self.mouse_inside = False
         self.timer_id: Optional[str] = None
         
-        # 拖动位置
-        self.x = 0
-        self.y = 0
+        # 拖动锚点：按下时同时记录指针屏幕坐标和窗口左上角，
+        # 拖动中用「指针位移 + 起始窗口位置」计算，避免逐帧累加误差
         self._dragging_from_text_blank = False
+        self._user_dragged = False
+        self._drag_pointer_x = 0
+        self._drag_pointer_y = 0
+        self._drag_window_x = 0
+        self._drag_window_y = 0
         
         # 保存完整文本和样式配置（用于 Markdown 渲染）
         self.full_text = text
@@ -155,8 +168,17 @@ class ToastWindowBase(ABC):
         self.window.configure(bg=TRANSPARENT_COLOR if self.corner_radius > 0 else bg)
         self.window.resizable(True, True)
         self.window.pack_propagate(False)
-        if self.corner_radius > 0:
-            self._init_rounded_host()
+        self._init_content_host()
+
+        screen_width = self.window.winfo_screenwidth()
+        self.min_width, self.max_width = self._resolve_width_range(
+            min_width_px,
+            max_width_px,
+            min_width_ratio,
+            max_width_ratio,
+            screen_width,
+        )
+        self.current_width = self.min_width
         
         # 绑定通用事件
         self._bind_common_events()
@@ -181,19 +203,59 @@ class ToastWindowBase(ABC):
         self.window.bind('<Button-5>', self._on_mouse_wheel)  # Linux 向下滚动
         self.window.bind('<Control-c>', self._on_copy)        # Ctrl+C 复制
 
-    def _calculate_actual_width(self) -> int:
-        """计算实际窗口宽度
-        
-        Returns:
-            窗口宽度（像素）
-        """
-        screen_width = self.window.winfo_screenwidth()
-        if 0 < self.initial_width < 1:
-            # 0-1 之间的小数，使用屏幕宽度的比例
-            return int(screen_width * self.initial_width)
-        else:
-            # 绝对值（像素）
-            return int(self.initial_width)
+    @staticmethod
+    def _valid_number(value: Any) -> Optional[float]:
+        """解析有限正数；bool 虽是 int 子类，但不接受为尺寸配置。"""
+        if isinstance(value, bool):
+            return None
+        try:
+            number = float(value)
+        except (TypeError, ValueError):
+            return None
+        return number if math.isfinite(number) and number > 0 else None
+
+    @classmethod
+    def _resolve_width_bound(
+        cls,
+        pixel_value: Any,
+        ratio_value: Any,
+        screen_width: int,
+        fallback: int,
+    ) -> int:
+        """按“像素 → 屏幕比例 → 内置像素值”的顺序解析宽度边界。"""
+        pixel = cls._valid_number(pixel_value)
+        if pixel is not None and pixel >= 1:
+            return int(pixel)
+
+        ratio = cls._valid_number(ratio_value)
+        if ratio is not None and ratio <= 1:
+            return max(1, int(screen_width * ratio))
+
+        return fallback
+
+    @classmethod
+    def _resolve_width_range(
+        cls,
+        min_width_px: Any,
+        max_width_px: Any,
+        min_width_ratio: Any,
+        max_width_ratio: Any,
+        screen_width: int,
+    ) -> Tuple[int, int]:
+        """解析最小/最大宽度；反向区间整体回退，等宽区间允许固定宽度。"""
+        min_width = cls._resolve_width_bound(
+            min_width_px, min_width_ratio, screen_width, DEFAULT_MIN_WIDTH_PX
+        )
+        max_width = cls._resolve_width_bound(
+            max_width_px, max_width_ratio, screen_width, DEFAULT_MAX_WIDTH_PX
+        )
+        if min_width > max_width:
+            logger.warning(
+                "Toast 最小宽度大于最大宽度，已回退到 "
+                f"{DEFAULT_MIN_WIDTH_PX}～{DEFAULT_MAX_WIDTH_PX}px"
+            )
+            return DEFAULT_MIN_WIDTH_PX, DEFAULT_MAX_WIDTH_PX
+        return min_width, max_width
 
     @staticmethod
     def _invert_color(hex_color: str) -> str:
@@ -229,16 +291,17 @@ class ToastWindowBase(ABC):
         }
         return aliases.get(font_family, font_family)
 
-    def _init_rounded_host(self) -> None:
-        """创建透明 Canvas 宿主，用 Canvas 圆角背景避免 Windows 黑色边角。"""
-        try:
-            self.window.attributes('-transparentcolor', TRANSPARENT_COLOR)
-        except tk.TclError as e:
-            logger.debug(f"当前 Tk 环境不支持 transparentcolor: {e}")
+    def _init_content_host(self) -> None:
+        """创建 Canvas 内容宿主，为顶部空白拖动区和圆角背景提供统一布局。"""
+        if self.corner_radius > 0:
+            try:
+                self.window.attributes('-transparentcolor', TRANSPARENT_COLOR)
+            except tk.TclError as e:
+                logger.debug(f"当前 Tk 环境不支持 transparentcolor: {e}")
 
         self.content_canvas = tk.Canvas(
             self.window,
-            bg=TRANSPARENT_COLOR,
+            bg=TRANSPARENT_COLOR if self.corner_radius > 0 else self.bg,
             highlightthickness=0,
             bd=0
         )
@@ -260,7 +323,7 @@ class ToastWindowBase(ABC):
 
         self._content_window_item = self.content_canvas.create_window(
             DEFAULT_PADDING_X,
-            DEFAULT_PADDING_Y,
+            DEFAULT_PADDING_TOP,
             anchor='nw',
             window=widget,
         )
@@ -282,7 +345,7 @@ class ToastWindowBase(ABC):
 
         通过透明色 Canvas 绘制圆角矩形，不使用 SetWindowRgn，避免圆角处出现黑底。
         """
-        if self.corner_radius <= 0 or self.content_canvas is None:
+        if self.content_canvas is None:
             return
 
         try:
@@ -293,33 +356,36 @@ class ToastWindowBase(ABC):
                 return
 
             self.content_canvas.config(width=width, height=height)
-            self.content_canvas.delete(self._background_item)
+            if self.corner_radius > 0:
+                self.content_canvas.delete(self._background_item)
 
-            radius = max(1, min(self.corner_radius, width // 2, height // 2))
-            points = [
-                radius, 0, width - radius, 0,
-                width, 0, width, radius,
-                width, height - radius, width, height,
-                width - radius, height, radius, height,
-                0, height, 0, height - radius,
-                0, radius, 0, 0,
-            ]
-            self._background_item = self.content_canvas.create_polygon(
-                points,
-                smooth=True,
-                splinesteps=18,
-                fill=self.bg,
-                outline="",
-            )
-            self.content_canvas.tag_lower(self._background_item)
+                radius = max(1, min(self.corner_radius, width // 2, height // 2))
+                points = [
+                    radius, 0, width - radius, 0,
+                    width, 0, width, radius,
+                    width, height - radius, width, height,
+                    width - radius, height, radius, height,
+                    0, height, 0, height - radius,
+                    0, radius, 0, 0,
+                ]
+                self._background_item = self.content_canvas.create_polygon(
+                    points,
+                    smooth=True,
+                    splinesteps=18,
+                    fill=self.bg,
+                    outline="",
+                )
+                self.content_canvas.tag_lower(self._background_item)
 
             if self._content_window_item is not None:
                 content_width = max(1, width - DEFAULT_PADDING_X * 2)
-                content_height = max(1, height - DEFAULT_PADDING_Y * 2)
+                content_height = max(
+                    1, height - DEFAULT_PADDING_TOP - DEFAULT_PADDING_BOTTOM
+                )
                 self.content_canvas.coords(
                     self._content_window_item,
                     DEFAULT_PADDING_X,
-                    DEFAULT_PADDING_Y,
+                    DEFAULT_PADDING_TOP,
                 )
                 self.content_canvas.itemconfigure(
                     self._content_window_item,
@@ -328,6 +394,54 @@ class ToastWindowBase(ABC):
                 )
         except tk.TclError as e:
             logger.debug(f"应用 Toast 圆角失败: {e}")
+
+    def _measure_text_width(self, text: str, text_font: font.Font) -> int:
+        """测量最长可视行需要的总窗口宽度。"""
+        lines = text.splitlines() or ['']
+        content_width = max(text_font.measure(line.expandtabs(4)) for line in lines)
+        return content_width + DEFAULT_PADDING_X * 2
+
+    def _on_width_changed(self, _new_width: int) -> None:
+        """宽度变化钩子，供需要显式设置换行宽度的子类覆盖。"""
+
+    def _set_geometry(self, width: int, height: int, x: int, y: int) -> None:
+        """设置尺寸和位置。"""
+        self.window.geometry(
+            f"{int(width)}x{int(height)}+{int(x)}+{int(y)}"
+        )
+
+    def _set_position(self, x: int, y: int) -> None:
+        """只设置位置。"""
+        self.window.geometry(f"+{int(x)}+{int(y)}")
+
+    def _grow_to_fit_text(self, text: str, text_font: font.Font) -> bool:
+        """按文本需要增宽窗口；窗口生命周期内只增不减。"""
+        current_width = max(self.current_width, self.window.winfo_width())
+        # 已经顶到最大宽度就不必再测量：流式输出每来一个分片都会调用这里，
+        # 而测量成本随全文长度线性增长，不早退会退化成 O(n²)。
+        if current_width >= self.max_width:
+            return False
+
+        desired_width = min(
+            self.max_width,
+            max(self.min_width, self._measure_text_width(text, text_font)),
+        )
+        if desired_width <= current_width:
+            return False
+
+        current_x = self.window.winfo_x()
+        current_y = self.window.winfo_y()
+        current_height = self.window.winfo_height()
+        if self._user_dragged:
+            new_x = current_x
+        else:
+            new_x = int(current_x + (current_width - desired_width) / 2)
+
+        self.current_width = desired_width
+        self._set_geometry(desired_width, current_height, new_x, current_y)
+        self._apply_window_shape()
+        self._on_width_changed(desired_width)
+        return True
 
     def _bind_selectable_text_widget(self, widget: tk.Widget) -> None:
         """让文本控件保留选择/复制能力，同时阻止事件继续触发窗口拖动。"""
@@ -397,8 +511,10 @@ class ToastWindowBase(ABC):
     def _on_drag_start(self, event: tk.Event) -> None:
         """拖动开始"""
         self.pause = True
-        self.x = event.x
-        self.y = event.y
+        self._drag_pointer_x = event.x_root
+        self._drag_pointer_y = event.y_root
+        self._drag_window_x = self.window.winfo_x()
+        self._drag_window_y = self.window.winfo_y()
 
     def _on_drag_stop(self, event: tk.Event) -> None:
         """拖动结束"""
@@ -406,11 +522,13 @@ class ToastWindowBase(ABC):
 
     def _on_drag_motion(self, event: tk.Event) -> None:
         """拖动中，更新窗口位置"""
-        deltax = event.x - self.x
-        deltay = event.y - self.y
-        x = self.window.winfo_x() + deltax
-        y = self.window.winfo_y() + deltay
-        self.window.geometry(f"+{x}+{y}")
+        deltax = event.x_root - self._drag_pointer_x
+        deltay = event.y_root - self._drag_pointer_y
+        x = self._drag_window_x + deltax
+        y = self._drag_window_y + deltay
+        if x != self._drag_window_x or y != self._drag_window_y:
+            self._user_dragged = True
+        self._set_position(x, y)
 
     def _on_mouse_wheel(self, event: tk.Event) -> str:
         """滚轮调整窗口垂直位置
@@ -456,12 +574,12 @@ class ToastWindowBase(ABC):
                 # 向上滚动（减小 y）
                 target_y = max(current_y - SCROLL_STEP, top_limit)
                 if target_y != current_y:
-                    self.window.geometry(f"+{self.window.winfo_x()}+{int(target_y)}")
+                    self._set_position(self.window.winfo_x(), int(target_y))
             elif not is_scroll_up and can_scroll_down:
                 # 向下滚动（增加 y）
                 target_y = min(current_y + SCROLL_STEP, bottom_limit)
                 if target_y != current_y:
-                    self.window.geometry(f"+{self.window.winfo_x()}+{int(target_y)}")
+                    self._set_position(self.window.winfo_x(), int(target_y))
 
             return "break"
         except tk.TclError as e:
@@ -557,34 +675,6 @@ class ToastWindowBase(ABC):
     # Markdown 渲染
     # --------------------------------------------------------
 
-    def _calculate_height_coefficient(self, content_height: int) -> float:
-        """根据内容高度计算边距系数
-
-        使用指数衰减曲线：f(x) = 0.5 * e^(-0.003x) + 1.1
-        当内容高度较小时，需要更大的边距系数以确保内容完全显示。
-        当内容高度较大时，系数逐渐接近极限值 1.1。
-
-        Args:
-            content_height: 内容高度（像素）
-
-        Returns:
-            边距系数，范围 (1.1, 1.6]
-            - x=50: f(50) ≈ 1.6
-            - x=300: f(300) ≈ 1.3
-            - x=1500: f(1500) ≈ 1.15
-            - x→∞: f(x) → 1.1
-        """
-        import math
-
-        if content_height <= 50:
-            return 1.6
-
-        # 指数衰减曲线：f(x) = 0.5 * e^(-0.003x) + 1.1
-        coefficient = 0.5 * math.exp(-0.003 * content_height) + 1.1
-
-        # 确保系数在合理范围内
-        return max(coefficient, 1.1)
-
     def _apply_markdown_text_style(self, select_bg: str, select_fg: str) -> None:
         """强制同步 HTMLLabel 的 Tk 文本样式。
 
@@ -647,8 +737,8 @@ class ToastWindowBase(ABC):
                 html=full_html,
                 wrap="char",
                 background=self.bg,
-                padx=0 if self.content_canvas is not None else DEFAULT_PADDING_X,
-                pady=0 if self.content_canvas is not None else DEFAULT_PADDING_Y
+                padx=0,
+                pady=0
             )
             self._mount_content_widget(self.md_label)
             self._bind_selectable_text_widget(self.md_label)
@@ -686,20 +776,28 @@ class ToastWindowBase(ABC):
             # 使用较大的高度值（reqheight 可能更准确）
             content_height = max(height_after, reqheight_after)
 
-            # 计算新的窗口高度和宽度
-            # 使用动态系数确保内容完全显示
-            margin_coefficient = self._calculate_height_coefficient(content_height)
-            final_h = max(int(content_height * margin_coefficient), MARKDOWN_MIN_HEIGHT)
-            final_w = self._calculate_actual_width()
+            # fit_height() 已给出 Markdown 正文的实际高度；这里只叠加明确的
+            # 顶部拖动区和底边距，避免按比例放大后在长文本下方留下大块空白。
+            final_h = max(
+                int(content_height)
+                + DEFAULT_PADDING_TOP
+                + DEFAULT_PADDING_BOTTOM,
+                MARKDOWN_MIN_HEIGHT,
+            )
+            # 完成视图保持流式阶段达到的宽度，只重新计算高度。
+            final_w = max(self.current_width, self.window.winfo_width())
 
-            self.window.geometry(f"{final_w}x{int(final_h)}+{cx}+{cy}")
+            self._set_geometry(final_w, int(final_h), cx, cy)
             self._apply_window_shape()
 
             # 更新布局后再次测量
             self.window.update()
             self.window.update_idletasks()
 
-            logger.info(f"Markdown 窗口: {final_w}x{final_h} (内容: {content_height}px, 系数: {margin_coefficient:.2f})")
+            logger.info(
+                f"Markdown 窗口: {final_w}x{final_h} "
+                f"(内容: {content_height}px, 顶部拖动区: {DEFAULT_PADDING_TOP}px)"
+            )
 
         except Exception as e:
             logger.error(f"Markdown 转换失败: {e}")

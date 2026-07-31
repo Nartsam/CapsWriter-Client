@@ -6,7 +6,7 @@ Toast Label 窗口模块
 import logging
 import tkinter as tk
 from tkinter import font
-from typing import Optional, Callable, Union
+from typing import Optional, Callable, Any
 
 from .toast_base import (
     ToastWindowBase,
@@ -15,7 +15,10 @@ from .toast_base import (
 from .toast_constants import (
     DEFAULT_FONT_FAMILY,
     DEFAULT_PADDING_X,
-    DEFAULT_PADDING_Y,
+    DEFAULT_MIN_WIDTH_PX,
+    DEFAULT_MAX_WIDTH_PX,
+    DEFAULT_MIN_WIDTH_RATIO,
+    DEFAULT_MAX_WIDTH_RATIO,
     MIN_WINDOW_HEIGHT,
     LABEL_HEIGHT_PADDING,
 )
@@ -45,7 +48,10 @@ class ToastWindowLabel(ToastWindowBase):
         bg: str = '#075077',
         fg: str = 'white',
         duration: int = 3000,
-        initial_width: Union[float, int] = 400,
+        min_width_px: Any = DEFAULT_MIN_WIDTH_PX,
+        max_width_px: Any = DEFAULT_MAX_WIDTH_PX,
+        min_width_ratio: Any = DEFAULT_MIN_WIDTH_RATIO,
+        max_width_ratio: Any = DEFAULT_MAX_WIDTH_RATIO,
         initial_height: int = 0,
         streaming: bool = False,
         stop_callback: Optional[Callable[[], None]] = None,
@@ -64,7 +70,10 @@ class ToastWindowLabel(ToastWindowBase):
             bg: 背景颜色
             fg: 前景色（文字颜色）
             duration: 自动关闭时长（毫秒）
-            initial_width: 初始宽度，0-1 为屏幕比例，>1 为像素值
+            min_width_px: 最小宽度像素值，合法时优先于比例值
+            max_width_px: 最大宽度像素值，合法时优先于比例值
+            min_width_ratio: 最小宽度的屏幕比例回退值
+            max_width_ratio: 最大宽度的屏幕比例回退值
             initial_height: 初始高度，0 表示自动计算
             streaming: 是否为流式输出模式
             stop_callback: 窗口关闭时的回调函数
@@ -76,12 +85,10 @@ class ToastWindowLabel(ToastWindowBase):
         # 初始化基类
         super().__init__(
             parent_root, text, font_size, font_family, bg, fg,
-            duration, initial_width, initial_height, streaming,
+            duration, min_width_px, max_width_px,
+            min_width_ratio, max_width_ratio, initial_height, streaming,
             stop_callback, markdown, editable, window_alpha, corner_radius
         )
-
-        # 计算实际宽度
-        actual_width = self._calculate_actual_width()
 
         # 用于增量插入
         self.last_char_count = 0
@@ -89,18 +96,19 @@ class ToastWindowLabel(ToastWindowBase):
         # 处理文本：在中文字符后添加零宽空格
         processed_text = add_zero_width_for_chinese(text) if text else text
 
-        # 如果未指定字体，使用默认字体
-        font_name = self.font_family
+        self.my_font = font.Font(
+            root=self.window, family=self.font_family, size=self.font_size
+        )
 
         # 创建文字标签
         self.label = tk.Label(
             self._get_content_parent(),
             text=processed_text,
-            font=(font_name, font_size),
+            font=self.my_font,
             fg=fg,
             bg=bg,
             justify=tk.LEFT,
-            wraplength=actual_width - (DEFAULT_PADDING_X * 2),
+            wraplength=self.min_width - (DEFAULT_PADDING_X * 2),
             anchor='nw'
         )
 
@@ -111,7 +119,7 @@ class ToastWindowLabel(ToastWindowBase):
                 fill=tk.BOTH,
                 expand=True,
                 padx=DEFAULT_PADDING_X,
-                pady=DEFAULT_PADDING_Y
+                pady=0
             )
         else:
             self._mount_content_widget(self.label)
@@ -123,8 +131,12 @@ class ToastWindowLabel(ToastWindowBase):
         # 强制更新布局
         self.window.update_idletasks()
 
-        # 设置初始窗口位置
+        # 先以最小宽度居中，再按初始内容对称增宽。
         self._set_window_position(initial=True)
+        if text:
+            self._grow_to_fit_text(text, self.my_font)
+            self.window.update_idletasks()
+            self._set_window_position()
         
         # 如果是非流式模式且启用了 Markdown，立即转换
         if not streaming and markdown:
@@ -141,9 +153,6 @@ class ToastWindowLabel(ToastWindowBase):
             screen_width = self.window.winfo_screenwidth()
             screen_height = self.window.winfo_screenheight()
 
-            # 计算初始宽度
-            calculated_width = self._calculate_actual_width()
-
             # 获取 Label 的理想高度
             needed_h = self.label.winfo_reqheight() + LABEL_HEIGHT_PADDING
 
@@ -155,7 +164,7 @@ class ToastWindowLabel(ToastWindowBase):
 
             # 限制最小高度
             window_height = max(window_height, MIN_WINDOW_HEIGHT)
-            window_width = calculated_width
+            window_width = self.current_width
 
             if initial:
                 # 初始位置：水平居中，顶部在屏幕中间
@@ -166,7 +175,7 @@ class ToastWindowLabel(ToastWindowBase):
                 x = self.window.winfo_x()
                 y = self.window.winfo_y()
 
-            self.window.geometry(f'{window_width}x{window_height}+{x}+{y}')
+            self._set_geometry(window_width, window_height, x, y)
             self._apply_window_shape()
         except tk.TclError as e:
             logger.warning(f"设置窗口位置失败: {e}")
@@ -198,6 +207,10 @@ class ToastWindowLabel(ToastWindowBase):
                 # 强制同步布局计算
                 self.window.update_idletasks()
 
+                # 只有真的增宽了才需要再刷一次布局，否则下面的 reqheight 会按旧换行宽度算
+                if self._grow_to_fit_text(new_text, self.my_font):
+                    self.window.update_idletasks()
+
                 # 计算窗口需要的新高度
                 needed_h = self.label.winfo_reqheight() + LABEL_HEIGHT_PADDING
                 current_h = self.window.winfo_height()
@@ -207,13 +220,20 @@ class ToastWindowLabel(ToastWindowBase):
                 if needed_h > current_h:
                     curr_x = self.window.winfo_x()
                     curr_y = self.window.winfo_y()
-                    self.window.geometry(f"{current_w}x{int(needed_h)}+{curr_x}+{curr_y}")
+                    self._set_geometry(current_w, int(needed_h), curr_x, curr_y)
                     self._apply_window_shape()
 
                 self.last_char_count = current_char_count
             except tk.TclError:
                 # 窗口已被销毁
                 self.streaming = False
+
+    def _on_width_changed(self, new_width: int) -> None:
+        """同步 Label 的换行上限，达到最大宽度后按字符自动换行。"""
+        if hasattr(self, 'label'):
+            self.label.config(
+                wraplength=max(1, new_width - DEFAULT_PADDING_X * 2)
+            )
 
     def _destroy_content_widget(self) -> None:
         """销毁 Label 组件"""

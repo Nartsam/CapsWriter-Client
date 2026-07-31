@@ -9,7 +9,7 @@ import threading
 import tkinter as tk
 from queue import Queue
 from dataclasses import dataclass
-from typing import Literal, Optional, Callable, Union, List, TYPE_CHECKING
+from typing import Literal, Optional, Callable, Any, List, TYPE_CHECKING
 import sys
 import os
 
@@ -24,7 +24,10 @@ if __name__ == "__main__":
     from core.ui.toast_constants import (
         QUEUE_POLL_INTERVAL_MS,
         DEFAULT_DURATION_MS,
-        DEFAULT_INITIAL_WIDTH,
+        DEFAULT_MIN_WIDTH_PX,
+        DEFAULT_MAX_WIDTH_PX,
+        DEFAULT_MIN_WIDTH_RATIO,
+        DEFAULT_MAX_WIDTH_RATIO,
         TK_SCALING_FACTOR,
     )
     from core.ui.toast_logger import get_toast_logger
@@ -34,7 +37,10 @@ else:
     from .toast_constants import (
         QUEUE_POLL_INTERVAL_MS,
         DEFAULT_DURATION_MS,
-        DEFAULT_INITIAL_WIDTH,
+        DEFAULT_MIN_WIDTH_PX,
+        DEFAULT_MAX_WIDTH_PX,
+        DEFAULT_MIN_WIDTH_RATIO,
+        DEFAULT_MAX_WIDTH_RATIO,
         TK_SCALING_FACTOR,
     )
     from .toast_logger import get_toast_logger
@@ -63,7 +69,10 @@ class ToastMessage:
         bg: 背景颜色（十六进制或颜色名）
         fg: 前景色（文字颜色）
         duration: 显示时长（毫秒）
-        initial_width: 初始宽度，0-1 为屏幕比例，>1 为像素值
+        min_width_px: 最小宽度像素值，合法时优先于比例值
+        max_width_px: 最大宽度像素值，合法时优先于比例值
+        min_width_ratio: 最小宽度的屏幕比例回退值
+        max_width_ratio: 最大宽度的屏幕比例回退值
         initial_height: 初始高度，0 表示自动计算
         streaming: 是否为流式模式
         window_type: 窗口类型 ('text' 或 'label')
@@ -76,7 +85,10 @@ class ToastMessage:
     bg: str = '#075077'
     fg: str = 'white'
     duration: int = DEFAULT_DURATION_MS
-    initial_width: Union[float, int] = DEFAULT_INITIAL_WIDTH
+    min_width_px: Any = DEFAULT_MIN_WIDTH_PX
+    max_width_px: Any = DEFAULT_MAX_WIDTH_PX
+    min_width_ratio: Any = DEFAULT_MIN_WIDTH_RATIO
+    max_width_ratio: Any = DEFAULT_MAX_WIDTH_RATIO
     initial_height: int = 0
     streaming: bool = False
     window_type: Literal['text', 'label'] = 'text'
@@ -181,7 +193,10 @@ class ToastMessageManager:
                     msg.bg,
                     msg.fg,
                     msg.duration,
-                    msg.initial_width,
+                    msg.min_width_px,
+                    msg.max_width_px,
+                    msg.min_width_ratio,
+                    msg.max_width_ratio,
                     msg.initial_height,
                     streaming=msg.streaming,
                     stop_callback=msg.stop_callback,
@@ -208,7 +223,9 @@ class ToastMessageManager:
             ]
 
         except Exception as e:
-            logger.warning(f"处理队列消息时出错: {e}")
+            # 带上 traceback：这里吞掉的是窗口构造异常，只打一行消息的话
+            # 现象只剩下调用方「等待窗口超时」，根因（哪一行、哪个模块）完全丢失
+            logger.warning(f"处理队列消息时出错: {e}", exc_info=True)
 
         # 继续处理队列
         if self.is_running and self.root:

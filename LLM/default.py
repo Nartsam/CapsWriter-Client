@@ -27,7 +27,10 @@ selection_max_length = 1024             # 选中文字最大长度
 output_mode = 'typing'                  # 输出方式：'typing' 直接打字, 'toast' 浮动窗口
 
 # ==================== Toast 弹窗配置（仅在 output_mode='toast' 时有效） ====================
-toast_initial_width = 0.5               # 窗口初始宽度（0.5 = 50% 屏幕宽度）
+toast_min_width_px = 320                # 最小宽度像素值；正数时优先于比例配置
+toast_max_width_px = 800                # 最大宽度像素值；正数时优先于比例配置
+toast_min_width_ratio = 0.2             # 最小宽度比例回退值（像素值无效时使用）
+toast_max_width_ratio = 0.5             # 最大宽度比例回退值（像素值无效时使用）
 toast_initial_height = 0                # 窗口初始高度（0 表示自动计算）
 toast_font_family = '微软雅黑'
 toast_font_size = 16                     # 字体大小

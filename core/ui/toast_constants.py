@@ -11,7 +11,8 @@ import tkinter as tk
 
 DEFAULT_FONT_FAMILY = 'Microsoft YaHei UI'
 DEFAULT_PADDING_X = 20
-DEFAULT_PADDING_Y = 15
+DEFAULT_PADDING_TOP = 40    # 顶部纯空白拖动区高度；正文下移这么多，窗口高度也相应叠加
+DEFAULT_PADDING_BOTTOM = 15
 
 # ============================================================
 # 窗口尺寸常量
@@ -22,11 +23,11 @@ MIN_WINDOW_HEIGHT = 60  # 最小窗口高度
 # Text 组件专用
 STREAMING_TEXT_HEIGHT = 5  # 流式模式预设行数，避免初始窗口过大
 NON_STREAMING_TEXT_HEIGHT = 1  # 非流式模式初始行数
-HEIGHT_PADDING = 40  # Text 窗口高度的额外边距
+HEIGHT_PADDING = DEFAULT_PADDING_TOP + DEFAULT_PADDING_BOTTOM
 TEXT_WRAP_MODE = tk.CHAR  # Text 组件的换行模式（CHAR=按字符换行，WORD=按单词换行）
 
 # Label 组件专用
-LABEL_HEIGHT_PADDING = 30  # Label 窗口高度的额外边距
+LABEL_HEIGHT_PADDING = DEFAULT_PADDING_TOP + DEFAULT_PADDING_BOTTOM
 
 # Markdown 渲染专用
 MARKDOWN_MIN_HEIGHT = 50  # Markdown 窗口最小高度
@@ -43,7 +44,10 @@ DESTROY_DELAY_MS = 100  # 拖动时延迟销毁的时间（毫秒）
 # ============================================================
 
 DEFAULT_DURATION_MS = 2000  # 默认显示时长
-DEFAULT_INITIAL_WIDTH = 0.5  # 默认宽度（屏幕的50%）
+DEFAULT_MIN_WIDTH_PX = 320
+DEFAULT_MAX_WIDTH_PX = 800
+DEFAULT_MIN_WIDTH_RATIO = 0.2
+DEFAULT_MAX_WIDTH_RATIO = 0.5
 
 # ============================================================
 # 内部使用常量

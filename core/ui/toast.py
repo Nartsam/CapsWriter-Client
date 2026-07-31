@@ -13,7 +13,7 @@ Usage:
 import time
 import logging
 import threading
-from typing import Union, Literal
+from typing import Any, Literal
 import sys
 import os
 
@@ -26,14 +26,20 @@ if __name__ == "__main__":
     from core.ui.toast_manager import ToastMessageManager, ToastMessage
     from core.ui.toast_constants import (
         DEFAULT_DURATION_MS,
-        DEFAULT_INITIAL_WIDTH,
+        DEFAULT_MIN_WIDTH_PX,
+        DEFAULT_MAX_WIDTH_PX,
+        DEFAULT_MIN_WIDTH_RATIO,
+        DEFAULT_MAX_WIDTH_RATIO,
         STREAM_CHAR_DELAY_S,
     )
 else:
     from .toast_manager import ToastMessageManager, ToastMessage
     from .toast_constants import (
         DEFAULT_DURATION_MS,
-        DEFAULT_INITIAL_WIDTH,
+        DEFAULT_MIN_WIDTH_PX,
+        DEFAULT_MAX_WIDTH_PX,
+        DEFAULT_MIN_WIDTH_RATIO,
+        DEFAULT_MAX_WIDTH_RATIO,
         STREAM_CHAR_DELAY_S,
     )
 
@@ -51,7 +57,10 @@ def toast(
     bg: str = "#C41529",
     fg: str = 'white',
     duration: int = DEFAULT_DURATION_MS,
-    initial_width: Union[float, int] = DEFAULT_INITIAL_WIDTH,
+    min_width_px: Any = DEFAULT_MIN_WIDTH_PX,
+    max_width_px: Any = DEFAULT_MAX_WIDTH_PX,
+    min_width_ratio: Any = DEFAULT_MIN_WIDTH_RATIO,
+    max_width_ratio: Any = DEFAULT_MAX_WIDTH_RATIO,
     initial_height: int = 0,
     streaming: bool = False,
     window_type: Literal['text', 'label'] = 'text',
@@ -65,7 +74,10 @@ def toast(
         bg: 背景颜色
         fg: 字体颜色
         duration: 显示时长（毫秒）
-        initial_width: 初始宽度，0-1 为屏幕比例，>1 为像素值
+        min_width_px: 最小宽度像素值，合法时优先于比例值
+        max_width_px: 最大宽度像素值，合法时优先于比例值
+        min_width_ratio: 最小宽度的屏幕比例回退值
+        max_width_ratio: 最大宽度的屏幕比例回退值
         initial_height: 初始高度，0 表示自动计算
         streaming: 是否为流式模式
         window_type: 窗口类型 ('text' 或 'label')
@@ -78,7 +90,10 @@ def toast(
         bg=bg,
         fg=fg,
         duration=duration,
-        initial_width=initial_width,
+        min_width_px=min_width_px,
+        max_width_px=max_width_px,
+        min_width_ratio=min_width_ratio,
+        max_width_ratio=max_width_ratio,
         initial_height=initial_height,
         streaming=streaming,
         window_type=window_type,
@@ -93,7 +108,10 @@ def toast_stream(
     bg: str = "#C41529",
     fg: str = 'white',
     duration: int = DEFAULT_DURATION_MS,
-    initial_width: Union[float, int] = DEFAULT_INITIAL_WIDTH,
+    min_width_px: Any = DEFAULT_MIN_WIDTH_PX,
+    max_width_px: Any = DEFAULT_MAX_WIDTH_PX,
+    min_width_ratio: Any = DEFAULT_MIN_WIDTH_RATIO,
+    max_width_ratio: Any = DEFAULT_MAX_WIDTH_RATIO,
     initial_height: int = 0,
     window_type: Literal['text', 'label'] = 'text',
     markdown: bool = False
@@ -106,7 +124,10 @@ def toast_stream(
         bg: 背景颜色
         fg: 字体颜色
         duration: 显示时长（毫秒）
-        initial_width: 初始宽度
+        min_width_px: 最小宽度像素值
+        max_width_px: 最大宽度像素值
+        min_width_ratio: 最小宽度的屏幕比例回退值
+        max_width_ratio: 最大宽度的屏幕比例回退值
         initial_height: 初始高度
         window_type: 窗口类型 ('text' 或 'label')
         markdown: 是否启用 Markdown 渲染
@@ -120,7 +141,10 @@ def toast_stream(
         bg=bg,
         fg=fg,
         duration=duration,
-        initial_width=initial_width,
+        min_width_px=min_width_px,
+        max_width_px=max_width_px,
+        min_width_ratio=min_width_ratio,
+        max_width_ratio=max_width_ratio,
         initial_height=initial_height,
         streaming=True,
         window_type=window_type,
@@ -205,37 +229,37 @@ def hello():
     # ========== Text 版本测试 ==========
 
     # print("\n[测试 1] Text 版本 - 普通文本 - 非流式 (3秒)")
-    # toast(plain_text, bg="#075077", fg='white', duration=3000, window_type='text', initial_width=800)
+    # toast(plain_text, bg="#075077", fg='white', duration=3000, window_type='text', max_width_px=800)
     # time.sleep(4)
 
     # print("[测试 2] Text 版本 - 普通文本 - 流式 (5秒)")
-    # toast_stream(plain_text, bg="#2E7D32", fg='white', duration=5000, window_type='text', initial_width=800, markdown=False)
+    # toast_stream(plain_text, bg="#2E7D32", fg='white', duration=5000, window_type='text', max_width_px=800, markdown=False)
     # time.sleep(7)
 
     # print("[测试 3] Text 版本 - Markdown - 非流式 (3秒)")
-    # toast(markdown_text, bg="#1565C0", fg='white', duration=3000, window_type='text', initial_width=800, markdown=True)
+    # toast(markdown_text, bg="#1565C0", fg='white', duration=3000, window_type='text', max_width_px=800, markdown=True)
     # time.sleep(4)
 
     # print("[测试 4] Text 版本 - Markdown - 流式 (5秒)")
-    # toast_stream(markdown_text, bg="#C62828", fg='white', duration=5000, window_type='text', initial_width=800, markdown=True)
+    # toast_stream(markdown_text, bg="#C62828", fg='white', duration=5000, window_type='text', max_width_px=800, markdown=True)
     # time.sleep(7)
 
     # ========== Label 版本测试 ==========
 
     # print("[测试 5] Label 版本 - 普通文本 - 非流式 (3秒)")
-    # toast(plain_text, bg="#F57C00", fg='white', duration=3000, window_type='label', initial_width=800)
+    # toast(plain_text, bg="#F57C00", fg='white', duration=3000, window_type='label', max_width_px=800)
     # time.sleep(4)
 
     # print("[测试 6] Label 版本 - 普通文本 - 流式 (5秒)")
-    # toast_stream(plain_text, bg="#7B1FA2", fg='white', duration=5000, window_type='label', initial_width=800, markdown=False)
+    # toast_stream(plain_text, bg="#7B1FA2", fg='white', duration=5000, window_type='label', max_width_px=800, markdown=False)
     # time.sleep(7)
 
     print("[测试 7] Label 版本 - Markdown - 非流式 (3秒)")
-    toast(markdown_text, bg="#00796B", fg='white', duration=3000, window_type='label', initial_width=800, markdown=True)
+    toast(markdown_text, bg="#00796B", fg='white', duration=3000, window_type='label', max_width_px=800, markdown=True)
     time.sleep(4)
 
     # print("[测试 8] Label 版本 - Markdown - 流式 (5秒)")
-    # toast_stream(markdown_text, bg="#5D4037", fg='white', duration=5000, window_type='label', initial_width=800, markdown=True)
+    # toast_stream(markdown_text, bg="#5D4037", fg='white', duration=5000, window_type='label', max_width_px=800, markdown=True)
     # time.sleep(7)
 
     print("\n" + "=" * 60)

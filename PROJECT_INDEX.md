@@ -136,7 +136,7 @@ CapsWriter-Offline 是一个 Windows 离线语音输入工具（GitHub: HaujetZh
 | 文件 | 职责 |
 |---|---|
 | `llm_handler.py` | **LLMHandler** 协调器。`process_and_output()`：角色检测 → Companion 转发（若已连接则跳过 LLM）→ LLM 调用 → 输出。管理角色加载、上下文、客户端池 |
-| `llm_role_config.py` | **RoleConfig** dataclass。角色配置字段：provider、model、system_prompt、output_mode(typing/toast)、Toast 样式（字体、颜色、透明度、圆角）等 |
+| `llm_role_config.py` | **RoleConfig** dataclass。角色配置字段：provider、model、system_prompt、output_mode(typing/toast)、Toast 宽度边界与样式（字体、颜色、透明度、圆角）等 |
 | `llm_role_loader.py` | **RoleLoader**。扫描 `LLM/` 目录下的 .py 文件，每个文件作为一个角色模块加载 |
 | `llm_role_detector.py` | **RoleDetector**。根据输入文本前缀匹配角色（如 "翻译 xxx" → 翻译角色） |
 | `llm_processor.py` | **LLMProcessor**。执行 LLM API 调用（支持 OpenAI/Ollama/DeepSeek 等），流式输出 |
@@ -150,7 +150,7 @@ CapsWriter-Offline 是一个 Windows 离线语音输入工具（GitHub: HaujetZh
 | `llm_watcher.py` | 监视 LLM/ 目录变化，自动重载角色 |
 | `llm_get_selection.py` | 通过 Ctrl+C 获取选中文字 |
 
-**角色文件格式**（`LLM/*.py`）：每个文件定义一组变量（name、provider、model、system_prompt 等），由 RoleLoader 自动加载。当前内置角色文件为 `default.py`、`翻译.py`、`助理.py`。
+**角色文件格式**（`LLM/*.py`）：每个文件定义一组变量（name、provider、model、system_prompt 等），由 RoleLoader 自动加载。当前内置角色文件为 `default.py`、`翻译.py`、`助理.py`。翻译角色开启选中文字读取：有选中文字时将其视为原文、语音输入仅作为目标语言或风格要求；无选中文字时语音输入本身为原文。未指定目标语言时，中文译为英文，其他语言译为简体中文。助理角色面向简单日常与知识问答，默认用一至三句纯文本直接作答，不输出寒暄、问题复述、无关扩展或 Markdown 等特殊格式。
 
 ### 8. UI 子系统
 
@@ -160,8 +160,8 @@ CapsWriter-Offline 是一个 Windows 离线语音输入工具（GitHub: HaujetZh
 | `core/client/ui/recording_indicator.py` | **RecordingIndicator**。录音悬浮指示器（Tk 实现，单例，线程安全）。显示录音时长、等待状态、处理进度、错误提示。通过 Windows API 获取输入光标位置定位。状态优先级：录音进行中时服务端分段进度只记录不切换模式（见约定 11）。手动打断时原地换成 `cancelled` 文案（浅蓝 `CANCEL_ACCENT`），1.2s 后自动隐藏 |
 | `core/client/ui/tips.py` | **TipsDisplay**。启动时的 Rich 控制台提示信息 |
 | `core/ui/toast.py` | Toast 浮动消息通知（Tk 实现，支持 Markdown 渲染） |
-| `core/ui/toast_base.py` | Toast 窗口基类。负责置顶无边框窗口、透明度、Canvas 透明色圆角背景、拖动、滚轮、复制、Markdown 最终视图字体/tag 样式同步，以及文字区域选择和空白/边缘区域拖动的事件隔离 |
-| `core/ui/toast_text.py` | 基于 Text 的 Toast 窗口。用于 LLM 流式输出，支持增量更新、自动增高、选中文字和复制 |
+| `core/ui/toast_base.py` | Toast 窗口基类。负责置顶无边框窗口、透明度、Canvas 透明色圆角背景、40px 顶部空白拖动区（`DEFAULT_PADDING_TOP`）、内容宽度测量、只增不减的窗口增宽、拖动锚点、滚轮、复制、Markdown 最终视图字体/tag 样式同步与按真实内容重算高度，以及文字区域选择和空白/边缘区域拖动的事件隔离 |
+| `core/ui/toast_text.py` | 基于 Text 的 Toast 窗口。用于 LLM 流式输出，支持增量更新、按内容自动增宽/增高、达到最大宽度后自动换行、选中文字和复制 |
 | `core/ui/toast_label.py` | 基于 Label 的 Toast 窗口。用于普通提示，支持自动换行、自动增高和 Markdown 转换 |
 | `core/ui/tray.py` | 系统托盘图标（pystray） |
 | `core/ui/toast_manager.py` | Toast 窗口管理器。`ToastMessage` 支持字体、颜色、持续时间、Markdown、可编辑、透明度和圆角配置 |
@@ -316,13 +316,15 @@ Electron 应用连接到 ws://127.0.0.1:6019
 3. **防自捕获**：emulator 补发按键时设置 `_emulating_keys` 标志，钩子回调检测到该标志后放行不处理
 4. **单例模式**：RecordingIndicator、GlobalHotkeyManager 使用线程安全单例
 5. **配置方式**：用户通过修改 `config_client.py` 顶层变量配置，无 YAML/JSON（`config_server.py` 属于服务端发行目录，不在本仓库）
-6. **LLM 角色**：`LLM/` 目录下每个 .py 文件是一个角色，定义 RoleConfig 字段作为模块级变量；toast 输出角色可配置 `toast_font_family`、`toast_font_size`、`toast_font_color`、`toast_bg_color`、`toast_window_alpha`、`toast_corner_radius` 等样式字段
+6. **LLM 角色**：`LLM/` 目录下每个 .py 文件是一个角色，定义 RoleConfig 字段作为模块级变量；toast 输出角色用 `toast_min_width_px`/`toast_max_width_px` 设置优先采用的像素边界，用 `toast_min_width_ratio`/`toast_max_width_ratio` 设置像素值无效时的屏幕比例回退，并可配置字体、颜色、透明度、圆角等样式。宽度从最小值随内容只增不减，到最大值后自动换行；未拖动时保持中心增宽，实际拖动后固定左边界向右增宽
 7. **热词文件**：`hot.txt` 每行一个热词（音素模糊匹配），`hot-rule.txt` 每行 `正则 = 替换` 格式
 8. **Companion 模式**：当 Electron 伴侣应用连接到 CompanionServer 时，匹配角色前缀的文本跳过本地 LLM，直接转发给 Electron 处理
 9. **多 Tk 解释器与字体约束**：录音指示器与 Toast 弹窗分别在独立线程运行各自的 Tk 解释器；创建 `tkinter.font.Font` 时必须显式传 `root=` 绑定所属窗口的解释器，否则命名字体会建到进程内第一个 Tk（`_default_root`）上，跨解释器引用时字体名会被当作不存在的字体家族，静默回退为小号宋体
 10. **OpenMate 展示**：toast 角色在 LLM 调用前探测 OpenMate（`config_client.py` 的 `openmate_*` 配置），可用则自动获取角色情绪状态列表、注入情绪标签指令（标签用状态 ID，别名作语义注解）并将流式输出转交 OpenMate 展示；`<state:...>` 标签由 OpenMate 解析剥离，本地存历史/广播前也统一剥离。OpenMate 隐藏在托盘时收到消息会自行无激活恢复显示，无需客户端干预。`openmate_character` 留空时每次请求走 `GET /v1/presentation` 解析当前生效角色，按该角色取情绪状态并把流/分段队列固定到它
 11. **悬浮指示器状态优先级**：录音进行中（`mode == "recording"`）时服务端回传的分段进度只更新数据、不切换模式。麦克风边录边发，服务端每攒够 `mic_seg_duration + mic_seg_overlap * 2`（默认 68s）才切一段回传一次，切成 progress 会让实时录音计时被一个一分钟内都不变的「已处理」时长顶掉
 12. **录音打断**：`cancel_recording_key`（默认 esc，留空禁用）在录音中或等待识别结果时按下，本次输入彻底作废（不上屏、不触发角色、不写日记、删除录音文件）。服务端的 `AudioCache` 按连接持有、只有 `is_final` 才 reset，所以打断**必须仍发一个 `is_final`** 冲掉缓冲，否则残余音频会拼进下一次录音；结果回来后按 `cancelled_task_ids` 在 `_handle_message` 入口丢弃（含非最终包）。**抑制决策必须在 KEYDOWN 锁存、KEYUP 沿用**——判据 `state.recording` 会被打断动作自身翻转，两次分别判断会产生「吞掉按下、放行松开」的不配对事件，前台程序与 pynput 组合键状态都会因此错乱。只在录音阶段拦截，等待结果阶段放行（那个状态依赖远程服务端回包，拦截会让打断键全局失灵）。打断键分支运行在键盘钩子线程里，只做状态翻转和派发：低级钩子超过 300ms 会被系统摘掉，之后所有快捷键失效
+13. **Tk 几何字符串与负坐标**：`wm geometry` 把 `±x±y` 开头的符号当作「从左/上边缘量」还是「从右/下边缘量」的标志位消费掉，符号之后的数字再单独按有符号数解析。负坐标必须写成 `+-100+50`（即 `f"+{x}+{y}"`）；`f"{x:+d}"` 产出的 `-100` 会被理解成「距屏幕右边缘 100px」，窗口拖出左/上边界时会跳到屏幕另一侧。Toast 的位置/尺寸统一走 `ToastWindowBase._set_geometry()` / `_set_position()`
+14. **Toast 构造失败是静默的**：`ToastMessageManager._process_queue` 用 `except Exception` 兜住窗口构造，失败时调用方只看到 `wait_for_window` 超时和「Toast 窗口创建失败」。改 `core/ui/toast_*.py` 后必须真弹一次窗口验证，只看日志没红色报错不足以说明可用
 
 ---
 

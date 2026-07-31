@@ -41,7 +41,10 @@ class RoleConfig:
     output_mode: str = 'typing'                   # 输出方式: 'typing' 或 'toast' (即打字输出或弹窗输出)
 
     # Toast 弹窗配置
-    toast_initial_width: float = 0.5              # Toast 窗口初始宽度（0.5 = 50% 屏幕宽度）
+    toast_min_width_px: Optional[int] = None      # Toast 最小宽度像素值（合法时优先）
+    toast_max_width_px: Optional[int] = None      # Toast 最大宽度像素值（合法时优先）
+    toast_min_width_ratio: Optional[float] = None  # 最小宽度比例回退值
+    toast_max_width_ratio: Optional[float] = None  # 最大宽度比例回退值
     toast_initial_height: int = 0                 # Toast 窗口初始高度（0 表示自动计算）
     toast_font_family: str = '微软雅黑'           # Toast 字体
     toast_font_size: int = 16                     # Toast 字体大小（角色缺省值）
