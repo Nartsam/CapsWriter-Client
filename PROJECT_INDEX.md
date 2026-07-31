@@ -117,7 +117,7 @@ CapsWriter-Offline 是一个 Windows 离线语音输入工具（GitHub: HaujetZh
 
 | 文件 | 职责 |
 |---|---|
-| `result_processor.py` | **ResultProcessor**。主工作循环：连接 WebSocket → 接收消息 → 热词替换 → 去标点 → 正则替换 → LLM 润色 → 文本输出 → 日记/音频保存 |
+| `result_processor.py` | **ResultProcessor**。主工作循环：连接 WebSocket → 接收消息 → 热词替换 → 去标点 → 正则替换 → LLM 润色 → 文本输出 → 日记/音频保存。`_format_llm_result` 负责控制台那行 `模型结果[角色(工具)]：…`，工具名来自 `LLMResult.used_tools` |
 | `text_output.py` | **TextOutput**。两种输出方式：`_type_text()`（keyboard.write 模拟打字）和 `_paste_text()`（Ctrl+V 粘贴）。`strip_punc()` 去除末尾标点 |
 
 ### 6. 热词系统 (`core/client/hotword/`)
@@ -136,12 +136,12 @@ CapsWriter-Offline 是一个 Windows 离线语音输入工具（GitHub: HaujetZh
 | 文件 | 职责 |
 |---|---|
 | `llm_handler.py` | **LLMHandler** 协调器。`process_and_output()`：角色检测 → Companion 转发（若已连接则跳过 LLM）→ LLM 调用 → 输出。管理角色加载、上下文、客户端池 |
-| `llm_role_config.py` | **RoleConfig** dataclass。角色配置字段：provider、model、system_prompt、output_mode(typing/toast)、Toast 宽度边界与样式（字体、颜色、透明度、圆角）等 |
+| `llm_role_config.py` | **RoleConfig** dataclass。角色配置字段：provider、model、system_prompt、output_mode(typing/toast)、Toast 宽度边界与样式（字体、颜色、透明度、圆角）、联网搜索三件套（`enable_web_search`/`enable_datetime`/`request_timeout`）等 |
 | `llm_role_loader.py` | **RoleLoader**。扫描 `LLM/` 目录下的 .py 文件，每个文件作为一个角色模块加载 |
 | `llm_role_detector.py` | **RoleDetector**。根据输入文本前缀匹配角色（如 "翻译 xxx" → 翻译角色） |
-| `llm_processor.py` | **LLMProcessor**。执行 LLM API 调用（支持 OpenAI/Ollama/DeepSeek 等），流式输出 |
+| `llm_processor.py` | **LLMProcessor**。执行 LLM API 调用（支持 OpenAI/Ollama/DeepSeek 等），流式输出。三条流式路径：Ollama 原生流、Chat Completions 流、Responses API 流（角色开启 `enable_web_search` 时走此路，挂载服务端内置 `web_search` 工具，见约定 15）。工具事件同时触发展示占位文案与 `used_tools` 出参回传（见约定 16） |
 | `llm_client_pool.py` | **ClientPool**。按 provider+url 缓存 OpenAI 客户端实例 |
-| `llm_message_builder.py` | 构建发送给 LLM 的消息列表（system prompt + 热词 + 选中文字 + 用户输入） |
+| `llm_message_builder.py` | 构建发送给 LLM 的消息列表（system prompt + 当前时间 + 热词 + 选中文字 + 用户输入） |
 | `llm_context.py` | **ContextManager**。管理对话历史记录 |
 | `llm_output_typing.py` | typing 模式输出（直接模拟打字/粘贴） |
 | `llm_output_toast.py` | toast 模式输出（弹窗显示，支持 Markdown 渲染，并按角色配置传入字体、颜色、透明度、圆角等样式） |
@@ -150,7 +150,7 @@ CapsWriter-Offline 是一个 Windows 离线语音输入工具（GitHub: HaujetZh
 | `llm_watcher.py` | 监视 LLM/ 目录变化，自动重载角色 |
 | `llm_get_selection.py` | 通过 Ctrl+C 获取选中文字 |
 
-**角色文件格式**（`LLM/*.py`）：每个文件定义一组变量（name、provider、model、system_prompt 等），由 RoleLoader 自动加载。当前内置角色文件为 `default.py`、`翻译.py`、`助理.py`。翻译角色开启选中文字读取：有选中文字时将其视为原文、语音输入仅作为目标语言或风格要求；无选中文字时语音输入本身为原文。未指定目标语言时，中文译为英文，其他语言译为简体中文。助理角色面向简单日常与知识问答，默认用一至三句纯文本直接作答，不输出寒暄、问题复述、无关扩展或 Markdown 等特殊格式。
+**角色文件格式**（`LLM/*.py`）：每个文件定义一组变量（name、provider、model、system_prompt 等），由 RoleLoader 自动加载。当前内置角色文件为 `default.py`、`翻译.py`、`助理.py`。翻译角色开启选中文字读取：有选中文字时将其视为原文、语音输入仅作为目标语言或风格要求；无选中文字时语音输入本身为原文。未指定目标语言时，中文译为英文，其他语言译为简体中文。助理角色面向简单日常与知识问答，默认用一至三句纯文本直接作答，不输出寒暄、问题复述、无关扩展或 Markdown 等特殊格式。助理、雾切响子、新岛真三个角色开启联网搜索与当前时间注入（见约定 15），提示词均规定只有时效性问题才检索、闲聊与稳定知识不检索，且检索结果不得改变各自的输出格式（纯文本、无网址与引用编号）。
 
 ### 8. UI 子系统
 
@@ -325,6 +325,8 @@ Electron 应用连接到 ws://127.0.0.1:6019
 12. **录音打断**：`cancel_recording_key`（默认 esc，留空禁用）在录音中或等待识别结果时按下，本次输入彻底作废（不上屏、不触发角色、不写日记、删除录音文件）。服务端的 `AudioCache` 按连接持有、只有 `is_final` 才 reset，所以打断**必须仍发一个 `is_final`** 冲掉缓冲，否则残余音频会拼进下一次录音；结果回来后按 `cancelled_task_ids` 在 `_handle_message` 入口丢弃（含非最终包）。**抑制决策必须在 KEYDOWN 锁存、KEYUP 沿用**——判据 `state.recording` 会被打断动作自身翻转，两次分别判断会产生「吞掉按下、放行松开」的不配对事件，前台程序与 pynput 组合键状态都会因此错乱。只在录音阶段拦截，等待结果阶段放行（那个状态依赖远程服务端回包，拦截会让打断键全局失灵）。打断键分支运行在键盘钩子线程里，只做状态翻转和派发：低级钩子超过 300ms 会被系统摘掉，之后所有快捷键失效
 13. **Tk 几何字符串与负坐标**：`wm geometry` 把 `±x±y` 开头的符号当作「从左/上边缘量」还是「从右/下边缘量」的标志位消费掉，符号之后的数字再单独按有符号数解析。负坐标必须写成 `+-100+50`（即 `f"+{x}+{y}"`）；`f"{x:+d}"` 产出的 `-100` 会被理解成「距屏幕右边缘 100px」，窗口拖出左/上边界时会跳到屏幕另一侧。Toast 的位置/尺寸统一走 `ToastWindowBase._set_geometry()` / `_set_position()`
 14. **Toast 构造失败是静默的**：`ToastMessageManager._process_queue` 用 `except Exception` 兜住窗口构造，失败时调用方只看到 `wait_for_window` 超时和「Toast 窗口创建失败」。改 `core/ui/toast_*.py` 后必须真弹一次窗口验证，只看日志没红色报错不足以说明可用
+15. **角色联网搜索**：`enable_web_search` 让该角色改用 DeepSeek 的 **Responses API**（`client.responses.create`），并挂载服务端内置工具 `[{"type": "web_search"}]`，检索在 DeepSeek 侧执行，本地不需要任何搜索 API Key。是否检索由模型自行判断，不触发时的延迟与普通请求一致。三个连带约束：①Responses API 的 base_url 官方示例不带 `/v1`，而 `APIConfig.DEFAULT_API_URLS['deepseek']` 带 `/v1`，开启该功能的角色必须显式写 `api_url = 'https://api.deepseek.com'`；②检索期间数秒没有任何分片，provider 默认 2s 超时会直接失败，必须设 `request_timeout`（助理为 60s）；③参数名与 Chat Completions 不同——system 消息走 `instructions`、其余走 `input`、`max_tokens` 变 `max_output_tokens`、没有 `stop`。搭配 `enable_datetime`（在用户消息里注入当前时间，让模型判断记忆是否过期；放用户消息而非 system 是为了不破坏服务端前缀缓存）。目前仅 `deepseek-v4-flash` 支持 Responses API
+16. **工具调用的回传用出参列表**：本次请求实际触发了哪些服务端工具，由流解析层沿 `used_tools` 列表逐层追加，最终进 `LLMResult.used_tools`，控制台显示成 `模型结果[助理(搜索)]`。之所以不扩成四元组返回：三个输出模式（typing/toast/openmate）里有十余处 `return ("", 0, 0.0)` 的降级分支，漏改一处就是运行时崩溃；之所以不挂 handler 实例属性：那会引入跨请求残留。工具 ID 从事件名 `response.<工具ID>_call.<阶段>` 解析而来（`_extract_tool_id`），不硬编码 `web_search`；ID → 中文的映射集中在 `llm_constants.ToolNames`，未登记的新工具回退显示原始 ID 而不是静默丢弃。**新增输出模式或在其中新增 `handler.process` 调用点时必须一并转发 `used_tools`**，漏了不会报错，只是标签永远不出现
 
 ---
 
@@ -355,6 +357,7 @@ Electron 应用连接到 ws://127.0.0.1:6019
 | 修改文本输出方式 | `output/text_output.py` |
 | 添加 LLM 角色 | 在 `LLM/` 目录新建 .py 文件 |
 | 修改 LLM 处理逻辑 | `llm/llm_handler.py`, `llm/llm_processor.py` |
+| 开关角色联网搜索 | 角色文件的 `enable_web_search`/`enable_datetime`/`request_timeout`/`api_url`；实现在 `llm/llm_processor.py` 的 `_build_responses_params` 与 `_process_responses_stream` |
 | 修改热词匹配 | `hotword/hot_phoneme.py` |
 | 修改 UI 悬浮提示 | `core/client/ui/recording_indicator.py` |
 | 修改 Toast 弹窗 | `core/ui/toast.py`, `core/ui/toast_manager.py`, `core/ui/toast_base.py`, `core/ui/toast_text.py`, `core/ui/toast_label.py` |

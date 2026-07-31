@@ -497,8 +497,11 @@ def _set_typing_safe(client: OpenMateClient, active: bool) -> bool:
         return False
 
 
-async def try_openmate_mode(handler, role_config, content, matched_hotwords) -> tuple:
+async def try_openmate_mode(handler, role_config, content, matched_hotwords, used_tools=None) -> tuple:
     """尝试 OpenMate 展示路径
+
+    Args:
+        used_tools: 出参列表，本次请求触发的服务端工具 ID 会追加进来
 
     Returns:
         (result, token_count, gen_time) 元组；OpenMate 未启用或不可用时返回 None，
@@ -514,10 +517,11 @@ async def try_openmate_mode(handler, role_config, content, matched_hotwords) -> 
         return None
 
     logger.info('OpenMate 可用，LLM 输出将转交 OpenMate 展示')
-    return await _handle_openmate_mode(handler, client, role_config, content, matched_hotwords)
+    return await _handle_openmate_mode(handler, client, role_config, content, matched_hotwords, used_tools)
 
 
-async def _handle_openmate_mode(handler, client, role_config, content, matched_hotwords) -> tuple:
+async def _handle_openmate_mode(handler, client, role_config, content, matched_hotwords,
+                                used_tools=None) -> tuple:
     import dataclasses
     from config_client import ClientConfig as Config
     from .llm_role_config import RoleConfig
@@ -553,7 +557,7 @@ async def _handle_openmate_mode(handler, client, role_config, content, matched_h
         sender = OpenMateStreamSender(client, target_character)
     try:
         polished_text, token_count, gen_time = await to_thread(
-            handler.process, llm_config, content, matched_hotwords, sender.push
+            handler.process, llm_config, content, matched_hotwords, sender.push, None, used_tools
         )
 
         if handler.monitor.should_stop():

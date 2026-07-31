@@ -7,8 +7,8 @@ LLM 处理器 - 协调器
 3. 流式输出
 """
 
-from dataclasses import dataclass
-from typing import Dict, Tuple, Optional, Any
+from dataclasses import dataclass, field
+from typing import Dict, List, Tuple, Optional, Any
 from pathlib import Path
 
 from .llm_role_loader import RoleLoader
@@ -35,6 +35,7 @@ class LLMResult:
     polish_time: float             # 总耗时（秒）
     input_text: str                # 输入文本（已移除角色前缀）
     generation_time: float = 0.0   # 生成时间（秒，从第一个 token 开始）
+    used_tools: List[str] = field(default_factory=list)  # 本次请求实际触发的服务端工具 ID
 
 
 # ======================================================================
@@ -146,7 +147,8 @@ class LLMHandler:
         """
         return self.role_detector.detect(text)
 
-    def process(self, role_config: RoleConfig, content: str, matched_hotwords=None, callback=None) -> Tuple[str, int, float]:
+    def process(self, role_config: RoleConfig, content: str, matched_hotwords=None, callback=None,
+                status_callback=None, used_tools=None) -> Tuple[str, int, float]:
         """执行实际的 LLM 模型调用（内部方法）
 
         Args:
@@ -154,6 +156,8 @@ class LLMHandler:
             content: 去除前缀后的输入内容
             matched_hotwords: [(hotword, score), ...] 来自 hot_phoneme 的检索结果
             callback: 流式输出的回调函数
+            status_callback: 过程状态回调（如联网搜索中），仅用于展示
+            used_tools: 出参列表，本次请求触发的服务端工具 ID 会追加进来
 
         Returns:
             (处理后的文本, 输出token数, 生成时间秒)
@@ -185,7 +189,9 @@ class LLMHandler:
             messages=messages,
             callback=callback,
             should_stop_check=should_stop_check,
-            context_manager=context_manager
+            context_manager=context_manager,
+            status_callback=status_callback,
+            used_tools=used_tools
         )
 
         # 记录选中文字的使用（用于下一轮判断是否重复）
@@ -238,10 +244,16 @@ class LLMHandler:
                 token_count=0, polish_time=0, input_text=content)
 
         # 4. 根据输出模式分发处理
+        # used_tools 由各输出模式一路透传到流解析层，在那里追加实际触发的工具 ID。
+        # 不用返回值携带：三个输出模式里有十来处提前 return 的降级分支，扩成四元组
+        # 漏改一处就是运行时崩溃；也不用 handler 上的实例属性，避免跨请求残留
+        used_tools = []
         if role_config.output_mode == 'toast':
-            result, token_count, gen_time = await handle_toast_mode(self, text, role_config, matched_hotwords, content)
+            result, token_count, gen_time = await handle_toast_mode(
+                self, text, role_config, matched_hotwords, content, used_tools)
         else: # typing
-            result, token_count, gen_time = await handle_typing_mode(self, text, paste, matched_hotwords, role_config, content)
+            result, token_count, gen_time = await handle_typing_mode(
+                self, text, paste, matched_hotwords, role_config, content, used_tools)
 
         # 5. 后置处理
         # 更新全局状态（即便是中断了，也记录已经输出的部分）
@@ -256,7 +268,8 @@ class LLMHandler:
             token_count=token_count,
             polish_time=time.time() - start_time,
             input_text=content,
-            generation_time=gen_time
+            generation_time=gen_time,
+            used_tools=used_tools
         )
 
 

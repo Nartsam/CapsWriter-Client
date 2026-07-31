@@ -94,6 +94,33 @@ class APIConfig:
     DEFAULT_TIMEOUT = 2.0
 
 
+# ==================== 服务端内置工具 ====================
+class ToolNames:
+    """服务端内置工具的展示文案
+
+    工具 ID 取自 Responses API 的事件名 `response.<工具ID>_call.<阶段>`，
+    未登记的新工具一律回退到原始 ID，宁可显示得难看也不要静默丢失
+    """
+
+    # 控制台「模型结果[助理(搜索)]」里的短标签
+    DISPLAY = {
+        'web_search': '搜索',
+    }
+
+    # 工具执行期间的占位文案（此时还没有任何正文分片）
+    STATUS = {
+        'web_search': '正在联网搜索…',
+    }
+
+    @classmethod
+    def display(cls, tool_id: str) -> str:
+        return cls.DISPLAY.get(tool_id, tool_id)
+
+    @classmethod
+    def status(cls, tool_id: str) -> str:
+        return cls.STATUS.get(tool_id, f'正在调用 {tool_id}…')
+
+
 # ==================== Token 估算工具 ====================
 def estimate_tokens(text: str) -> int:
     """

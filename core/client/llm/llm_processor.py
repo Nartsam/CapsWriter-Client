@@ -14,7 +14,7 @@ from typing import Callable, Optional, Dict, Any, List, Tuple
 from .llm_role_config import RoleConfig
 from .llm_interfaces import IContextManager
 from .llm_client_pool import ClientPool
-from .llm_constants import estimate_tokens
+from .llm_constants import estimate_tokens, ToolNames
 from .llm_exceptions import (
     APIException,
     wrap_openai_error, OpenAIErrorWrapper,
@@ -39,7 +39,9 @@ class LLMProcessor:
         messages: List[Dict[str, str]],
         callback: Optional[Callable[[str], None]] = None,
         should_stop_check: Optional[Callable[[], bool]] = None,
-        context_manager: Optional[IContextManager] = None
+        context_manager: Optional[IContextManager] = None,
+        status_callback: Optional[Callable[[str], None]] = None,
+        used_tools: Optional[List[str]] = None
     ) -> Tuple[str, int, float]:
         """
         执行 LLM 处理
@@ -50,6 +52,8 @@ class LLMProcessor:
             callback: 流式输出回调函数
             should_stop_check: 检查是否应该停止的函数
             context_manager: 上下文管理器（用于更新历史）
+            status_callback: 过程状态回调（如联网搜索中），仅用于展示，不计入正文
+            used_tools: 出参列表，本次请求实际触发的服务端工具 ID 会按序追加进来
 
         Returns:
             (处理后的文本, 输出token数, 生成时间秒)
@@ -71,7 +75,9 @@ class LLMProcessor:
                 should_stop_check,
                 role_config,
                 context_manager,
-                messages
+                messages,
+                status_callback,
+                used_tools
             )
 
         except OpenAIErrorWrapper:
@@ -148,6 +154,50 @@ class LLMProcessor:
 
         return params
 
+    def _build_responses_params(
+        self,
+        role_config: RoleConfig,
+        messages: List[Dict[str, str]]
+    ) -> Dict[str, Any]:
+        """构建 Responses API 请求参数
+
+        Responses API 与 Chat Completions 的差异：system 消息走 instructions，
+        其余消息走 input，token 上限字段名为 max_output_tokens，且没有 stop 参数。
+        """
+        instructions = ''
+        input_items = []
+        for msg in messages:
+            if msg.get('role') == 'system' and not instructions:
+                instructions = msg.get('content', '')
+            else:
+                input_items.append(msg)
+
+        params = {
+            'model': role_config.model,
+            'input': input_items,
+            'temperature': role_config.temperature,
+            'top_p': role_config.top_p,
+        }
+
+        if instructions:
+            params['instructions'] = instructions
+
+        if role_config.max_tokens > 0:
+            params['max_output_tokens'] = role_config.max_tokens
+
+        if role_config.enable_web_search:
+            # 服务端内置工具，检索在 DeepSeek 侧执行，本地无需搜索 API Key。
+            # 是否检索由模型自行判断，普通问题不会触发，速度与不挂载工具时一致
+            params['tools'] = [{'type': 'web_search'}]
+
+        if role_config.stop:
+            logger.debug("Responses API 不支持 stop 参数，已忽略")
+
+        if role_config.extra_options:
+            params.update(role_config.extra_options)
+
+        return params
+
     def _stream_request(
         self,
         client: Any,
@@ -155,13 +205,20 @@ class LLMProcessor:
         should_stop_check: Optional[Callable[[], bool]],
         role_config: RoleConfig,
         context_manager: Optional[IContextManager],
-        messages: List[Dict[str, str]]
+        messages: List[Dict[str, str]],
+        status_callback: Optional[Callable[[str], None]] = None,
+        used_tools: Optional[List[str]] = None
     ) -> Tuple[str, int, float]:
         """执行流式请求并协调不同处理引擎"""
 
         if role_config.provider == 'ollama':
             result = self._process_ollama_stream(
                 client, role_config, messages, callback, should_stop_check
+            )
+        elif role_config.enable_web_search:
+            result = self._process_responses_stream(
+                client, role_config, messages, callback, should_stop_check,
+                status_callback, used_tools
             )
         else:
             result = self._process_openai_stream(
@@ -251,6 +308,9 @@ class LLMProcessor:
         if not role_config.enable_thinking:
             params['extra_body'] = {"thinking": {"type": "disabled"}}
 
+        if role_config.request_timeout > 0:
+            params['timeout'] = role_config.request_timeout
+
         stream = client.chat.completions.create(**params)
 
         full_response, total_tokens, generation_start_time = "", 0, None
@@ -271,6 +331,91 @@ class LLMProcessor:
 
             if hasattr(chunk, 'usage') and chunk.usage:
                 total_tokens = getattr(chunk.usage, 'completion_tokens', 0)
+
+        generation_time = time.time() - generation_start_time if generation_start_time else 0.0
+        return full_response.strip(), total_tokens, generation_time
+
+    @staticmethod
+    def _extract_tool_id(event_type: str) -> str:
+        """从 Responses API 事件名中取出服务端工具 ID
+
+        事件名形如 `response.web_search_call.in_progress`，工具 ID 即 `web_search`。
+        这里按命名规律解析而不是硬编码 web_search，将来 DeepSeek 放开别的内置工具
+        无需改动流解析逻辑。非工具事件返回空串
+        """
+        if not event_type.startswith('response.'):
+            return ''
+        segment = event_type[len('response.'):].split('.')[0]
+        if not segment.endswith('_call'):
+            return ''
+        return segment[:-len('_call')]
+
+    def _process_responses_stream(
+        self,
+        client: Any,
+        role_config: RoleConfig,
+        messages: List[Dict[str, str]],
+        callback: Optional[Callable[[str], None]],
+        should_stop_check: Optional[Callable[[], bool]],
+        status_callback: Optional[Callable[[str], None]] = None,
+        used_tools: Optional[List[str]] = None
+    ) -> Tuple[str, int, float]:
+        """处理 Responses API 流响应（联网搜索路径）
+
+        服务端执行工具期间不会有正文分片产生，只能靠 <工具>_call 事件告知用户，
+        否则窗口会空着好几秒像卡死
+        """
+
+        params = self._build_responses_params(role_config, messages)
+        params['stream'] = True
+
+        if not role_config.enable_thinking:
+            params['extra_body'] = {"thinking": {"type": "disabled"}}
+
+        if role_config.request_timeout > 0:
+            params['timeout'] = role_config.request_timeout
+
+        stream = client.responses.create(**params)
+
+        full_response, total_tokens, generation_start_time = "", 0, None
+        seen_tools = []
+
+        for event in stream:
+            if should_stop_check and should_stop_check():
+                try: stream.close()
+                except: pass
+                break
+
+            event_type = getattr(event, 'type', '')
+            tool_id = self._extract_tool_id(event_type)
+
+            if event_type == 'response.output_text.delta':
+                content = getattr(event, 'delta', '') or ''
+                if content:
+                    full_response += content
+                    if generation_start_time is None:
+                        generation_start_time = time.time()
+                    if callback:
+                        callback(content)
+
+            elif tool_id:
+                # 同一个工具会连发 in_progress/searching/completed 多个事件，只认第一次
+                if tool_id not in seen_tools:
+                    seen_tools.append(tool_id)
+                    if used_tools is not None:
+                        used_tools.append(tool_id)
+                    logger.info(f"模型触发了服务端工具: {tool_id}")
+                    if status_callback:
+                        status_callback(ToolNames.status(tool_id))
+
+            elif event_type == 'response.completed':
+                usage = getattr(getattr(event, 'response', None), 'usage', None)
+                if usage:
+                    total_tokens = getattr(usage, 'output_tokens', 0) or 0
+
+            elif event_type == 'error':
+                # 流内错误事件：SDK 不会抛异常，不主动记录就只会表现为"没有输出"
+                logger.error(f"Responses API 流内错误: {getattr(event, 'message', event)}")
 
         generation_time = time.time() - generation_start_time if generation_start_time else 0.0
         return full_response.strip(), total_tokens, generation_time

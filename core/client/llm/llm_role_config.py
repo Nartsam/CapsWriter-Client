@@ -36,6 +36,12 @@ class RoleConfig:
     enable_hotwords: bool = False                 # 是否读取潜在热词列表
     enable_read_selection: bool = False           # 是否读取鼠标所选文字（通过 Ctrl+C）
     selection_max_length: int = 1000              # 选中文字最大长度
+    enable_web_search: bool = False               # 联网搜索：改走 Responses API 并挂载服务端内置
+                                                  # web_search 工具，由模型自行决定是否检索
+                                                  # （目前仅 DeepSeek 的 deepseek-v4-flash 支持）
+    enable_datetime: bool = False                 # 在用户消息里注入当前日期时间，供模型判断时效性
+    request_timeout: float = 0                    # 单次请求超时（秒），0 表示用 provider 默认值；
+                                                  # 联网搜索在首个正文分片前会静默数秒，必须调大
 
     # 输出配置
     output_mode: str = 'typing'                   # 输出方式: 'typing' 或 'toast' (即打字输出或弹窗输出)
@@ -76,6 +82,7 @@ class RoleConfig:
     # 提示词前缀
     prompt_prefix_hotwords: str = '热词列表：'      # 热词列表前缀
     prompt_prefix_selection: str = '选中文字：'     # 选中文字前缀
+    prompt_prefix_datetime: str = '当前时间：'      # 当前时间前缀
     prompt_prefix_input: str = '用户输入：'         # 用户输入前缀
 
     # System Prompt

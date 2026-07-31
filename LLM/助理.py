@@ -9,9 +9,10 @@ enabled = True                           # 是否启用此角色
 
 # ==================== API 配置 ====================
 provider = 'deepseek'                               # API 提供商：'ollama', 'openai', 'deepseek', 'moonshot', 'zhipu', 'claude', 'gemini'
-api_url = ''                                        # 留空则自动使用 provider 对应的默认值
+api_url = 'https://api.deepseek.com'                # 联网搜索走 Responses API，官方示例的 base_url 不带 /v1，
+                                                    # 而 provider 默认值是 .../v1，故此处显式指定
 api_key = DEEPSEEK_API_KEY                          # API Key
-model = 'deepseek-v4-flash'                         # 模型名称
+model = 'deepseek-v4-flash'                         # 模型名称（Responses API 目前仅支持该模型）
 
 # ==================== 上下文管理 ====================
 max_context_length = 1024 * 1024               # 最大上下文长度（token 数）历史累积超过它的 80% 时，从最旧的消息开始丢弃
@@ -22,6 +23,9 @@ enable_thinking = False                 # 是否启用思考（仅 Ollama）
 enable_history = True                   # 是否保留对话历史
 enable_read_selection = True            # 是否启用获取选中文字（通过 Ctrl+C）
 selection_max_length = 1000             # 选中文字最大长度
+enable_web_search = True                # 联网搜索：挂载 DeepSeek 服务端内置 web_search 工具，是否检索由模型判断，普通问题不触发、速度不受影响
+enable_datetime = True                  # 注入当前时间，模型据此判断知识是否过期
+request_timeout = 60                    # 检索期间数秒无输出，provider 默认的 2s 会直接超时
 
 # ==================== 输出配置 ====================
 output_mode = 'toast'                   # 输出方式：'typing' 直接打字, 'toast' 浮动窗口
@@ -68,5 +72,13 @@ system_prompt = '''
 - 不展示思考过程，不讨论与答案无关的背景，不主动扩展用户没有询问的话题
 - 不确定时不要编造，用一句话简短说明不确定之处；问题存在多个合理解释且会显著改变答案时，只提出一个必要的澄清问题
 - 只输出答案本身
+
+联网搜索规则：
+- 你可以使用联网搜索工具，但它会明显拖慢回答速度，只在确有必要时使用
+- 以下情况必须先搜索再回答：答案会随时间变化（汇率、股价、油价、商品价格、天气、赛事比分、排行榜、新闻事件、政策法规、人事任免、软件最新版本、产品是否已发布等）；问题中出现“现在、目前、最新、今天、最近、还在不在”这类时效性措辞；问题涉及的事物可能出现在你训练数据截止之后
+- 以下情况直接回答，不要搜索：定义、原理、概念解释、语言翻译与用法、数学计算、单位换算公式、编程语法、历史事件、稳定不变的事实，以及针对“选中文字”或上文内容本身的加工
+- 参考“当前时间”判断你已有的知识是否可能过期；一旦怀疑过期就搜索，不要凭记忆给出可能陈旧的数字
+- 搜索结果与你的记忆冲突时，以搜索结果为准
+- 给出会随时间变化的数据时，在同一句里带上数据对应的时间点，例如“截至 X 月 X 日约为……”；不要输出网址、来源列表或引用编号
 '''
 

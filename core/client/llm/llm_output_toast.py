@@ -19,8 +19,12 @@ LLM_TOAST_ALPHA = 0.92
 LLM_TOAST_CORNER_RADIUS = 12
 
 
-async def handle_toast_mode(handler, text: str, role_config=None, matched_hotwords=None, content=None) -> tuple:
-    """Toast 浮动窗口模式"""
+async def handle_toast_mode(handler, text: str, role_config=None, matched_hotwords=None, content=None,
+                            used_tools=None) -> tuple:
+    """Toast 浮动窗口模式
+
+    used_tools: 出参列表，本次请求触发的服务端工具 ID 会追加进来
+    """
     from core.ui.toast import ToastMessageManager, ToastMessage
     # 兼容性检测
     if not role_config or content is None:
@@ -32,7 +36,7 @@ async def handle_toast_mode(handler, text: str, role_config=None, matched_hotwor
 
     # OpenMate 接入：探测到 OpenMate 以 external 模式运行时，改由其展示，不弹本地 Toast
     from .llm_output_openmate import try_openmate_mode
-    openmate_result = await try_openmate_mode(handler, role_config, content, matched_hotwords)
+    openmate_result = await try_openmate_mode(handler, role_config, content, matched_hotwords, used_tools)
     if openmate_result is not None:
         return openmate_result
 
@@ -80,9 +84,15 @@ async def handle_toast_mode(handler, text: str, role_config=None, matched_hotwor
             chunks.append(chunk)
             toast_manager.update_toast(msg_id, ''.join(chunks))
 
+        def show_toast_status(status: str):
+            # 状态只在正文到达前占位；一旦有分片，后续 update 会用全文覆盖掉它
+            if not chunks:
+                toast_manager.update_toast(msg_id, status)
+
         # 流式调用 LLM
         polished_text, token_count, gen_time = await to_thread(
-            handler.process, role_config, content, matched_hotwords, stream_toast_chunk
+            handler.process, role_config, content, matched_hotwords, stream_toast_chunk,
+            show_toast_status, used_tools
         )
 
         if handler.monitor.should_stop():

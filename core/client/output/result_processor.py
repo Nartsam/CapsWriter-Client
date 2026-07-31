@@ -24,6 +24,7 @@ from core.client.udp.udp_broadcaster import broadcast_output_udp
 from core.tools.zhconv import convert as zhconv_convert
 from core.client.audio.file_manager import AudioFileManager
 from core.client.llm.llm_write_md import write_llm_md
+from core.client.llm.llm_constants import ToolNames
 # 悬浮录音提示：用于显示等待、进度、错误和处理完成后的隐藏。
 from core.client.ui import (
     hide_recording_indicator,
@@ -129,7 +130,16 @@ class ResultProcessor:
         if len(polished_text) > max_display_length:
             polished_text = polished_text[:max_display_length] + '...'
 
-        role_label = f'[{role_name}]' if role_name else ''
+        # 角色名后缀出本次触发的服务端工具，如「模型结果[助理(搜索)]」。
+        # 工具执行是这条路径上唯一会让耗时突然变长的原因，不标出来就无从分辨
+        # 「这次慢」是搜索导致的还是网络抖动
+        tool_names = '、'.join(ToolNames.display(t) for t in (llm_result.used_tools or ()))
+        if role_name and tool_names:
+            role_label = f'[{role_name}({tool_names})]'
+        elif role_name:
+            role_label = f'[{role_name}]'
+        else:
+            role_label = ''
         result_text = f'[green]{polished_text}[/green]' if processed else polished_text
 
         if token_count == 0 and polished_text:

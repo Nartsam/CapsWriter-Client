@@ -72,6 +72,12 @@ class MessageBuilder:
         # 3. 用户内容构建 (集中式构建，方便管理格式)
         context_parts = []
 
+        # 3.0 当前时间
+        # 放在用户消息而非 system prompt 里：system 是缓存前缀，逐分钟变化会让
+        # 服务端的前缀缓存全部失效
+        if role_config.enable_datetime:
+            context_parts.append(f"{role_config.prompt_prefix_datetime}{self._format_now()}")
+
         # 3.1 热词列表
         if role_config.enable_hotwords and hotwords:
             try:
@@ -113,6 +119,13 @@ class MessageBuilder:
         self._debug_print_messages(role_config.name, role_config, messages)
 
         return messages
+
+    @staticmethod
+    def _format_now() -> str:
+        """当前本地时间，形如 2026-07-31 15:04 星期五"""
+        import time
+        weekday = '一二三四五六日'[time.localtime().tm_wday]
+        return f"{time.strftime('%Y-%m-%d %H:%M')} 星期{weekday}"
 
     def _debug_print_messages(
         self,

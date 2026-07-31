@@ -15,8 +15,12 @@ from core.client.clipboard import paste_text
 from . import logger
 
 
-async def handle_typing_mode(handler, text: str, paste: bool = None, matched_hotwords=None, role_config=None, content=None) -> tuple:
-    """打字输出模式"""
+async def handle_typing_mode(handler, text: str, paste: bool = None, matched_hotwords=None, role_config=None,
+                             content=None, used_tools=None) -> tuple:
+    """打字输出模式
+
+    used_tools: 出参列表，本次请求触发的服务端工具 ID 会追加进来
+    """
     from .llm_error_handler import handle_llm_error
     # 如果没传，则现场检测一次（兼容性）
     if not role_config or content is None:
@@ -32,9 +36,9 @@ async def handle_typing_mode(handler, text: str, paste: bool = None, matched_hot
 
     try:
         if paste:
-            return await _process_paste(handler, role_config, content, matched_hotwords)
+            return await _process_paste(handler, role_config, content, matched_hotwords, used_tools)
         else:
-            return await _process_streaming(handler, role_config, content, matched_hotwords)
+            return await _process_streaming(handler, role_config, content, matched_hotwords, used_tools)
 
     except Exception as e:
         result_text, _ = handle_llm_error(e, content, role_config.name if role_config else "LLM")
@@ -43,10 +47,10 @@ async def handle_typing_mode(handler, text: str, paste: bool = None, matched_hot
         return (result_text, 0, 0.0)
 
 
-async def _process_paste(handler, role_config, content, matched_hotwords) -> tuple:
+async def _process_paste(handler, role_config, content, matched_hotwords, used_tools=None) -> tuple:
     """处理粘贴模式：获取全文后一次性粘贴"""
     polished_text, token_count, gen_time = await to_thread(
-        handler.process, role_config, content, matched_hotwords, None
+        handler.process, role_config, content, matched_hotwords, None, None, used_tools
     )
     if handler.monitor.should_stop():
         return ("", 0, 0.0)
@@ -56,7 +60,7 @@ async def _process_paste(handler, role_config, content, matched_hotwords) -> tup
     return (final_text, token_count, gen_time)
 
 
-async def _process_streaming(handler, role_config, content, matched_hotwords) -> tuple:
+async def _process_streaming(handler, role_config, content, matched_hotwords, used_tools=None) -> tuple:
     """处理流式打字模式：边生成边模拟按键打字"""
     chunks = []
     pending_buffer = ""
@@ -92,7 +96,7 @@ async def _process_streaming(handler, role_config, content, matched_hotwords) ->
 
     # 执行流式处理
     polished_text, token_count, gen_time = await to_thread(
-        handler.process, role_config, content, matched_hotwords, stream_write_chunk
+        handler.process, role_config, content, matched_hotwords, stream_write_chunk, None, used_tools
     )
 
     # 阻塞，直到正常结束，或用户按下 ESC
