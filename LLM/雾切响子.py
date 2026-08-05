@@ -9,8 +9,7 @@ enabled = True                           # 是否启用此角色
 
 # ==================== API 配置 ====================
 provider = 'deepseek'                               # API 提供商：'ollama', 'openai', 'deepseek', 'moonshot', 'zhipu', 'claude', 'gemini'
-api_url = 'https://api.deepseek.com'                # 联网搜索走 Responses API，官方示例的 base_url 不带 /v1，
-                                                    # 而 provider 默认值是 .../v1，故此处显式指定
+api_url = 'https://api.deepseek.com'                # 联网搜索走 Responses API，官方示例的 base_url 不带 /v1，而 provider 默认值是 .../v1，故此处显式指定
 api_key = DEEPSEEK_API_KEY                          # API Key
 model = 'deepseek-v4-flash'                         # 模型名称（Responses API 目前仅支持该模型）
 
@@ -23,8 +22,7 @@ enable_thinking = False                 # 是否启用思考（仅 Ollama）
 enable_history = True                   # 是否保留对话历史
 enable_read_selection = True            # 是否启用获取选中文字（通过 Ctrl+C）
 selection_max_length = 1000             # 选中文字最大长度
-enable_web_search = True                # 联网搜索：挂载 DeepSeek 服务端内置 web_search 工具，
-                                        # 是否检索由模型判断，闲聊与常识不触发、速度不受影响
+enable_web_search = True                # 联网搜索：挂载 DeepSeek 服务端内置 web_search 工具，是否检索由模型判断，闲聊与常识不触发、速度不受影响
 enable_datetime = True                  # 注入当前时间，模型据此判断知识是否过期
 request_timeout = 60                    # 检索期间数秒无输出，provider 默认的 2s 会直接超时
 

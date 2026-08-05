@@ -9,8 +9,7 @@ enabled = True                           # 是否启用此角色
 
 # ==================== API 配置 ====================
 provider = 'deepseek'                               # API 提供商：'ollama', 'openai', 'deepseek', 'moonshot', 'zhipu', 'claude', 'gemini'
-api_url = 'https://api.deepseek.com'                # 联网搜索走 Responses API，官方示例的 base_url 不带 /v1，
-                                                    # 而 provider 默认值是 .../v1，故此处显式指定
+api_url = 'https://api.deepseek.com'                # 联网搜索走 Responses API，官方示例的 base_url 不带 /v1，而 provider 默认值是 .../v1，故此处显式指定
 api_key = DEEPSEEK_API_KEY                          # API Key
 model = 'deepseek-v4-flash'                         # 模型名称（Responses API 目前仅支持该模型）
 
