@@ -38,6 +38,10 @@ async def handle_toast_mode(handler, text: str, role_config=None, matched_hotwor
     from .llm_output_openmate import try_openmate_mode
     openmate_result = await try_openmate_mode(handler, role_config, content, matched_hotwords, used_tools)
     if openmate_result is not None:
+        # OpenMate 接管展示：同样顶掉旧的本地 LLM 白色对话框。若不同时顶，之前被拖拽过
+        # （永不自动关闭）的本地窗口会在用户一直走 OpenMate 路径时永久残留——本地既不弹
+        # 新窗口、又无提前关闭路径，两条规则叠加成漏洞
+        ToastMessageManager().close_llm_windows()
         return openmate_result
 
     handler.monitor.reset()  # 重置停止标志
@@ -68,9 +72,14 @@ async def handle_toast_mode(handler, text: str, role_config=None, matched_hotwor
             editable=role_config.toast_editable,
             window_alpha=role_config.toast_window_alpha,
             corner_radius=role_config.toast_corner_radius,
+            # 智能时长：时长随字数、悬停暂停续时、拖拽后永不自动关闭
+            smart_duration=True,
             stop_callback=lambda: task_stop_event.set()
         )
 
+        # 新 LLM 回复窗口生成：顶掉所有旧的 LLM 白色对话框（无论是否拖拽），
+        # 确保新窗口一弹出（即使还是空文本）旧窗口就已消失
+        toast_manager.close_llm_windows()
         msg_id = toast_manager.add_message(msg)
         toast_window = await toast_manager.wait_for_window(msg_id, timeout=1.0)
 

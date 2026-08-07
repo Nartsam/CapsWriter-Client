@@ -97,6 +97,8 @@ class ToastMessage:
     editable: bool = False  # Markdown 渲染后是否允许编辑
     window_alpha: float = 1.0  # 窗口透明度，1.0 表示不透明
     corner_radius: int = 0     # 窗口圆角半径，0 表示不启用圆角
+    smart_duration: bool = False  # 智能时长模式（LLM 角色白色对话框）：时长随字数、
+                                  # 悬停暂停续时、拖拽后永不自动关闭；普通 toast 保持旧行为
 
 
 # ============================================================
@@ -203,17 +205,23 @@ class ToastMessageManager:
                     markdown=msg.markdown,
                     editable=msg.editable,
                     window_alpha=msg.window_alpha,
-                    corner_radius=msg.corner_radius
+                    corner_radius=msg.corner_radius,
+                    smart_duration=msg.smart_duration
                 )
 
                 # 保存消息ID到窗口对象
                 toast_window._msg_id = msg_id
                 self.active_windows.append(toast_window)
 
-                # 设置窗口销毁时的回调
+                # 设置窗口销毁时的回调。注意：Tk 的 <Destroy> 事件在任意子 widget 销毁时
+                # 也会触发绑定到 Toplevel 上的回调（Markdown 转换会销毁 text_area），必须
+                # 校验被销毁的是 Toplevel 本身。否则已 finish 的窗口会被误从 active_windows
+                # 移除——窗口还显示着，但后续 close_llm_windows 遍历不到它、顶不掉了。
                 toast_window.window.bind(
                     '<Destroy>',
-                    lambda _, w=toast_window: self._remove_window(w)
+                    lambda e, w=toast_window: (
+                        self._remove_window(w) if str(e.widget) == str(w.window) else None
+                    )
                 )
 
             # 清理已销毁的窗口
@@ -299,6 +307,30 @@ class ToastMessageManager:
                     pass
                 return
         logger.warning(f"未找到消息 ID: {msg_id[:8]}")
+
+    def close_llm_windows(self) -> None:
+        """关闭所有旧的 LLM 白色对话框。
+
+        新 LLM 回复窗口创建前调用：上一轮 LLM 回复窗口（无论是否被拖拽）都应由
+        新窗口取代，避免新旧叠加——用户说新的话时旧回复窗口应立即消失，而不是
+        等到新窗口有文字才被察觉。范围限定 smart_duration 窗口（pause_and_resume
+        标志），普通 toast（托盘/错误/录音）不受影响；OpenMate 接管时不走本方法
+        （handle_toast_mode 在 OpenMate 路径提前返回，旧窗口保留）。
+        """
+        for window in self.active_windows[:]:
+            if getattr(window, 'pause_and_resume', False):
+                # 与 _destroy_window 的 ESC 路径语义对称：顶掉旧窗口时也触发其停止回调。
+                # 串行处理下旧请求的 LLM 已完成、回调无害；防未来并发处理时旧请求继续烧 token
+                stop_cb = getattr(window, 'stop_callback', None)
+                if stop_cb:
+                    try:
+                        stop_cb()
+                    except Exception:
+                        pass
+                try:
+                    window.window.destroy()
+                except tk.TclError:
+                    pass
 
     async def wait_for_window(self, msg_id: str, timeout: float = 1.0) -> Optional[ToastWindowBase]:
         """异步等待指定 ID 的窗口创建完成

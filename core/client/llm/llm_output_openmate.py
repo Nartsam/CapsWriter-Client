@@ -625,5 +625,11 @@ def _show_fallback_toast(role_config, text: str):
         editable=role_config.toast_editable,
         window_alpha=role_config.toast_window_alpha,
         corner_radius=role_config.toast_corner_radius,
+        # 智能时长：非流式一次性展示，创建即按最终文本字数计时；
+        # 悬停暂停续时、拖拽后永不自动关闭（同 handle_toast_mode）
+        smart_duration=True,
     )
-    ToastMessageManager().add_message(msg)
+    manager = ToastMessageManager()
+    # 新 LLM 回复窗口生成：顶掉所有旧的 LLM 白色对话框（无论是否拖拽）
+    manager.close_llm_windows()
+    manager.add_message(msg)

@@ -58,10 +58,11 @@ class ToastWindowLabel(ToastWindowBase):
         markdown: bool = False,
         editable: bool = False,
         window_alpha: float = 1.0,
-        corner_radius: int = 0
+        corner_radius: int = 0,
+        smart_duration: bool = False
     ) -> None:
         """创建基于 Label 组件的浮动消息窗口
-        
+
         Args:
             parent_root: 父窗口（Tk 主窗口）
             text: 初始文本内容
@@ -81,13 +82,15 @@ class ToastWindowLabel(ToastWindowBase):
             editable: Markdown 渲染后是否允许编辑
             window_alpha: 窗口透明度，1.0 表示不透明
             corner_radius: 窗口圆角半径，0 表示不启用圆角
+            smart_duration: 智能时长模式（LLM 角色白色对话框），见 ToastWindowBase
         """
         # 初始化基类
         super().__init__(
             parent_root, text, font_size, font_family, bg, fg,
             duration, min_width_px, max_width_px,
             min_width_ratio, max_width_ratio, initial_height, streaming,
-            stop_callback, markdown, editable, window_alpha, corner_radius
+            stop_callback, markdown, editable, window_alpha, corner_radius,
+            smart_duration
         )
 
         # 用于增量插入
