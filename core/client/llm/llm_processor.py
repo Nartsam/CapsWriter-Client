@@ -23,6 +23,19 @@ from .llm_exceptions import (
 from . import logger
 
 
+def _dig(obj: Any, *names: str) -> Any:
+    """按名称链逐层取值，兼容 SDK 的 pydantic 对象与 dict，任一层缺失返回 None
+
+    各家 API 的 usage / 错误详情嵌套结构不同，且同一字段在不同版本里时有时无，
+    直接 getattr 链会因为一个缺失字段就抛异常，把诊断日志本身变成新的故障点
+    """
+    for name in names:
+        if obj is None:
+            return None
+        obj = obj.get(name) if isinstance(obj, dict) else getattr(obj, name, None)
+    return obj
+
+
 class LLMProcessor:
     """LLM 处理引擎 - 负责 API 调用和流式输出"""
 
@@ -273,9 +286,11 @@ class LLMProcessor:
 
         # 3. 迭代处理
         full_response, total_tokens, generation_start_time = "", 0, None
-        
+        stopped = False
+
         for chunk in stream:
             if should_stop_check and should_stop_check():
+                stopped = True
                 break
 
             if hasattr(chunk, 'message') and chunk.message.content:
@@ -290,6 +305,10 @@ class LLMProcessor:
                 total_tokens = getattr(chunk, 'eval_count', 0)
 
         generation_time = time.time() - generation_start_time if generation_start_time else 0.0
+
+        if not full_response.strip() and not stopped:
+            logger.warning("Ollama 没有返回任何正文（开启 think 时内容可能全在思考字段里）")
+
         return full_response.strip(), total_tokens, generation_time
 
     def _process_openai_stream(
@@ -314,11 +333,13 @@ class LLMProcessor:
         stream = client.chat.completions.create(**params)
 
         full_response, total_tokens, generation_start_time = "", 0, None
+        finish_reason, usage_summary, stopped = '', 'usage 缺失', False
 
         for chunk in stream:
             if should_stop_check and should_stop_check():
                 try: stream.close()
                 except: pass
+                stopped = True
                 break
 
             if chunk.choices and chunk.choices[0].delta.content:
@@ -329,11 +350,64 @@ class LLMProcessor:
                 if callback:
                     callback(content)
 
+            if chunk.choices and chunk.choices[0].finish_reason:
+                finish_reason = chunk.choices[0].finish_reason
+
             if hasattr(chunk, 'usage') and chunk.usage:
                 total_tokens = getattr(chunk.usage, 'completion_tokens', 0)
+                usage_summary = self._format_usage(chunk.usage)
 
         generation_time = time.time() - generation_start_time if generation_start_time else 0.0
+
+        # 空回复不会抛异常，不主动记录就只表现为「窗口一闪而过」，无从追查
+        summary = f"结束原因 {finish_reason or '未知'}，{usage_summary}，正文 {len(full_response)} 字"
+        if not full_response.strip() and not stopped:
+            logger.warning(f"模型没有返回任何正文（{summary}）")
+        elif finish_reason == 'length':
+            logger.warning(f"回复达到 max_tokens 被截断（{summary}）")
+        else:
+            logger.debug(f"Chat Completions 流结束：{summary}")
+
         return full_response.strip(), total_tokens, generation_time
+
+    @staticmethod
+    def _format_usage(usage: Any) -> str:
+        """把 usage 整理成一行日志，兼容 Responses 与 Chat Completions 两套字段名
+
+        重点是 reasoning_tokens：它是判断「输出额度是否被思考内容吃光」的唯一直接
+        证据——各家 API 对 max_tokens 是否计入思考 token 的口径并不一致
+        """
+        if usage is None:
+            return 'usage 缺失'
+
+        input_tokens = _dig(usage, 'input_tokens')
+        if input_tokens is None:
+            input_tokens = _dig(usage, 'prompt_tokens')
+        output_tokens = _dig(usage, 'output_tokens')
+        if output_tokens is None:
+            output_tokens = _dig(usage, 'completion_tokens')
+        reasoning_tokens = _dig(usage, 'output_tokens_details', 'reasoning_tokens')
+        if reasoning_tokens is None:
+            reasoning_tokens = _dig(usage, 'completion_tokens_details', 'reasoning_tokens')
+
+        parts = [
+            f"输入 {'?' if input_tokens is None else input_tokens} tokens",
+            f"输出 {'?' if output_tokens is None else output_tokens} tokens",
+        ]
+        parts.append('未回报推理 token' if reasoning_tokens is None else f'其中推理 {reasoning_tokens}')
+        return '，'.join(parts)
+
+    @staticmethod
+    def _format_event_counts(event_counts: Dict[str, int]) -> str:
+        """事件类型计数，按出现次数降序
+
+        未被解析分支认领的事件（例如思考分片）只会出现在这里，是排查
+        「一个正文字符都没收到」时最先要看的东西
+        """
+        if not event_counts:
+            return '无事件'
+        items = sorted(event_counts.items(), key=lambda kv: (-kv[1], kv[0]))
+        return ', '.join(f'{name}×{count}' for name, count in items)
 
     @staticmethod
     def _extract_tool_id(event_type: str) -> str:
@@ -379,14 +453,21 @@ class LLMProcessor:
 
         full_response, total_tokens, generation_start_time = "", 0, None
         seen_tools = []
+        # 诊断三件套：事件类型计数、终局状态、usage。空回复时它们是唯一能说明
+        # 「模型这几秒到底在干什么」的线索——没有被下面任何分支认领的事件
+        # （典型是思考分片）只会在计数里显形
+        event_counts = {}
+        final_status, usage_summary, refusal, stopped = '', 'usage 缺失', '', False
 
         for event in stream:
             if should_stop_check and should_stop_check():
                 try: stream.close()
                 except: pass
+                stopped = True
                 break
 
             event_type = getattr(event, 'type', '')
+            event_counts[event_type] = event_counts.get(event_type, 0) + 1
             tool_id = self._extract_tool_id(event_type)
 
             if event_type == 'response.output_text.delta':
@@ -408,14 +489,45 @@ class LLMProcessor:
                     if status_callback:
                         status_callback(ToolNames.status(tool_id))
 
-            elif event_type == 'response.completed':
-                usage = getattr(getattr(event, 'response', None), 'usage', None)
+            elif event_type in ('response.completed', 'response.incomplete', 'response.failed'):
+                # 三个终局事件共用同一个 response 对象结构。incomplete 表示生成被上限
+                # 截断（额度可能全被思考或工具调用消耗，此时正文为空），failed 是
+                # 服务端明确报错——两者以前都落进 else 被丢弃，是"查不出原因"的根源
+                response_obj = getattr(event, 'response', None)
+                usage = _dig(response_obj, 'usage')
                 if usage:
-                    total_tokens = getattr(usage, 'output_tokens', 0) or 0
+                    total_tokens = _dig(usage, 'output_tokens') or 0
+                    usage_summary = self._format_usage(usage)
+                final_status = _dig(response_obj, 'status') or event_type
+
+                if event_type == 'response.incomplete':
+                    reason = _dig(response_obj, 'incomplete_details', 'reason') or '未说明'
+                    logger.warning(f"Responses API 响应被截断（原因: {reason}），"
+                                   f"{usage_summary}，已收到正文 {len(full_response)} 字")
+                elif event_type == 'response.failed':
+                    error_obj = _dig(response_obj, 'error')
+                    # message 是人能读的那部分，缺失时退回整个对象，宁可难看也别丢信息
+                    error_detail = _dig(error_obj, 'message') or error_obj
+                    logger.error(f"Responses API 响应失败: {error_detail}，{usage_summary}")
+
+            elif event_type in ('response.refusal.delta', 'response.refusal.done'):
+                # 模型拒答：正文流为空但这不是故障，需要与"截断"区分开
+                refusal += getattr(event, 'delta', '') or getattr(event, 'refusal', '') or ''
 
             elif event_type == 'error':
                 # 流内错误事件：SDK 不会抛异常，不主动记录就只会表现为"没有输出"
                 logger.error(f"Responses API 流内错误: {getattr(event, 'message', event)}")
 
         generation_time = time.time() - generation_start_time if generation_start_time else 0.0
+
+        if refusal:
+            logger.warning(f"模型拒绝回答: {refusal}")
+
+        summary = (f"状态 {final_status or '未知'}，{usage_summary}，正文 {len(full_response)} 字，"
+                   f"事件 [{self._format_event_counts(event_counts)}]")
+        if not full_response.strip() and not stopped:
+            logger.warning(f"模型没有返回任何正文（{summary}）")
+        else:
+            logger.debug(f"Responses 流结束：{summary}")
+
         return full_response.strip(), total_tokens, generation_time

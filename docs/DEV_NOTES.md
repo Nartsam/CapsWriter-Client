@@ -5,6 +5,8 @@
 
 ## 待验证
 
+- [ ] 空回复诊断日志实机验收（这是为定位 2026-08-12 那次静默失败补的观测手段，本身还没在真实请求上跑过）：①正常问一句，确认终端**不会**多出任何黄色/红色告警，日志里 `Responses 流结束：状态 completed…` 只以 DEBUG 记录（需临时把 `config_client.py` 的 `log_level` 改成 `DEBUG` 才看得到）；②复现空回复（把助理的 `max_tokens` 临时调到 64 再问一个复杂问题），确认终端出现 `Responses API 响应被截断（原因: …）` 与 `模型没有返回任何正文（状态 … 事件 [...]）`，且控制台结果行是黄色「（空回复，详见日志）」而不是复述用户输入；③重点看事件计数里有没有 `response.reasoning_*` 之类没被解析的事件，以及 usage 里 `其中推理 N` 是否有值——**这两项就是判定「DeepSeek Responses API 的 max_output_tokens 是否计入思考 token」的直接证据**，拿到后回填「已知状态」那条；④ESC 中断一次，确认不会误报空回复告警。（2026-08-12）
+
 - [ ] 人设角色联网搜索实机验收：对「雾切响子」或「新岛真」问一个时效性问题（如今天的汇率），确认能查到最新数据，且回复仍是纯文本短句、按 `\n` 正常分段、没有网址或引用编号混进来；再闲聊几句确认没有为了闲聊去检索（日志无「模型触发了服务端工具」）、语速与改动前一致。（2026-07-31）
 - [ ] 工具标签实机验收：①触发搜索的问题，控制台应显示 `模型结果[助理(搜索)]：…`；②不触发搜索的问题应仍是 `模型结果[助理]：…`；③开着 OpenMate 时同样要出标签（OpenMate 是另一条早退路径，最容易漏转发）；④typing 模式角色不受影响。若标签始终不出现，先看日志有没有「模型触发了服务端工具」——有则是转发链断了，没有则是模型压根没调工具。（2026-07-31）
 - [ ] 助理角色联网搜索实机验收（改动只做了桩模块单测，**没有发过一次真实请求**，DeepSeek Responses API 的实际报文未验证）：①问「一人民币能换多少日元」，确认弹窗先显示「正在联网搜索…」再出带日期的最新汇率；②问「水的沸点是多少」这类常识，确认没有搜索、速度与改动前一致（日志里没有「模型触发了服务端工具」）；③搜索期间按 ESC 能立刻停下；④确认 `api_url = 'https://api.deepseek.com'`（不带 `/v1`）能通——若报 404，试着改回带 `/v1`；⑤确认 `extra_body={"thinking":{"type":"disabled"}}` 不会让 Responses API 报 400——若报错，把 `llm_processor._process_responses_stream` 里这两行去掉；⑥连续问几轮，确认历史上下文没串味（Responses API 是无状态的，历史仍由本地 `ContextManager` 拼进 `input`）。（2026-07-31）
@@ -24,6 +26,11 @@
 - [x] LLM 角色回复分段功能：OpenMate 侧「可追加分段队列」（需求文档 `docs/OpenMate-可追加分段队列改造需求.md`）与客户端 `OpenMateSegmentSender` 均已完成（2026-07-17），待实机验收（见「待验证」）。
 
 ## 已知状态
+
+- LLM 角色偶发「空回复」：任务 `49be29b3-95c0-11f1-8481-581cf893a9d2`（2026-08-12 04:08，助理角色，第 4 轮对话，带选中文字的长技术问题）弹出白色 Toast 后 3 秒空着消失。**根因链已确认到客户端边界**：DeepSeek 的流跑了 4.88s 但一个 `response.output_text.delta` 都没有（终端结果行没有 `tokens/s` 后缀 ⇒ `generation_time == 0` ⇒ 从未收到分片），随后旧代码的 `polished_text or content` 把识别原文当成模型输出，控制台、`2026/08/12-助理.md` 全都伪装成一次成功回复；Toast 因最终文本 0 字，智能时长算出保底 3000ms 后自动关闭。**已排除**：ESC 中断、异常、联网搜索（无工具日志）、Toast 构造失败。
+  - **服务端侧为什么空，仍未定**。最可能是 `max_tokens = 512` 映射成的 `max_output_tokens` 被不可见 token 耗尽——截断是「保留已生成部分」而非「丢弃」，本地也没有任何按长度裁剪的逻辑（`max_tokens` 只写进请求参数），所以正文一个字都没有，只能是额度在第一个可见 token 之前就被推理内容吃光。但**各家 API 对 max_tokens 是否计入思考 token 的口径并不一致**（OpenAI Responses `max_output_tokens`、Anthropic `max_tokens`、Ollama `num_predict` 都计入；DeepSeek 自家文档对 `deepseek-reasoner` 的说法是只限最终回答、不含 CoT），而本项目走的是 DeepSeek **Responses API + deepseek-v4-flash**，这条路径怎么算没有可靠依据。2026-08-12 已补诊断日志（约定 18），下次复现时用事件计数与 `usage.reasoning_tokens` 定论。
+  - 关联未验证项：`extra_body={"thinking":{"type":"disabled"}}` 在 Responses API 上是否生效，从来没验证过（见本文件 2026-07-31 待验证条 ⑤）。
+  - 另一个待处理但**尚未修改**的点：空回复照样以 `assistant` 身份写进 `ContextManager` 历史（`llm_processor._stream_request`），后续每轮都会带一条空 assistant 消息。（2026-08-12）
 
 - 录音键（`ctrl_r`）的按下事件被吞掉、松开时前台程序却能收到一个抬起事件——**符合设计，不是 bug**（2026-07-28 用键盘测试网站观察确认）。原始 KEYDOWN/KEYUP 都被 `suppress_event()` 拦下，但 `event_handler._release_suppressed_modifier()` 会额外补发一个合成释放事件。理由见 `key_mapper.py` MODIFIER_KEYS 上方注释：低级钩子的抑制并非总是可靠（例如焦点在提权窗口上时钩子收得到却拦不住），一旦 KEYDOWN 漏过去而 KEYUP 被吞，修饰键会卡在按下状态，之后每次按键都变成组合键。这是刻意的不对称取舍——修饰键的释放是幂等的，多发无害；卡住的按下会持续污染后续输入。ESC 打断键因为不是修饰键、卡不住状态，反而采用严格配对、不做补发。
   - 边界：若把录音键换成 **Alt**，孤立的 Alt 抬起会被不少 Win32 程序当作激活菜单栏的信号，需要单独处理。
@@ -62,6 +69,8 @@
 - 本地定制的变更记录写本文件，不写 docs/CHANGELOG.md：后者是上游随版本发布的文件，混入本地条目会在升级覆盖时冲突。（2026-07-16）
 
 ## 本地定制变更（相对上游 Release）
+
+- 2026-08-12：LLM 空回复不再静默。①`llm_processor.py` 三条流式路径全部补诊断：Responses 流新增 `response.incomplete`（打印 `incomplete_details.reason`）、`response.failed`、refusal 事件解析，并在流结束时汇总「状态 + usage（含 reasoning token）+ 事件类型计数」，Chat Completions 流记录 `finish_reason` 并对 `length` 单独告警，Ollama 流补空正文告警；空正文一律走 WARNING（控制台处理器固定 WARNING 级，所以会直接出现在运行终端），正常结束走 DEBUG。新增模块级 `_dig()` 容错取值与 `_format_usage()`/`_format_event_counts()`，避免诊断日志本身因字段缺失变成新的故障点。②`handle_toast_mode` 与 OpenMate 路径去掉 `polished_text or content` 降级，空回复如实返回空串（typing 模式保留降级——那里的文本确实被打字输出了）；③`_format_llm_result` 对空结果显示黄色「（空回复，详见日志）」。起因是任务 `49be29b3`（详见「已知状态」）：模型没返回正文，客户端却把用户自己的话当成角色输出打进控制台和 md 记录，现象只剩「白窗一闪而过」。桩模块单测覆盖 6 个用例（截断/正常/failed/ESC 中断不误报/usage 缺失容错/Chat length 截断），实机验收见「待验证」。
 
 - 2026-08-08：角色 Toast 智能时长。toast 模式角色的自动关闭时长改为随最终文本字数对数计算（`min(toast_duration + 1200·ln(1+字数), 30s)`，`toast_duration` 退化为最短停留保底基数，从内容生成完成起算）；悬停暂停续时（剩余时间模型，移开不重置满时长、悬停超过总时长则移开即关）；拖拽任意位移后窗口永不自动关闭（`_never_auto_close`）。**新 LLM 回复窗口创建时（`close_llm_windows`，在 `add_message` 入队前调用）立即顶掉所有旧 LLM 白色对话框——无论是否被拖拽**，保证新窗口一弹出（即使空文本占位）旧窗口已消失、新旧不叠加；跨线程 destroy 已验证即时生效。范围仅限 `smart_duration=True` 的 LLM 白色对话框（`handle_toast_mode` + OpenMate 回退 `_show_fallback_toast`），普通 toast（托盘/错误/录音）保持固定时长 + 悬停移开重置的旧行为。新增常量 `SMART_DURATION_SCALE=1200`/`SMART_DURATION_CAP_MS=30000`、`ToastMessage.smart_duration` 字段、`ToastMessageManager.close_llm_windows`；实现集中在 `toast_base.py` 的 `_start_smart_destroy_timer`/`_schedule_destroy`/`_pause_destroy_timer`/`_on_never_auto_close`。起因：固定 3 秒常"一闪而过"或"久挂不关"，且鼠标悬停移开后重置计时让窗口存在时间不可预期。同日修复顶掉失效的根因：Tk `<Destroy>` 事件在子 widget（text_area）销毁时也触发 Toplevel 绑定，把已 finish 的旧窗口误移出 `active_windows`，导致 `close_llm_windows` 遍历不到（详见「已知状态」）。同日经 max-effort 审查子代理复核后另加三处加固：①`close_llm_windows` 顶掉时触发旧窗口 `stop_callback`（与 ESC 关闭路径语义对称）；②OpenMate 接管展示时也调 `close_llm_windows`，消除「拖拽过的本地窗口永不自动关闭」与「OpenMate 不弹本地新窗口」两条规则叠加导致的永久残留；③`_set_position`/`_schedule_destroy` 加 `tk.TclError` 防护，避免窗口被新回复顶掉的瞬间用户仍按住拖动、B1-Motion 到达已销毁窗口时回调异常刷日志。
 - 2026-07-31：新岛真【7. 对话示例】格式改写：去掉 Markdown 加粗/列表装饰，改紧凑消息序列（"用户：/你："极简前缀 + 空行分隔轮次），示例区开头声明"从未真实发生，不要照搬具体内容"。内容上新增 2 组仿写示例（情绪共情、知识问答含"我刚帮你查过"的查证表述与收尾吐槽），删除的 3 组（隐私回避、数学求助、怕鬼）在用户要求下已恢复——当前共 8 组，其中新增 2 组系仿写，保留哪些由用户自行取舍。目的：示例以"对话本身"的形态呈现，强化语气/句长/分段的模仿力，同时用声明缓解"示例被当真实经历"的风险。雾切响子没有对话示例区（只有正误示范，本就是消息形态），未动。待实机对比角色味是否变浓、是否出现照搬示例内容的现象。

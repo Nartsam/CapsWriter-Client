@@ -566,10 +566,15 @@ async def _handle_openmate_mode(handler, client, role_config, content, matched_h
             if not sender.delivered:
                 # 未发出任何内容，typing 不会被消息自动熄灭，显式关闭
                 await to_thread(_set_typing_safe, client, False)
-            return (strip_state_tags(polished_text or content), token_count, gen_time)
+            return (strip_state_tags(polished_text), token_count, gen_time)
 
         ok = await to_thread(sender.finish)
-        result = strip_state_tags(polished_text or content)
+        # 空回复不降级成识别原文：这段文字没被 OpenMate 展示过，冒充模型输出会让
+        # 控制台与 md 记录误报成一次成功回复（与 llm_output_toast 同一处理）
+        result = strip_state_tags(polished_text)
+        if not result:
+            logger.warning(f"角色 [{role_config.display_name or '默认'}] 返回空回复，"
+                           f"OpenMate 无内容可展示（原始输入：{content[:30]}…）")
         if not ok and result:
             # OpenMate 中途失效（退出/布局编辑/超时）：本地 Toast 兜底展示完整结果
             logger.warning('OpenMate 展示未完成，回退本地 Toast')

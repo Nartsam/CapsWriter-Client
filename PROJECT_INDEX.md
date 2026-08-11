@@ -117,7 +117,7 @@ CapsWriter-Offline 是一个 Windows 离线语音输入工具（GitHub: HaujetZh
 
 | 文件 | 职责 |
 |---|---|
-| `result_processor.py` | **ResultProcessor**。主工作循环：连接 WebSocket → 接收消息 → 热词替换 → 去标点 → 正则替换 → LLM 润色 → 文本输出 → 日记/音频保存。`_format_llm_result` 负责控制台那行 `模型结果[角色(工具)]：…`，工具名来自 `LLMResult.used_tools` |
+| `result_processor.py` | **ResultProcessor**。主工作循环：连接 WebSocket → 接收消息 → 热词替换 → 去标点 → 正则替换 → LLM 润色 → 文本输出 → 日记/音频保存。`_format_llm_result` 负责控制台那行 `模型结果[角色(工具)]：…`，工具名来自 `LLMResult.used_tools`；结果为空时显示黄色「（空回复，详见日志）」而不是原样打印文本（见约定 18） |
 | `text_output.py` | **TextOutput**。两种输出方式：`_type_text()`（keyboard.write 模拟打字）和 `_paste_text()`（Ctrl+V 粘贴）。`strip_punc()` 去除末尾标点 |
 
 ### 6. 热词系统 (`core/client/hotword/`)
@@ -139,7 +139,7 @@ CapsWriter-Offline 是一个 Windows 离线语音输入工具（GitHub: HaujetZh
 | `llm_role_config.py` | **RoleConfig** dataclass。角色配置字段：provider、model、system_prompt、output_mode(typing/toast)、Toast 宽度边界与样式（字体、颜色、透明度、圆角）、显示时长（`toast_duration`，智能时长下作为最短停留保底基数，见约定 17）、联网搜索三件套（`enable_web_search`/`enable_datetime`/`request_timeout`）等 |
 | `llm_role_loader.py` | **RoleLoader**。扫描 `LLM/` 目录下的 .py 文件，每个文件作为一个角色模块加载 |
 | `llm_role_detector.py` | **RoleDetector**。根据输入文本前缀匹配角色（如 "翻译 xxx" → 翻译角色） |
-| `llm_processor.py` | **LLMProcessor**。执行 LLM API 调用（支持 OpenAI/Ollama/DeepSeek 等），流式输出。三条流式路径：Ollama 原生流、Chat Completions 流、Responses API 流（角色开启 `enable_web_search` 时走此路，挂载服务端内置 `web_search` 工具，见约定 15）。工具事件同时触发展示占位文案与 `used_tools` 出参回传（见约定 16） |
+| `llm_processor.py` | **LLMProcessor**。执行 LLM API 调用（支持 OpenAI/Ollama/DeepSeek 等），流式输出。三条流式路径：Ollama 原生流、Chat Completions 流、Responses API 流（角色开启 `enable_web_search` 时走此路，挂载服务端内置 `web_search` 工具，见约定 15）。工具事件同时触发展示占位文案与 `used_tools` 出参回传（见约定 16）。三条路径都带空回复诊断：Responses 流解析 `response.completed/incomplete/failed` 与 refusal，记录截断原因、usage（含 reasoning token）与事件类型计数；Chat 流记录 `finish_reason`（见约定 18） |
 | `llm_client_pool.py` | **ClientPool**。按 provider+url 缓存 OpenAI 客户端实例 |
 | `llm_message_builder.py` | 构建发送给 LLM 的消息列表（system prompt + 当前时间 + 热词 + 选中文字 + 用户输入） |
 | `llm_context.py` | **ContextManager**。管理对话历史记录 |
@@ -329,6 +329,8 @@ Electron 应用连接到 ws://127.0.0.1:6019
 16. **工具调用的回传用出参列表**：本次请求实际触发了哪些服务端工具，由流解析层沿 `used_tools` 列表逐层追加，最终进 `LLMResult.used_tools`，控制台显示成 `模型结果[助理(搜索)]`。之所以不扩成四元组返回：三个输出模式（typing/toast/openmate）里有十余处 `return ("", 0, 0.0)` 的降级分支，漏改一处就是运行时崩溃；之所以不挂 handler 实例属性：那会引入跨请求残留。工具 ID 从事件名 `response.<工具ID>_call.<阶段>` 解析而来（`_extract_tool_id`），不硬编码 `web_search`；ID → 中文的映射集中在 `llm_constants.ToolNames`，未登记的新工具回退显示原始 ID 而不是静默丢弃。**新增输出模式或在其中新增 `handler.process` 调用点时必须一并转发 `used_tools`**，漏了不会报错，只是标签永远不出现
 
 17. **LLM 角色 Toast 智能时长**：toast 模式角色（`smart_duration=True`，`handle_toast_mode` 与 OpenMate 回退 `_show_fallback_toast`）的自动关闭时长不再固定 `toast_duration`，而是从内容生成完成（`finish()`）起按最终文本字数对数计算：`min(toast_duration + 1200·ln(1+字数), 30s)`；`toast_duration` 退化为最短停留保底基数。悬停暂停续时：鼠标进入冻结剩余计时、移开从剩余续时（非重置满时长），悬停超过总时长则移开即关；拖拽发生任何位移后窗口永不自动关闭（`_never_auto_close`），只在新的 LLM 回复窗口生成或命中提前关闭路径（ESC/异常/中断/Markdown 失败/程序退出）时结束。**新 LLM 回复窗口创建时（`ToastMessageManager.close_llm_windows`，在 `add_message` 入队前调用）立即顶掉所有旧的 LLM 白色对话框——无论旧窗口是否被拖拽**，保证新窗口一弹出（即使还是空文本占位）旧窗口已消失、新旧不叠加。`close_llm_windows` 在 destroy 前会触发旧窗口的 `stop_callback`（与 ESC 关闭路径语义对称）。OpenMate 接管展示时同样调用 `close_llm_windows`（`handle_toast_mode` 的接管分支），否则拖拽过的旧本地窗口会在一直走 OpenMate 路径时永久残留。**这些行为仅作用于 `smart_duration=True` 的窗口（基类 `pause_and_resume` 标志），普通 toast 保持旧的固定时长 + 悬停移开重置行为**。实现集中在 `toast_base.py` 的剩余时间模型（`_timer_start`/`_timer_remaining`）+ `_schedule_destroy`/`_pause_destroy_timer`/`_start_smart_destroy_timer`；滚轮调整位置不算拖拽（只认鼠标拖拽位移）。`active_windows` 的 `<Destroy>` 回调必须校验被销毁的是 Toplevel 本身（`str(e.widget) == str(w.window)`）——Tk 的 `<Destroy>` 在任意子 widget 销毁时也会触发 Toplevel 绑定，裸绑定会把已 finish 的窗口误移出列表、导致顶不掉（详见 docs/DEV_NOTES.md「已知状态」）
+
+18. **空回复必须显形，不得降级成识别原文**：LLM 返回空正文时，`handle_toast_mode` 与 OpenMate 路径**返回空串**而不是 `polished_text or content`——那段识别原文在这两种模式下从未展示给用户，拿它冒充模型输出会让控制台、`年/月/日-角色.md` 记录、UDP 广播三处同时误报成一次成功回复，静默失败连事后都查不出来（typing 模式保留 `or content` 降级：那里的文本是真的打字输出去了，如实反映）。控制台由 `_format_llm_result` 显示黄色「（空回复，详见日志）」。原因由 `llm_processor.py` 的诊断日志给出：Responses 流把 `response.incomplete`（打印 `incomplete_details.reason`）、`response.failed`、refusal 事件全部记录，并在流结束时汇总「状态 + usage（含 reasoning token）+ 事件类型计数」——**未被解析分支认领的事件只会在这个计数里显形**，是判断「额度被思考内容吃光」的唯一线索；Chat Completions 流记录 `finish_reason`，`length` 单独告警。空回复走 WARNING，而 `logger.py` 把控制台处理器固定在 WARNING 级，因此这些诊断会直接出现在运行终端里。新增流式路径时必须一并补上这两条（空正文告警 + 终局状态解析），否则又会退回静默
 
 ---
 

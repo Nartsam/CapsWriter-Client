@@ -125,6 +125,10 @@ class ResultProcessor:
         token_count = llm_result.token_count
         generation_time = llm_result.generation_time  # 使用生成时间（从第一个 token 开始）
 
+        # 空回复必须如实显示：此前空结果会被上游降级成识别原文，这行就会把用户
+        # 自己的话原样打出来，看上去与一次正常回复毫无区别
+        is_empty = not polished_text.strip()
+
         polished_text = polished_text.replace('\n', ' ').replace('\r', ' ')
         max_display_length = 50
         if len(polished_text) > max_display_length:
@@ -140,7 +144,12 @@ class ResultProcessor:
             role_label = f'[{role_name}]'
         else:
             role_label = ''
-        result_text = f'[green]{polished_text}[/green]' if processed else polished_text
+        if is_empty:
+            # 措辞不写死成"模型没输出"：ESC 中断且尚无分片时同样走这里，
+            # 具体原因由紧邻的 WARNING 日志给出（控制台会打印 WARNING 及以上）
+            result_text = '[yellow]（空回复，详见日志）[/yellow]'
+        else:
+            result_text = f'[green]{polished_text}[/green]' if processed else polished_text
 
         if token_count == 0 and polished_text:
             token_count = _estimate_tokens(polished_text)

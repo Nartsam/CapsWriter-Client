@@ -104,12 +104,18 @@ async def handle_toast_mode(handler, text: str, role_config=None, matched_hotwor
             show_toast_status, used_tools
         )
 
+        # 空回复不降级成识别原文：Toast 模式下这段文字压根没有被展示给用户，
+        # 拿它冒充模型输出会让控制台、md 记录、UDP 广播三处都误报成一次成功回复，
+        # 把静默失败伪装得连事后都查不出来（typing 模式的降级是真打字出去了，不同）
         if handler.monitor.should_stop():
             toast_manager.close_toast(msg_id)
-            return (''.join(chunks) or content, token_count, gen_time)
+            return (''.join(chunks), token_count, gen_time)
         else:
             toast_manager.finish_toast(msg_id)
-            return (polished_text or content, token_count, gen_time)
+            if not polished_text:
+                logger.warning(f"角色 [{role_config.display_name or '默认'}] 返回空回复，"
+                               f"弹窗无内容（原始输入：{content[:30]}…）")
+            return (polished_text, token_count, gen_time)
 
     except Exception as e:
         if msg_id: toast_manager.close_toast(msg_id)
