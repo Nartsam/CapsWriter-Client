@@ -13,8 +13,30 @@ from rich.markdown import Markdown
 
 from core.client.state import console
 from config_client import ClientConfig as Config, __version__
+from ..connection import resolve_server_endpoints
 from . import logger
 
+
+
+def _get_server_display() -> str:
+    """
+    获取「服务端地址」那一行的显示文本
+
+    多候选时列出全部并标注按序探测；单候选时保持与改造前一致的文案。
+    到底锁定了哪一个，由连接成功时的绿色「已连接服务端」行体现。
+
+    Returns:
+        str: 带 rich 标记的整行文本（不含首尾换行）
+    """
+    endpoints = resolve_server_endpoints()
+
+    if not endpoints:
+        return '服务端地址： [red]未配置[/]'
+    if len(endpoints) == 1:
+        return f'服务端地址： [cyan underline]{endpoints[0].display}[/]'
+
+    candidates = ' → '.join(endpoint.display for endpoint in endpoints)
+    return f'服务端候选（按序探测）： [cyan underline]{candidates}[/]'
 
 
 def _format_shortcut_name(key: str) -> str:
@@ -97,7 +119,7 @@ class TipsDisplay:
         console.print(Markdown(markdown), highlight=True)
         console.rule()
         console.print(f'\n当前基文件夹：[cyan underline]{os.getcwd()}[/]')
-        console.print(f'\n服务端地址： [cyan underline]{Config.addr}:{Config.port}[/]')
+        console.print(f'\n{_get_server_display()}')
         console.print(f'\n当前所用快捷键：[green4]{shortcuts_display}[/]')
         console.line()
 
@@ -111,6 +133,6 @@ class TipsDisplay:
         markdown = '\n项目地址：https://github.com/HaujetZhao/CapsWriter-Offline'
         console.print(Markdown(markdown), highlight=True)
         console.print(f'当前基文件夹：[cyan underline]{os.getcwd()}[/]')
-        console.print(f'服务端地址： [cyan underline]{Config.addr}:{Config.port}[/]')
+        console.print(_get_server_display())
         
         logger.debug("已显示文件转录模式启动提示")

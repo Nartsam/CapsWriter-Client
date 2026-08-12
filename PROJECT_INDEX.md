@@ -107,7 +107,7 @@ CapsWriter-Offline 是一个 Windows 离线语音输入工具（GitHub: HaujetZh
 
 | 文件 | 职责 |
 |---|---|
-| `websocket_manager.py` | **WebSocketManager**。管理 WebSocket 连接的建立、重连、消息收发。使用 `core/protocol.py` 定义的 `AudioMessage`/`RecognitionMessage` |
+| `websocket_manager.py` | **WebSocketManager**。管理 WebSocket 连接的建立、重连、消息收发。使用 `core/protocol.py` 定义的 `AudioMessage`/`RecognitionMessage`。`Config.addr` 支持写成候选列表：未锁定时在**一次 `connect()` 调用内**按序探测（内网/回环走 `addr_probe_timeout_lan`、其余走 `addr_probe_timeout`），首个连上的即锁定，此后含断线重连都只连它（见约定 20）。模块级 `resolve_server_endpoints()` 负责归一化，启动提示复用它 |
 
 **协议**：
 - 客户端 → 服务端：`AudioMessage`（task_id, source, base64 音频数据, is_final, 分段参数）
@@ -387,6 +387,16 @@ Electron 应用连接到 ws://127.0.0.1:6019
 
     ⑨ **闲置超时用懒判断，不开后台定时器**（`continuous_chat_timeout`，默认 300s，0 表示永不超时）：只在下一次 `launch()` 时检查，静默退出、无提示，由指示器自证。粘滞的只是角色名，每次请求经 `LLMHandler.resolve_role()` 重新解析，角色被删/改名/禁用时自动退出并告警。
 
+20. **服务端多候选与锁定**：`addr` 可写成单个字符串（旧写法）或候选列表，列表项支持 `'host:port'` 覆盖 `port`。未锁定时 `connect()` 在**一次调用内**按序探测整个列表（因此 `ResultProcessor` 的重连循环与 `FileTranscriber.check()` 两个调用点零改动，文件转录模式自动继承该能力），**首个连上的候选立即锁定**，此后含断线重连都只连它、绝不改投其他候选，换机需重启客户端。四条约束：
+
+    ① **锁定发生在「首次连接成功」而不是「启动那一刻」**。客户端常随开机自启，那时服务端往往还没起来，若按启动时刻定终身就会锁死在一个不可达地址上。一轮全败则 2s 后从头再扫（沿用既有节奏，**不做指数退避**——退避会拖慢服务端恢复后的重连，而那正是最需要快的时刻）。
+
+    ② **探测超时按地址分档**：内网/回环字面量（RFC1918 三段 + 127/8）走 `addr_probe_timeout_lan`(2s)，公网、域名、主机名、IPv6 一律走保守的 `addr_probe_timeout`(3s)。分档在 **DNS 解析之前**按配置字符串判定——为分档先去解析域名，可能自己就先挂住几秒。判定**不能用 `ipaddress.is_private`**：它还涵盖 169.254/16、198.18/15、240/4 等保留段，口径比 RFC1918 宽得多，会把链路本地地址误划进短档。
+
+    ③ **单候选与已锁定的连接不传 `open_timeout`**，沿用 websockets 默认的 10s。传 `None` 是「永不超时」，与「用默认值」不是一回事；靠这条，旧的单地址配置行为逐字不变。探测超时触发时抛的是 `asyncio.TimeoutError`，Python 3.8 下它与内建 `TimeoutError` 不是同一个类，两个都要捕获。
+
+    ④ **「不切换」必须在日志里自证**。「另一台明明开着却不切过去」是刻意设计但极其反直觉，半年后自己看到都会当 bug 查：锁定后重连失败打一条写明「按设计不会切换到其他候选，如需换机请重启客户端」的 WARNING（仅多候选时打，单候选那句话没有意义）；一轮全不可达打一条列出全部候选的 WARNING。两者都走 `_connect_fail_logged` 闸门、连上即复位，所以不会刷屏。
+
 ---
 
 ## 开发环境与验证
@@ -413,6 +423,7 @@ Electron 应用连接到 ws://127.0.0.1:6019
 | 修改录音打断行为 | `config_client.py` (`cancel_recording_key`)、`shortcut/shortcut_manager.py` (`_handle_cancel_key`)、`shortcut/task.py` (`abort`)、`audio/recorder.py` (abort 分支) |
 | 修改连续对话行为 | `config_client.py` (`continuous_chat_key` / `continuous_chat_timeout`)、`core/client/state.py` (`ContinuousChatSnapshot` 与 `continuous_*` 方法)、`shortcut/shortcut_manager.py` (`_handle_chat_key` / `_resolve_chat_key`)、`shortcut/task.py` (`_prepare_continuous` / `finish` / `cancel`)、`output/result_processor.py` (`_resolve_forced_role` / `_update_continuous_state`)、`llm/llm_handler.py` (`forced_role` / `resolve_role`) |
 | 修改连续对话的指示器配色/文案 | `core/client/ui/recording_indicator.py` (`CONTINUOUS_*` 常量、`_compose_text`、`_panel_colors`) |
+| 修改服务端地址 / 多候选探测 | `config_client.py` (`addr` / `port` / `addr_probe_timeout` / `addr_probe_timeout_lan`)、`connection/websocket_manager.py` (`resolve_server_endpoints` / `connect` / `_probe_timeout`)、`core/client/ui/tips.py` (`_get_server_display`) |
 | 修改录音/音频发送 | `audio/recorder.py`, `audio/stream.py` |
 | 修改识别结果处理 | `output/result_processor.py` |
 | 修改文本输出方式 | `output/text_output.py` |
