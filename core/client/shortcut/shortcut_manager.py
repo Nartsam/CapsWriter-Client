@@ -17,7 +17,7 @@ from pynput import keyboard, mouse
 
 from . import logger
 from core.client.shortcut.key_mapper import *
-from core.client.shortcut.key_mapper import KeyMapper
+from core.client.shortcut.key_mapper import KeyMapper, MODIFIER_KEYS
 from core.client.shortcut.emulator import ShortcutEmulator
 from core.client.shortcut.event_handler import ShortcutEventHandler
 from core.client.shortcut.task import ShortcutTask
@@ -70,6 +70,12 @@ class ShortcutManager:
         # 打断键抑制决策的锁存位，保证同一次按键的按下与松开处理一致
         self._cancel_suppressed = False
 
+        # 连续对话切换键：录音期间按下即切换粘滞路由。留空或配置非法则禁用
+        self._chat_key = self._resolve_chat_key()
+        self._chat_suppressed = False
+        # 按住不放会连发 KEYDOWN，而切换不是幂等操作，用它保证一次物理按下只切换一次
+        self._chat_key_down = False
+
         # 事件处理器
         self._event_handler = ShortcutEventHandler(self.tasks, self._pool, self._emulator)
 
@@ -80,6 +86,46 @@ class ShortcutManager:
     def state(self) -> ClientState:
         """快捷访问状态单例"""
         return self.app.state
+
+    def _resolve_chat_key(self) -> str:
+        """
+        解析并校验连续对话切换键
+
+        非法配置一律禁用功能而不是勉强运行：这个键会在录音期间被拦截，
+        配错了要么抢掉录音键、要么把修饰键卡在按下状态，都比功能不可用严重。
+
+        Returns:
+            合法的按键名；配置为空或不合法时返回空字符串
+        """
+        from config_client import ClientConfig as Config
+
+        key = (getattr(Config, 'continuous_chat_key', '') or '').lower().strip()
+        if not key:
+            return ''
+
+        if not getattr(Config, 'llm_enabled', False):
+            logger.info("llm_enabled 为 False，连续对话功能不启用")
+            return ''
+
+        if key == self._cancel_key:
+            logger.warning(f"连续对话切换键与打断键同为 [{key}]，已禁用连续对话功能")
+            return ''
+
+        if key in {s.key for s in self.shortcuts if s.enabled}:
+            logger.warning(f"连续对话切换键 [{key}] 与录音快捷键冲突，已禁用连续对话功能")
+            return ''
+
+        # 修饰键被抑制时有卡在「按下」状态的风险（见 key_mapper.MODIFIER_KEYS 上方注释），
+        # 录音键为此专门补发合成释放事件；切换键没有非用修饰键不可的理由，直接拒绝
+        if key in MODIFIER_KEYS:
+            logger.warning(f"连续对话切换键不支持修饰键 [{key}]，已禁用连续对话功能")
+            return ''
+
+        if key in ('x1', 'x2'):
+            logger.warning(f"连续对话切换键不支持鼠标键 [{key}]，已禁用连续对话功能")
+            return ''
+
+        return key
 
     def _init_tasks(self) -> None:
         """初始化所有快捷键任务"""
@@ -120,6 +166,18 @@ class ShortcutManager:
                     logger.error(f"[{key_name}] 打断键处理异常: {e}")
                     # 异常时沿用锁存值，保证按下与松开的抑制决策仍然配对
                     suppress = self._cancel_suppressed
+                if suppress and self.keyboard_listener:
+                    self.keyboard_listener.suppress_event()
+                return True
+
+            # 连续对话切换键同样不进 tasks 状态机
+            if self._chat_key and key_name == self._chat_key:
+                try:
+                    suppress = self._handle_chat_key(msg)
+                except Exception as e:
+                    logger.error(f"[{key_name}] 连续对话切换键处理异常: {e}")
+                    # 异常时沿用锁存值，保证按下与松开的抑制决策仍然配对
+                    suppress = self._chat_suppressed
                 if suppress and self.keyboard_listener:
                     self.keyboard_listener.suppress_event()
                 return True
@@ -252,6 +310,52 @@ class ShortcutManager:
 
         return False
 
+    # ========== 连续对话切换键处理 ==========
+
+    def _handle_chat_key(self, msg: int) -> bool:
+        """
+        处理连续对话切换键事件
+
+        Args:
+            msg: Windows 键盘消息
+
+        Returns:
+            本次事件是否需要拦截（不传给前台程序）
+
+        与打断键同构：抑制决策在 KEYDOWN 锁存、KEYUP 无条件沿用（见约定 12）。
+        录音期间必须拦截——录音键 ctrl_r 的 KEYDOWN 虽然被吞了，但物理上它确实按着，
+        放行的空格会被系统当成真正的 Ctrl+Space，也就是输入法中英文切换热键。
+        """
+        if msg in KEY_DOWN_MESSAGES:
+            # 长按会连发 KEYDOWN。打断是幂等的所以无所谓，切换不是，只认第一次
+            if self._chat_key_down:
+                return self._chat_suppressed
+            self._chat_key_down = True
+
+            # 只在录音期间介入，其余时候这个键与本程序无关
+            self._chat_suppressed = self.state.recording
+            if not self._chat_suppressed:
+                return False
+
+            snapshot = self.state.toggle_continuous()
+            if snapshot is not None:
+                # 钩子线程只做状态翻转和派发：低级钩子超过 300ms 会被系统摘掉。
+                # 这里只是往指示器的队列里塞一条命令，实际渲染在 Tk 线程
+                from core.client.ui import update_recording_indicator_continuous
+                update_recording_indicator_continuous(
+                    snapshot.indicator_mode(), snapshot.sticky_role or ''
+                )
+                logger.debug(f"连续对话切换键：{snapshot.indicator_mode() or '普通录音'}")
+            return True
+
+        if msg in KEY_UP_MESSAGES:
+            self._chat_key_down = False
+            suppressed = self._chat_suppressed
+            self._chat_suppressed = False
+            return suppressed
+
+        return False
+
     def _abort_pending_result(self) -> None:
         """打断已进入等待识别结果阶段的任务：录音早已结束，只需丢弃结果"""
         task_id = self.state.pending_task_id
@@ -267,6 +371,13 @@ class ShortcutManager:
         try:
             logger.info(f"手动打断等待中的识别结果，任务ID: {task_id}")
             self.state.mark_task_cancelled(task_id)
+
+            # 退出连续对话是在松手时落地的，等待阶段打断要把它恢复回去，
+            # 这样「ESC 作废这次输入」在录音阶段和等待阶段的语义完全一致
+            restored = self.state.rollback_continuous_snapshot(task_id)
+            if restored:
+                logger.info(f"打断已撤销本次退出，仍在连续对话中: {restored}")
+
             show_cancelled_indicator(self._cancel_key)
 
             if self.app.companion.has_connections:
@@ -371,6 +482,9 @@ class ShortcutManager:
 
         if self._cancel_key:
             logger.info(f"  [{self._cancel_key}] 打断键，录音中阻塞、等待结果时放行")
+
+        if self._chat_key:
+            logger.info(f"  [{self._chat_key}] 连续对话切换键，录音期间阻塞")
 
     def stop(self) -> None:
         """停止所有监听器和清理资源"""

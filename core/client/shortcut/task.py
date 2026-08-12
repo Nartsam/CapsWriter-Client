@@ -85,12 +85,23 @@ class ShortcutTask:
             self.app.loop
         )
 
+        # 连续对话：先做闲置超时的懒判断，再按此刻生效的粘滞角色建立本次录音的路由快照。
+        # 必须排在 start_recording() 之前：切换键以 state.recording 为介入判据，
+        # 反过来会留下「已在录音、快照还没换」的窗口，那时的切换会翻到上一次录音
+        # 尚未消费的快照上去（UDP 控制录音与键盘钩子不在同一线程，确实可能撞上）
+        snapshot = self._prepare_continuous()
+
         # 更新录音状态
         self.state.start_recording(self.recording_start_time)
 
         # 显示录音悬浮提示：传入快捷键名，提示器会转成中文名称。
         from core.client.ui import show_recording_indicator
-        show_recording_indicator(self.recording_start_time, self.shortcut.key)
+        show_recording_indicator(
+            self.recording_start_time,
+            self.shortcut.key,
+            snapshot.indicator_mode(),
+            snapshot.sticky_role or '',
+        )
 
         # 通知 Companion 开始录音
         if self.app.companion.has_connections:
@@ -110,6 +121,20 @@ class ShortcutTask:
         else:
             self._status.start()
 
+    def _prepare_continuous(self):
+        """录音启动时的连续对话准备：闲置超时懒判断 + 建立路由快照
+
+        不开后台定时器，超时只在这里判定——录音键按下时才需要知道结果，
+        而指示器紧接着就会把判定后的状态显示出来，用户自证即可，无需额外提示。
+        """
+        from config_client import ClientConfig as Config
+
+        timeout = getattr(Config, 'continuous_chat_timeout', 0) or 0
+        expired = self.state.expire_continuous_if_idle(timeout)
+        if expired:
+            logger.info(f"连续对话闲置超过 {timeout}s，已自动退出: {expired}")
+        return self.state.begin_continuous_snapshot()
+
     def cancel(self) -> None:
         """取消录音任务（时间过短）"""
         logger.debug(f"[{self.shortcut.key}] 取消录音任务（时间过短）")
@@ -117,6 +142,11 @@ class ShortcutTask:
         self.is_recording = False
         self.state.stop_recording()
         self._status.stop()
+
+        # 这次录音不算数，本次录音期间按过的连续对话切换键也一并回滚
+        self.state.rollback_continuous_snapshot(
+            self.recorder.task_id if self.recorder else None
+        )
         # 短按取消录音时同步隐藏悬浮提示，避免空提示残留。
         from core.client.ui import hide_recording_indicator
         hide_recording_indicator()
@@ -172,6 +202,11 @@ class ShortcutTask:
             task_id = self.recorder.task_id if self.recorder else None
             self.state.mark_task_cancelled(task_id)
 
+            # 打断同样意味着「这次输入不算数」，切换键跟着回滚
+            restored = self.state.rollback_continuous_snapshot(task_id)
+            if restored:
+                logger.info(f"打断已撤销本次退出，仍在连续对话中: {restored}")
+
             from core.client.ui import show_cancelled_indicator
             show_cancelled_indicator(Config.cancel_recording_key)
 
@@ -201,6 +236,13 @@ class ShortcutTask:
         self.is_recording = False
         duration = self.state.stop_recording()
         self._status.stop()
+
+        # 退出连续对话在松手时落地：录音已确认有效，下一次录音的指示器立刻恢复正常配色，
+        # 不必等服务端回包。等待阶段再按打断键会通过 rollback 把它恢复回去
+        exited = self.state.commit_continuous_exit()
+        if exited:
+            logger.info(f"已退出连续对话: {exited}")
+
         # 松开快捷键后进入等待服务端最终结果阶段。
         from core.client.ui import show_waiting_indicator
         show_waiting_indicator(duration)

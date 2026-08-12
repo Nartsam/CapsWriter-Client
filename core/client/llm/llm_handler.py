@@ -147,6 +147,25 @@ class LLMHandler:
         """
         return self.role_detector.detect(text)
 
+    def resolve_role(self, role_name: str) -> Optional[RoleConfig]:
+        """按显示名取回一个启用中的具名角色
+
+        供连续对话使用：粘滞角色只存名字，每次请求重新解析，这样角色文件被热重载、
+        改名或禁用之后不会继续用着一份过期的配置。
+
+        Args:
+            role_name: 角色显示名（RoleConfig.display_name）
+
+        Returns:
+            角色配置；不存在、已禁用或指向默认角色时返回 None
+        """
+        if not role_name or role_name == RoleConfig.DEFAULT_ROLE_NAME:
+            return None
+        role_config = self.roles.get(role_name)
+        if role_config is None or not role_config.enabled:
+            return None
+        return role_config
+
     def process(self, role_config: RoleConfig, content: str, matched_hotwords=None, callback=None,
                 status_callback=None, used_tools=None) -> Tuple[str, int, float]:
         """执行实际的 LLM 模型调用（内部方法）
@@ -199,14 +218,16 @@ class LLMHandler:
 
         return result_text, token_count, gen_time
 
-    async def process_and_output(self, text: str, paste: bool = None, matched_hotwords=None) -> Optional[LLMResult]:
+    async def process_and_output(self, text: str, paste: bool = None, matched_hotwords=None,
+                                 forced_role: Optional[RoleConfig] = None) -> Optional[LLMResult]:
         """
         统一入口：处理输入文本并根据配置执行输出（打字或弹屏）
-        
+
         Args:
             text: 待润色的完整原始文本（含可能的前缀）
             paste: 是否强制使用粘贴模式（None 则遵循配置）
             matched_hotwords: 潜在热词列表
+            forced_role: 连续对话指定的粘滞角色。给出时跳过角色前缀检测，整句原样发给它
         """
         import time
         from .llm_output_typing import handle_typing_mode, output_text
@@ -216,9 +237,13 @@ class LLMHandler:
         start_time = time.time()
         # 重置中断标志
         self.monitor.reset()
-        
-        # 1. 角色检测
-        role_config, content = self.detect_role(text)
+
+        # 1. 角色检测。连续对话中不做检测：此时「我在跟这个角色说话」已经明确，
+        #    再让角色名保留劫持能力，说「翻译一下这句话」就会被劫走
+        if forced_role is not None:
+            role_config, content = forced_role, text
+        else:
+            role_config, content = self.detect_role(text)
 
         # 2. 如果不匹配任何需要处理的角色
         if not role_config:

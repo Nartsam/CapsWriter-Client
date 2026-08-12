@@ -45,7 +45,20 @@ ERROR_ACCENT = "#dc2626"
 # 手动打断是用户主动行为而非故障，用提亮的浅蓝而不是错误红。
 CANCEL_ACCENT = "#7FB9E8"
 
-# 面板固定尺寸：固定布局能避免文字挤压、重排和越界。
+# 连续对话的面板配色。只换底色不换圆点：底色已经是足够强的状态指示，
+# 圆点再跟着变会让同一个信息重复两遍。
+# 浅黄 = 本次录音正在改变连续对话状态（进入或退出，松手才生效，再按一次可反悔）。
+CONTINUOUS_PENDING_BG = "#FFF8E1"
+CONTINUOUS_PENDING_FROST = "#FFFCF0"
+CONTINUOUS_PENDING_BORDER = "#E8DCB0"
+# 浅绿 = 已处在连续对话中。这是防「忘了自己在连续对话里」的主要视觉信号。
+CONTINUOUS_ACTIVE_BG = "#E8F5E9"
+CONTINUOUS_ACTIVE_FROST = "#F1FAF2"
+CONTINUOUS_ACTIVE_BORDER = "#BFDFC4"
+
+# 面板尺寸：布局仍是像素级固定，只有宽度会按标题内容加宽。
+# PANEL_W 是最小宽度而非固定宽度——面板宽度是物理像素、不随 DPI 放大，而字体是
+# 磅值、会随 DPI 放大，200% 缩放下 450px 的盒子只有设计意图的一半宽，长标题必然溢出。
 MARGIN = 0
 PANEL_W = 450
 PANEL_H = 140
@@ -53,6 +66,11 @@ CANVAS_W = PANEL_W + MARGIN * 2
 CANVAS_H = PANEL_H + MARGIN * 2
 RADIUS = 34
 DOT_R = 6
+
+# 加宽上限占屏幕宽度的比例，超过就交给 _fit_text 截断兜底。
+PANEL_MAX_W_RATIO = 0.9
+# 文字右侧留白。
+PADDING_RIGHT = 32
 
 TITLE_FONT_SIZE     = 14
 DETAIL_FONT_SIZE    = 10
@@ -64,7 +82,8 @@ DOT_X = PANEL_X + 38
 TITLE_X = DOT_X + 24
 TITLE_Y = PANEL_Y + 45
 DETAIL_Y = PANEL_Y + 99
-TEXT_MAX_W = PANEL_W - (TITLE_X - PANEL_X) - 32
+# 最小宽度下的可用文字宽度；实际每次渲染按当前面板宽度重算（_text_max_w）。
+TEXT_MAX_W = PANEL_W - (TITLE_X - PANEL_X) - PADDING_RIGHT
 
 
 class POINT(ctypes.Structure):
@@ -121,6 +140,11 @@ class IndicatorState:
     shortcut_key: str = ""
     # 触发手动打断的按键名，同样渲染前转成中文名称。
     cancel_key: str = ""
+    # 连续对话显示态：""（无）/ armed（即将进入）/ active（进行中）/ exited（已退出）。
+    # 仅在 mode == "recording" 时参与渲染。
+    continuous_mode: str = ""
+    # 连续对话的粘滞角色名，仅 continuous_mode == "active" 时用于文案。
+    continuous_role: str = ""
     # 错误提示自动隐藏的截止时间戳。
     auto_hide_at: float = 0.0
     # 提示框锚点：输入光标位置或屏幕中心靠下的位置。
@@ -164,13 +188,36 @@ class RecordingIndicator:
         self.state = IndicatorState()
         self._tick_index = 0
 
+        # 当前面板宽度。按标题内容只增不减，一次听写会话结束后复位。
+        self._panel_w = PANEL_W
+
     # ------------------------------------------------------------------
     # 对外命令
     # ------------------------------------------------------------------
 
-    def show_recording(self, start_time: Optional[float] = None, shortcut_key: str = "") -> None:
+    def show_recording(
+        self,
+        start_time: Optional[float] = None,
+        shortcut_key: str = "",
+        continuous_mode: str = "",
+        continuous_role: str = "",
+    ) -> None:
         """显示录音状态。"""
-        self._post("recording", start_time=start_time or time.time(), shortcut_key=shortcut_key)
+        self._post(
+            "recording",
+            start_time=start_time or time.time(),
+            shortcut_key=shortcut_key,
+            continuous_mode=continuous_mode,
+            continuous_role=continuous_role,
+        )
+
+    def update_continuous(self, mode: str = "", role: str = "") -> None:
+        """录音过程中切换连续对话显示态。
+
+        必须是独立命令而不是重发 show_recording：后者会重建 IndicatorState，
+        把 start_time 一并刷新，录音计时会被清零。
+        """
+        self._post("continuous", mode=mode, role=role)
 
     def show_waiting(self, recorded_duration: Optional[float] = None) -> None:
         """显示等待服务端返回结果状态。"""
@@ -270,18 +317,31 @@ class RecordingIndicator:
             self._hide_now()
             return
 
+        # 连续对话显示态只在录音期间有意义。松手后到达的切换命令直接丢弃，
+        # 否则会把已经进入等待状态的提示框又拉回录音态。
+        if action == "continuous" and self.state.mode != "recording":
+            return
+
         self._ensure_window()
 
         if action == "recording":
+            # 新一次听写开始，面板宽度复位，避免上一句的长角色名一直把窗口撑着。
+            self._panel_w = PANEL_W
             # 按下快捷键时锁定锚点，避免提示框在录音过程中跳动。
             anchor, source = self._get_anchor()
             self.state = IndicatorState(
                 mode="recording",
                 start_time=payload["start_time"],
                 shortcut_key=payload.get("shortcut_key", ""),
+                continuous_mode=payload.get("continuous_mode", ""),
+                continuous_role=payload.get("continuous_role", ""),
                 anchor=anchor,
                 anchor_source=source,
             )
+        elif action == "continuous":
+            # 只改连续对话相关字段，start_time 和锚点保持不动。
+            self.state.continuous_mode = payload.get("mode", "")
+            self.state.continuous_role = payload.get("role", "")
         elif action == "waiting":
             # 松开按键后沿用录音时的锚点，并切换为等待服务端状态。
             anchor, source = self._state_anchor_or_current()
@@ -433,6 +493,7 @@ class RecordingIndicator:
         if self.window and self._window_exists():
             self.window.withdraw()
         self.state = IndicatorState()
+        self._panel_w = PANEL_W
 
     def _set_topmost_without_activate(self) -> None:
         if not self.window:
@@ -471,21 +532,27 @@ class RecordingIndicator:
         if not self.canvas or not self.title_font or not self.detail_font:
             return
 
-        # 先生成文案，再按像素宽度截断，保证不会超出边界。
+        # 先生成文案，把面板调整到刚好容纳标题，再按像素宽度截断兜底。
         title, detail, accent = self._compose_text()
-        title = self._fit_text(title, self.title_font, TEXT_MAX_W)
-        detail = self._fit_text(detail, self.detail_font, TEXT_MAX_W)
+        stable_title, _, _ = self._compose_text(stable=True)
+        resized = self._fit_panel_to_title(stable_title)
+        panel_w = self._panel_w
+        max_w = self._text_max_w(panel_w)
+        title = self._fit_text(title, self.title_font, max_w)
+        detail = self._fit_text(detail, self.detail_font, max_w)
 
-        self.canvas.configure(width=CANVAS_W, height=CANVAS_H)
+        self.canvas.configure(width=panel_w + MARGIN * 2, height=CANVAS_H)
         self.canvas.delete("all")
 
         x1, y1 = PANEL_X, PANEL_Y
-        x2, y2 = PANEL_X + PANEL_W, PANEL_Y + PANEL_H
+        x2, y2 = PANEL_X + panel_w, PANEL_Y + PANEL_H
+
+        panel_bg, frost_mid, border = self._panel_colors()
 
         # 扁平化毛玻璃模拟：无阴影/发光，只用浅色层制造磨砂层次。
-        self._rounded_rect(x1, y1, x2, y2, RADIUS, fill=PANEL_BG, outline=BORDER)
+        self._rounded_rect(x1, y1, x2, y2, RADIUS, fill=panel_bg, outline=border)
         # 内层浅色整面叠加，模拟磨砂玻璃的层次；不画横向分隔线，避免割裂上下两行。
-        self._rounded_rect(x1 + 3, y1 + 3, x2 - 3, y2 - 3, RADIUS - 3, fill=FROST_MID, outline="")
+        self._rounded_rect(x1 + 3, y1 + 3, x2 - 3, y2 - 3, RADIUS - 3, fill=frost_mid, outline="")
 
         # 圆点和标题共用 TITLE_Y 基线，保证视觉中心对齐。
         self.canvas.create_oval(
@@ -512,6 +579,45 @@ class RecordingIndicator:
             font=self.detail_font,
             anchor="w",
         )
+
+        # 宽度变了必须重排窗口：_tick 每 100ms 只调 _render，
+        # 光把画布配宽而不改 wm geometry，多出来的部分是看不见的。
+        if resized:
+            self._place_window()
+
+    @staticmethod
+    def _text_max_w(panel_w: int) -> int:
+        """给定面板宽度时，单行文字可用的像素宽度。"""
+        return panel_w - (TITLE_X - PANEL_X) - PADDING_RIGHT
+
+    def _fit_panel_to_title(self, stable_title: str) -> bool:
+        """把面板宽度调整到刚好容纳标题，返回宽度是否变化。
+
+        只让标题参与测宽：progress 状态的详情行是「已处理 xxs | 识别文本预览」，
+        预览文本可以任意长，让它驱动宽度会把面板撑到横跨整个屏幕。
+
+        宽度可增可减，但**必须用 stable 版标题测量**：省略号动画每 100ms 变一次、
+        实测差 22px，拿动画帧测宽会让窗口每秒抖十次。秒数不需要特殊处理——
+        字体里数字等宽（各 23px），且同一次录音内只增不减。
+        """
+        if not self.title_font:
+            return False
+
+        needed = (TITLE_X - PANEL_X) + self.title_font.measure(stable_title) + PADDING_RIGHT
+
+        cap = PANEL_W
+        try:
+            if self.window:
+                cap = max(PANEL_W, int(self.window.winfo_screenwidth() * PANEL_MAX_W_RATIO))
+        except tk.TclError:
+            pass
+
+        new_w = max(PANEL_W, min(needed, cap))
+        if new_w == self._panel_w:
+            return False
+
+        self._panel_w = new_w
+        return True
 
     def _rounded_rect(self, x1: int, y1: int, x2: int, y2: int, radius: int, **kwargs) -> None:
         """用单个平滑 polygon 画圆角矩形，避免内部拼接线。"""
@@ -554,13 +660,43 @@ class RecordingIndicator:
                 hi = mid - 1
         return text[:lo] + ellipsis
 
-    def _compose_text(self) -> Tuple[str, str, str]:
-        dots = "." * ((self._tick_index % 3) + 1)
+    def _panel_colors(self) -> Tuple[str, str, str]:
+        """按连续对话状态选择面板配色，返回 (主背景, 内层磨砂, 边框)。
+
+        只有录音阶段染色：等待/进度/处理/打断/错误描述的是识别流水线状态，
+        与连续对话正交，染上去反而会让「哪个状态」变得难读。
+        """
+        if self.state.mode == "recording":
+            mode = self.state.continuous_mode
+            if mode in ("armed", "exited"):
+                return CONTINUOUS_PENDING_BG, CONTINUOUS_PENDING_FROST, CONTINUOUS_PENDING_BORDER
+            if mode == "active" and self.state.continuous_role:
+                return CONTINUOUS_ACTIVE_BG, CONTINUOUS_ACTIVE_FROST, CONTINUOUS_ACTIVE_BORDER
+        return PANEL_BG, FROST_MID, BORDER
+
+    def _compose_text(self, stable: bool = False) -> Tuple[str, str, str]:
+        """生成当前状态的文案。
+
+        Args:
+            stable: 用于测量面板宽度时置 True，把省略号动画固定成最长的三个点。
+                    否则窗口宽度会跟着每 100ms 一次的动画脉动（实测 22px）。
+        """
+        dots = "..." if stable else "." * ((self._tick_index % 3) + 1)
 
         if self.state.mode == "recording":
             elapsed = max(0.0, time.time() - self.state.start_time)
             shortcut_name = self._format_shortcut_name(self.state.shortcut_key)
-            return f"正在录音 {elapsed:.1f}s", f"松开{shortcut_name}后开始识别", ACCENT
+            detail = f"松开{shortcut_name}后开始识别"
+            mode = self.state.continuous_mode
+            if mode == "armed":
+                return f"即将开始连续对话 {elapsed:.1f}s", detail, ACCENT
+            if mode == "active" and self.state.continuous_role:
+                # 角色名加引号，避免「正在与助理连续对话」读起来断不开词
+                return f"正在与“{self.state.continuous_role}”连续对话 {elapsed:.1f}s", detail, ACCENT
+            if mode == "exited":
+                # 按下切换键的那一刻这句话就已经改回正常角色检测了，所以是「已结束」
+                return f"已结束连续对话 {elapsed:.1f}s", detail, ACCENT
+            return f"正在录音 {elapsed:.1f}s", detail, ACCENT
 
         if self.state.mode == "waiting":
             detail = "等待服务端返回最终结果"
@@ -599,7 +735,7 @@ class RecordingIndicator:
 
         # 位置只来自输入光标或屏幕中心靠下，不再使用焦点控件/鼠标兜底。
         anchor, source = self._state_anchor_or_current()
-        width, height = CANVAS_W, CANVAS_H
+        width, height = self._panel_w + MARGIN * 2, CANVAS_H
         screen_width = self.window.winfo_screenwidth()
         screen_height = self.window.winfo_screenheight()
 
@@ -716,8 +852,17 @@ class RecordingIndicator:
         return "快捷键"
 
 
-def show_recording_indicator(start_time: Optional[float] = None, shortcut_key: str = "") -> None:
-    RecordingIndicator().show_recording(start_time, shortcut_key)
+def show_recording_indicator(
+    start_time: Optional[float] = None,
+    shortcut_key: str = "",
+    continuous_mode: str = "",
+    continuous_role: str = "",
+) -> None:
+    RecordingIndicator().show_recording(start_time, shortcut_key, continuous_mode, continuous_role)
+
+
+def update_recording_indicator_continuous(mode: str = "", role: str = "") -> None:
+    RecordingIndicator().update_continuous(mode, role)
 
 
 def show_waiting_indicator(recorded_duration: Optional[float] = None) -> None:

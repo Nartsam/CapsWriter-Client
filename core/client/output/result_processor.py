@@ -25,6 +25,7 @@ from core.tools.zhconv import convert as zhconv_convert
 from core.client.audio.file_manager import AudioFileManager
 from core.client.llm.llm_write_md import write_llm_md
 from core.client.llm.llm_constants import ToolNames
+from core.client.llm.llm_role_config import RoleConfig
 # 悬浮录音提示：用于显示等待、进度、错误和处理完成后的隐藏。
 from core.client.ui import (
     hide_recording_indicator,
@@ -163,6 +164,55 @@ class ResultProcessor:
 
         return f'    模型结果{role_label}：{result_text}{speed_label}'
     
+    def _resolve_forced_role(self, snapshot) -> Optional[RoleConfig]:
+        """
+        解析连续对话要强制路由到的角色
+
+        角色文件可以被热重载、改名或禁用，所以粘滞的只是名字，每次都重新解析；
+        解析不到就自动退出连续对话，避免后续每句话都撞在同一个失效角色上。
+        """
+        if snapshot is None or not snapshot.forced_role or not Config.llm_enabled:
+            return None
+
+        role_config = self.app.llm.resolve_role(snapshot.forced_role)
+        if role_config is None:
+            # 期间若已进入别的连续对话就不要误伤
+            if self.state.continuous_role == snapshot.forced_role:
+                self.state.exit_continuous()
+            logger.warning(f"连续对话角色「{snapshot.forced_role}」已不存在或被禁用，自动退出连续对话")
+            console.print(f'    连续对话：[yellow]角色「{snapshot.forced_role}」已失效，已退出[/yellow]')
+        return role_config
+
+    def _update_continuous_state(self, snapshot, llm_result) -> None:
+        """
+        按本次录音的路由快照更新连续对话状态
+
+        进入只能在这里判定：说这句话的时候还不知道会命中哪个角色。退出早在松手时
+        就落地了（见 ShortcutTask.finish），这里只负责如实告知。
+        """
+        if snapshot is None:
+            return
+
+        if snapshot.is_arming:
+            role_name = llm_result.role_name if llm_result else None
+            is_named = bool(role_name) and role_name != RoleConfig.DEFAULT_ROLE_NAME
+            if llm_result and llm_result.processed and is_named:
+                self.state.enter_continuous(role_name)
+                console.print(f'    连续对话：[green]已进入「{role_name}」[/green]')
+            else:
+                logger.info("本次录音按过连续对话切换键，但未命中具名角色，切换作废")
+                console.print('    连续对话：[yellow]未触发角色，本次切换作废[/yellow]')
+            return
+
+        if snapshot.is_exiting:
+            console.print(f'    连续对话：[yellow]已退出「{snapshot.sticky_role}」[/yellow]')
+            return
+
+        # 连续对话中的普通一句：刷新闲置计时。起点取回复处理完毕而不是录音开始，
+        # 否则一个生成半分钟的长回复会白白吃掉超时预算
+        if snapshot.sticky_role:
+            self.state.touch_continuous()
+
     def _log_modifier_key_state(self) -> None:
         """
         检测并记录当前按下的所有键
@@ -220,6 +270,8 @@ class ResultProcessor:
         if self.state.is_task_cancelled(message.task_id):
             if message.is_final:
                 self.state.release_cancelled_task(message.task_id)
+                # 打断路径已经做过回滚，这里只是把可能残留的快照清掉（pop 幂等）
+                self.state.pop_continuous_snapshot(message.task_id)
                 logger.info(f"丢弃已打断任务的识别结果，任务ID: {message.task_id}")
             return
 
@@ -315,13 +367,19 @@ class ResultProcessor:
             if app.lower() == process_name:
                 asyncio.create_task(_auto_enter(delay))
 
+        # 连续对话路由：由说这句话时的快照决定，而不是此刻的全局状态。两者之间隔着
+        # 一整个服务端往返，期间用户完全可能已经开始说下一句或切换了状态
+        snapshot = self.state.pop_continuous_snapshot(message.task_id)
+        forced_role = self._resolve_forced_role(snapshot)
+
         # LLM 处理和输出
         llm_result = None
         if Config.llm_enabled:
             llm_result = await self.app.llm.process_and_output(
                 text,
                 paste=paste,
-                matched_hotwords=potential_hotwords  # 传递上下文热词给 LLM
+                matched_hotwords=potential_hotwords,  # 传递上下文热词给 LLM
+                forced_role=forced_role
             )
         else:
             await self.output.output(text, paste=paste)
@@ -354,6 +412,9 @@ class ResultProcessor:
                 message.time_start,
                 file_audio
             )
+
+        # 连续对话状态迁移（进入判定放在最后：要等 role_name 确定）
+        self._update_continuous_state(snapshot, llm_result)
 
         # 检测修饰键状态（调试用）
         self._log_modifier_key_state()

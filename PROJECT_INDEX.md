@@ -76,7 +76,7 @@ CapsWriter-Offline 是一个 Windows 离线语音输入工具（GitHub: HaujetZh
 |---|---|
 | `config_client.py` | 所有客户端配置项。快捷键列表 `shortcuts`、服务端地址、LLM 开关、热词阈值、粘贴模式等 |
 | `core/client/app.py` | **CapsWriterClient** 门面类。`__init__` 实例化所有子系统，`start()` 根据命令行参数选择 MicRunner 或 FileRunner |
-| `core/client/state.py` | **ClientState** dataclass。共享状态：`queue_in`（音频队列）、`websocket`、`recording`、`audio_files` 等；`pending_task_id`（当前可打断的任务）与 `cancelled_task_ids`（已打断待丢弃结果的定长名单，见约定 12） |
+| `core/client/state.py` | **ClientState** dataclass。共享状态：`queue_in`（音频队列）、`websocket`、`recording`、`audio_files` 等；`pending_task_id`（当前可打断的任务）与 `cancelled_task_ids`（已打断待丢弃结果的定长名单，见约定 12）；连续对话的 `continuous_role`（粘滞角色名）、`continuous_last_active`（闲置超时基准）与 `ContinuousChatSnapshot` 路由快照（`continuous_current` + 按 task_id 索引的定长字典，见约定 19） |
 | `core/client/manager/mic_runner.py` | 麦克风模式运行器。启动顺序：托盘→提示→音频流→快捷键→UDP→热词→LLM→Companion→ResultProcessor |
 | `core/client/manager/file_runner.py` | 文件转录模式运行器。遍历文件，对媒体文件调用 FileTranscriber，对文本文件调用 SrtAdjuster |
 
@@ -88,10 +88,10 @@ CapsWriter-Offline 是一个 Windows 离线语音输入工具（GitHub: HaujetZh
 |---|---|
 | `shortcut_config.py` | **Shortcut** dataclass。字段：`key`、`type`(keyboard/mouse)、`suppress`(阻塞)、`hold_mode`(长按/单击)、`enabled` |
 | `key_mapper.py` | VK 码 ↔ 按键名称转换。`vk_to_name()` 用于钩子回调识别按键，`name_to_key()` 用于补发时获取 pynput Key 对象。包含 Windows 消息常量定义 |
-| `shortcut_manager.py` | **ShortcutManager**。创建 keyboard/mouse Listener，在 `win32_event_filter` 中处理按键事件。包含防自捕获逻辑（`_emulating_keys`、`_restoring_keys`）与打断键处理（`_handle_cancel_key`，抑制决策锁存，见约定 12） |
+| `shortcut_manager.py` | **ShortcutManager**。创建 keyboard/mouse Listener，在 `win32_event_filter` 中处理按键事件。包含防自捕获逻辑（`_emulating_keys`、`_restoring_keys`）、打断键处理（`_handle_cancel_key`，抑制决策锁存，见约定 12）与连续对话切换键处理（`_handle_chat_key` + `_resolve_chat_key` 的五条配置校验，见约定 19） |
 | `event_handler.py` | **ShortcutEventHandler**。处理 keydown/keyup 逻辑。hold_mode：按下→launch()，松开→判断时长→finish()/cancel()+补发。click_mode：单击切换录音 |
 | `emulator.py` | **ShortcutEmulator**。使用 pynput Controller 补发被阻塞的按键/鼠标点击。`_emulating_keys` 标志防止补发的按键被自身钩子再次捕获 |
-| `task.py` | **ShortcutTask**。单个快捷键的录音任务状态。`launch()`：记录时间→设状态→显示 UI→通知 Companion→启动 AudioRecorder。`finish()`：通知 Companion 结束录音→停止录音。`cancel()`：取消录音 |
+| `task.py` | **ShortcutTask**。单个快捷键的录音任务状态。`launch()`：记录时间→设状态→连续对话超时懒判断与建快照（`_prepare_continuous`）→显示 UI→通知 Companion→启动 AudioRecorder。`finish()`：落地连续对话退出→通知 Companion 结束录音→停止录音。`cancel()`/`abort()`：取消录音并回滚本次录音的连续对话切换 |
 
 **数据流**：`win32_event_filter` → `ShortcutEventHandler.handle_keydown/up` → `ShortcutTask.launch/cancel/finish` → `AudioRecorder.record_and_send`
 
@@ -117,7 +117,7 @@ CapsWriter-Offline 是一个 Windows 离线语音输入工具（GitHub: HaujetZh
 
 | 文件 | 职责 |
 |---|---|
-| `result_processor.py` | **ResultProcessor**。主工作循环：连接 WebSocket → 接收消息 → 热词替换 → 去标点 → 正则替换 → LLM 润色 → 文本输出 → 日记/音频保存。`_format_llm_result` 负责控制台那行 `模型结果[角色(工具)]：…`，工具名来自 `LLMResult.used_tools`；结果为空时显示黄色「（空回复，详见日志）」而不是原样打印文本（见约定 18） |
+| `result_processor.py` | **ResultProcessor**。主工作循环：连接 WebSocket → 接收消息 → 热词替换 → 去标点 → 正则替换 → LLM 润色 → 文本输出 → 日记/音频保存。`_format_llm_result` 负责控制台那行 `模型结果[角色(工具)]：…`，工具名来自 `LLMResult.used_tools`；结果为空时显示黄色「（空回复，详见日志）」而不是原样打印文本（见约定 18）。`_resolve_forced_role`/`_update_continuous_state` 按本次录音的路由快照决定连续对话归属并做状态迁移（见约定 19） |
 | `text_output.py` | **TextOutput**。两种输出方式：`_type_text()`（keyboard.write 模拟打字）和 `_paste_text()`（Ctrl+V 粘贴）。`strip_punc()` 去除末尾标点 |
 
 ### 6. 热词系统 (`core/client/hotword/`)
@@ -135,7 +135,7 @@ CapsWriter-Offline 是一个 Windows 离线语音输入工具（GitHub: HaujetZh
 
 | 文件 | 职责 |
 |---|---|
-| `llm_handler.py` | **LLMHandler** 协调器。`process_and_output()`：角色检测 → Companion 转发（若已连接则跳过 LLM）→ LLM 调用 → 输出。管理角色加载、上下文、客户端池 |
+| `llm_handler.py` | **LLMHandler** 协调器。`process_and_output()`：角色检测 → Companion 转发（若已连接则跳过 LLM）→ LLM 调用 → 输出。传入 `forced_role` 时（连续对话）跳过角色检测、整句原样发给该角色。`resolve_role()` 按显示名取回启用中的具名角色，供连续对话每次请求重新解析。管理角色加载、上下文、客户端池 |
 | `llm_role_config.py` | **RoleConfig** dataclass。角色配置字段：provider、model、system_prompt、output_mode(typing/toast)、Toast 宽度边界与样式（字体、颜色、透明度、圆角）、显示时长（`toast_duration`，智能时长下作为最短停留保底基数，见约定 17）、联网搜索三件套（`enable_web_search`/`enable_datetime`/`request_timeout`）等 |
 | `llm_role_loader.py` | **RoleLoader**。扫描 `LLM/` 目录下的 .py 文件，每个文件作为一个角色模块加载 |
 | `llm_role_detector.py` | **RoleDetector**。根据输入文本前缀匹配角色（如 "翻译 xxx" → 翻译角色） |
@@ -157,7 +157,7 @@ CapsWriter-Offline 是一个 Windows 离线语音输入工具（GitHub: HaujetZh
 | 文件 | 职责 |
 |---|---|
 | `core/client/ui/__init__.py` | 客户端 UI 门面。注入 logger，重新导出 toast/tray/recording_indicator |
-| `core/client/ui/recording_indicator.py` | **RecordingIndicator**。录音悬浮指示器（Tk 实现，单例，线程安全）。显示录音时长、等待状态、处理进度、错误提示。通过 Windows API 获取输入光标位置定位。状态优先级：录音进行中时服务端分段进度只记录不切换模式（见约定 11）。手动打断时原地换成 `cancelled` 文案（浅蓝 `CANCEL_ACCENT`），1.2s 后自动隐藏 |
+| `core/client/ui/recording_indicator.py` | **RecordingIndicator**。录音悬浮指示器（Tk 实现，单例，线程安全）。显示录音时长、等待状态、处理进度、错误提示。通过 Windows API 获取输入光标位置定位。状态优先级：录音进行中时服务端分段进度只记录不切换模式（见约定 11）。手动打断时原地换成 `cancelled` 文案（浅蓝 `CANCEL_ACCENT`），1.2s 后自动隐藏。录音态另有连续对话四态：底色白/浅黄/浅绿区分，圆点恒为蓝，切换走独立的 `update_continuous` 命令（见约定 19）。面板宽度 `PANEL_W` 是**最小值不是固定值**：只由标题驱动、可增可减、上限为屏幕宽度的 90%（`_fit_panel_to_title`），详情行不参与测宽，测量一律用 `_compose_text(stable=True)` 把省略号动画固定成三个点 |
 | `core/client/ui/tips.py` | **TipsDisplay**。启动时的 Rich 控制台提示信息 |
 | `core/ui/toast.py` | Toast 浮动消息通知（Tk 实现，支持 Markdown 渲染） |
 | `core/ui/toast_base.py` | Toast 窗口基类。负责置顶无边框窗口、透明度、Canvas 透明色圆角背景、40px 顶部空白拖动区（`DEFAULT_PADDING_TOP`）、内容宽度测量、只增不减的窗口增宽、拖动锚点、滚轮、复制、Markdown 最终视图字体/tag 样式同步与按真实内容重算高度，以及文字区域选择和空白/边缘区域拖动的事件隔离。另含智能时长（`smart_duration`/`pause_and_resume` 标志）：随字数对数计时、悬停暂停续时（剩余时间模型 `_timer_start`/`_timer_remaining`）、拖拽后永不自动关闭（`_never_auto_close`，见约定 17）；普通 toast 保持固定时长 + 悬停移开重置的旧行为 |
@@ -270,6 +270,41 @@ AudioRecorder (recorder.py)
   → 日记保存 + 音频重命名
 ```
 
+### 连续对话（免前缀粘滞路由，见约定 19）
+```
+按下录音键
+  → ShortcutTask.launch()
+    → _prepare_continuous()
+      → state.expire_continuous_if_idle()   # 闲置超时懒判断，无后台定时器
+      → state.begin_continuous_snapshot()   # 记录此刻的粘滞角色
+    → show_recording_indicator(..., snapshot.indicator_mode(), sticky_role)
+  → AudioRecorder.record_and_send()
+    → state.bind_continuous_snapshot(task_id)   # 补上 task_id 索引
+
+录音期间按下切换键
+  → win32_event_filter → ShortcutManager._handle_chat_key
+  → state.toggle_continuous()（翻转快照，非幂等，有自动重复闸门）
+  → update_recording_indicator_continuous(mode, role)   # 独立命令，不重置录音计时
+
+松开录音键
+  → ShortcutTask.finish() → state.commit_continuous_exit()   # 退出在此落地
+
+服务端返回最终结果
+  → ResultProcessor._handle_message
+  → state.pop_continuous_snapshot(task_id)          # 只看快照，不读全局状态
+  → _resolve_forced_role()  角色已失效 → 自动退出连续对话
+  → LLMHandler.process_and_output(..., forced_role) # 有粘滞角色则跳过角色检测
+  → _update_continuous_state()
+      武装 + 命中具名角色 → state.enter_continuous(role)
+      武装 + 未命中       → 切换作废
+      退出               → 仅控制台告知（松手时已落地）
+      连续对话中普通一句  → state.touch_continuous() 刷新闲置计时
+
+录音作废（短按取消 / ESC 打断 / 等待阶段 ESC）
+  → state.rollback_continuous_snapshot(task_id)
+  → 丢弃快照；已落地的退出恢复回去
+```
+
 ### 文件转录
 ```
 命令行传入文件路径
@@ -332,6 +367,26 @@ Electron 应用连接到 ws://127.0.0.1:6019
 
 18. **空回复必须显形，不得降级成识别原文**：LLM 返回空正文时，`handle_toast_mode` 与 OpenMate 路径**返回空串**而不是 `polished_text or content`——那段识别原文在这两种模式下从未展示给用户，拿它冒充模型输出会让控制台、`年/月/日-角色.md` 记录、UDP 广播三处同时误报成一次成功回复，静默失败连事后都查不出来（typing 模式保留 `or content` 降级：那里的文本是真的打字输出去了，如实反映）。控制台由 `_format_llm_result` 显示黄色「（空回复，详见日志）」。原因由 `llm_processor.py` 的诊断日志给出：Responses 流把 `response.incomplete`（打印 `incomplete_details.reason`）、`response.failed`、refusal 事件全部记录，并在流结束时汇总「状态 + usage（含 reasoning token）+ 事件类型计数」——**未被解析分支认领的事件只会在这个计数里显形**，是判断「额度被思考内容吃光」的唯一线索；Chat Completions 流记录 `finish_reason`，`length` 单独告警。空回复走 WARNING，而 `logger.py` 把控制台处理器固定在 WARNING 级，因此这些诊断会直接出现在运行终端里。新增流式路径时必须一并补上这两条（空正文告警 + 终局状态解析），否则又会退回静默
 
+19. **连续对话（免前缀粘滞路由）**：`continuous_chat_key`（默认 space，留空禁用）在**录音期间**按下，本句若命中**具名角色**（`display_name` 非空且非「默认」）就进入与该角色的连续对话，此后每句话跳过角色检测直接发给它；连续对话中再按一次则退出。**这个功能只改路由，不碰对话记忆**——历史一直由各角色的 `enable_history` 维护，`翻译` 这种 `enable_history=False` 的角色照样能进。九条约束：
+
+    ① **路由按每句话的快照决定，不读结果到达时的全局状态**。按切换键在录音期间，而「命中了哪个角色」要等服务端回包才知道，中间隔着一整个往返，期间用户完全可能已经开始说下一句或切换了状态。`ContinuousChatSnapshot` 在 `launch()` 时建（那时粘滞角色已确定）、`task_id` 生成后登记进字典、最终结果到达时 pop，定长兜底防服务端异常滞留。
+
+    ② **进入延迟、退出立即，这个不对称无法消除**。进入必须等结果（不知道粘谁），退出在 `finish()` 松手时落地（下一次录音的指示器立刻恢复正常配色，不必等服务端）。
+
+    ③ **任何让这次录音作废的路径都要回滚本次切换**：同一次录音内再按切换键、短按取消（< threshold）、ESC 打断（录音阶段**和**等待阶段都算）。等待阶段的回滚要靠快照里的 `exit_committed` 把已落地的退出恢复回去，否则会出现「录音阶段按 ESC 能撤销退出、松手后按 ESC 撤销不了」这种要背时序才能解释的差别。
+
+    ④ **连续对话中完全不做角色检测**。角色名是「翻译」「助理」这类日常词，`RoleDetector` 用的是 `text.startswith(name)`——对助理说「翻译一下这句话」会被静默劫持到翻译角色，且助理那边的历史凭空断一句。
+
+    ⑤ **切换键在录音期间必须拦截**。录音键 `ctrl_r` 的 KEYDOWN 虽然被吞了，但物理上它确实按着，放行的空格会被系统当成真正的 **Ctrl+Space，即中文输入法的中英文切换热键**——每切换一次连续对话就翻一次输入法，而且要等下次打字才发现。抑制决策照约定 12 在 KEYDOWN 锁存、KEYUP 沿用。
+
+    ⑥ **切换不是幂等操作，必须有自动重复闸门**。打断键的 `abort()` 幂等所以长按连发 KEYDOWN 无所谓；切换会被连发翻来覆去，用 `_chat_key_down` 保证一次物理按下只切换一次。
+
+    ⑦ **拒绝修饰键，不做补发兜底**。修饰键被抑制时有卡在「按下」状态的风险（见 `key_mapper.MODIFIER_KEYS` 上方注释），录音键为此专门补发合成释放事件；切换键没有非用修饰键不可的理由。连同「与录音键同名」「与 `cancel_recording_key` 同名」「鼠标键」「`llm_enabled=False`」共五条校验，命中即禁用功能并打 WARNING。
+
+    ⑧ **指示器四态只用面板底色区分，圆点恒为蓝**（白＝普通录音，浅黄＝本次录音正在改变连续对话状态，浅绿＝已在连续对话中）。录音中切换状态**必须走独立的 `update_continuous` 命令**，重发 `show_recording` 会重建 `IndicatorState` 把 `start_time` 一并刷新、录音计时清零。松手后的等待/进度/处理三态不染色——它们描述识别流水线，与连续对话正交。**面板宽度必须随标题增长**：`PANEL_W`(450) 是物理像素而字体是磅值，高 DPI 下盒子不放大、字放大，200% 缩放时「正在与“雾切响子”连续对话 12.3s」要 552px 而可用宽只有 356px，全部被 `_fit_text` 截成省略号（见 docs/DEV_NOTES.md「已知状态」的 DPI 条目）。加宽只由标题驱动（详情行不参与——progress 的识别预览可以任意长），宽度变化后必须重调 `_place_window()`（`_tick` 每 100ms 只调 `_render`，光配宽画布而不改 `wm geometry`，多出来的部分看不见）。**宽度可增可减，但测量必须用 `_compose_text(stable=True)`**：`等待识别结果.`/`..`/`...` 三帧实测差 22px，拿动画帧测宽会让窗口每秒抖十次；秒数不必处理，字体里数字等宽（各 23px）且同一次录音内单调递增。
+
+    ⑨ **闲置超时用懒判断，不开后台定时器**（`continuous_chat_timeout`，默认 300s，0 表示永不超时）：只在下一次 `launch()` 时检查，静默退出、无提示，由指示器自证。粘滞的只是角色名，每次请求经 `LLMHandler.resolve_role()` 重新解析，角色被删/改名/禁用时自动退出并告警。
+
 ---
 
 ## 开发环境与验证
@@ -356,6 +411,8 @@ Electron 应用连接到 ws://127.0.0.1:6019
 | 修改按键补发逻辑 | `shortcut/emulator.py` |
 | 修改钩子事件处理 | `shortcut/shortcut_manager.py` |
 | 修改录音打断行为 | `config_client.py` (`cancel_recording_key`)、`shortcut/shortcut_manager.py` (`_handle_cancel_key`)、`shortcut/task.py` (`abort`)、`audio/recorder.py` (abort 分支) |
+| 修改连续对话行为 | `config_client.py` (`continuous_chat_key` / `continuous_chat_timeout`)、`core/client/state.py` (`ContinuousChatSnapshot` 与 `continuous_*` 方法)、`shortcut/shortcut_manager.py` (`_handle_chat_key` / `_resolve_chat_key`)、`shortcut/task.py` (`_prepare_continuous` / `finish` / `cancel`)、`output/result_processor.py` (`_resolve_forced_role` / `_update_continuous_state`)、`llm/llm_handler.py` (`forced_role` / `resolve_role`) |
+| 修改连续对话的指示器配色/文案 | `core/client/ui/recording_indicator.py` (`CONTINUOUS_*` 常量、`_compose_text`、`_panel_colors`) |
 | 修改录音/音频发送 | `audio/recorder.py`, `audio/stream.py` |
 | 修改识别结果处理 | `output/result_processor.py` |
 | 修改文本输出方式 | `output/text_output.py` |

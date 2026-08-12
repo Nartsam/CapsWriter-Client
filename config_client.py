@@ -39,6 +39,16 @@ class ClientConfig:
     # 留空则禁用此功能。与中断 LLM 输出的 llm_stop_key 相互独立
     cancel_recording_key = 'esc'
 
+    # 连续对话切换键：录音期间按下，若本句触发了具名角色则进入与该角色的连续对话，
+    # 此后每句话都直接发给该角色、不必再念角色名。同一次录音内按奇数次生效、偶数次抵消。
+    # 连续对话中再次按下则退出（当前这句话起即恢复正常角色检测）。
+    # 录音期间该键会被拦截、不传给前台程序；非录音期间一律放行。留空则禁用此功能。
+    # 不支持鼠标键和修饰键（Ctrl/Alt/Shift/Win），也不能与录音键或 cancel_recording_key 同名
+    continuous_chat_key = 'space'
+    # 连续对话闲置超时（秒）：超过此时长没有再对话则自动退出，静默生效、无提示。
+    # 判定发生在下一次按下录音键时，0 表示永不超时
+    continuous_chat_timeout = 300
+
     paste        = False        # 是否以写入剪切板然后模拟 Ctrl-V 粘贴的方式输出结果
     restore_clip = True         # 模拟粘贴后是否恢复剪贴板
     paste_apps   = ['WeiXin.exe', 'Telegram.exe']  # 匹配时强制粘贴

@@ -110,6 +110,9 @@ class AudioRecorder:
             self.task_id = str(uuid.uuid1())
             # 登记为待处理任务，打断键据此判断当前是否有可打断的输入
             self.state.pending_task_id = self.task_id
+            # 连续对话的路由快照在 launch() 时就建好了（那时粘滞角色已确定），
+            # 这里补上 task_id 索引，供结果到达时查回本次录音的路由意图
+            self.state.bind_continuous_snapshot(self.task_id)
             logger.debug(f"创建录音任务，任务ID: {self.task_id}")
             
             self._start_time = 0.0
