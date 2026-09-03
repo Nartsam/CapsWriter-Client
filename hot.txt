@@ -20,8 +20,9 @@ GPT-SoVITS | GPT service | GPT Solves
 Clash Verge | Clash Words | ClashWorx | Clash of Clans | Clash of Words | Clash Wars | Clash Watch
 tailscale | Palescale | Telescale
 gvisor | GWARSER | J. Watson | JWater | 这沃 sir | J. Walter | Jay Woehler
-CUDA | 酷的 | kuda
+CUDA | kuda
 3DMigoto | 3D 米高苏 | 3D 尼多夫 | 3D 米沟突 | 3D 米 Go Two
+只读 | 止读
 PyTorch
 TensorRT
 DirectML
@@ -30,6 +31,7 @@ Transformer
 v2rayN | 维图瑞恩
 Codex | CodeX
 ComfyUI | Coffee UI | 康菲 UI | Confi UI | Kanfi UI
+SillyTavern | C.L.Tarvin | City Tavern | Silly Tarvin | Silly Tarpit | Silly Turin | Clytaven | Silly Parents | City Harvest | C 里塔文 | Sally's parents | Celtarin | Celitaren | City Garden | Silly Karen | Silly Carbon | C-Litavern
 雾切响子 | 勿切祥子 | 不切祥子 | 不切小子
 雾切妹妹 | 胡切妹妹 | 吴切妹妹
 新岛真 | 心导针 | 青岛真 | 新岛针 | 洗澡针

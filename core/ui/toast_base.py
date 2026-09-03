@@ -5,7 +5,6 @@ Toast 窗口基础模块
 """
 import logging
 import math
-import time
 import tkinter as tk
 from tkinter import font
 from typing import Optional, Callable, Any, Tuple
@@ -125,9 +124,9 @@ class ToastWindowBase(ABC):
             editable: Markdown 渲染后是否允许编辑
             window_alpha: 窗口透明度，1.0 表示不透明
             corner_radius: 窗口圆角半径，0 表示不启用圆角
-            smart_duration: 智能时长模式（LLM 角色白色对话框）。时长按文本字数计算、
-                鼠标悬停暂停/移开续时、拖拽后永不自动关闭；False 时保持旧的固定时长 +
-                悬停重置行为
+            smart_duration: 智能时长模式（LLM 角色白色对话框）。时长按文本字数计算；
+                悬停不暂停倒计时，到期后在鼠标移开时关闭；拖拽后永不自动关闭。
+                False 时保持旧的固定时长 + 悬停重置行为
         """
         # 保存基本属性
         self.parent_root = parent_root
@@ -145,11 +144,11 @@ class ToastWindowBase(ABC):
         self.mouse_inside = False
         self.timer_id: Optional[str] = None
 
-        # 智能时长模式（LLM 角色白色对话框）：时长随字数、悬停暂停续时、拖拽永不自动关闭。
+        # 智能时长模式（LLM 角色白色对话框）：时长随字数、悬停不延长截止时间、
+        # 拖拽永不自动关闭。
         # 普通 toast 为 False，完全保持旧的固定时长 + 悬停取消/移开重置行为。
         self.pause_and_resume = smart_duration
-        self._timer_start: Optional[float] = None    # 当前计时周期的起点（time.monotonic）
-        self._timer_remaining: Optional[int] = None  # 剩余毫秒：悬停冻结时保存 / finish 后未启动时保存总量
+        self._timer_expired = False                  # 截止时间已到；悬停时延迟到移开再关闭
         self._never_auto_close = False               # 拖拽后置 True，窗口转为永不自动关闭
         
         # 拖动锚点：按下时同时记录指针屏幕坐标和窗口左上角，
@@ -517,24 +516,24 @@ class ToastWindowBase(ABC):
     # --------------------------------------------------------
 
     def _on_mouse_enter(self, event: tk.Event) -> None:
-        """鼠标进入窗口，暂停自动关闭计时器"""
+        """鼠标进入窗口；LLM Toast 保持绝对截止时间不变。"""
         self.mouse_inside = True
-        if self.timer_id:
-            if self.pause_and_resume:
-                # 智能时长：冻结剩余计时，移开后续时（不重置满时长）
-                self._pause_destroy_timer()
-            else:
-                self.window.after_cancel(self.timer_id)
-                self.timer_id = None
+        if self.timer_id and not self.pause_and_resume:
+            self.window.after_cancel(self.timer_id)
+            self.timer_id = None
 
     def _on_mouse_leave(self, event: tk.Event) -> None:
-        """鼠标离开窗口，恢复自动关闭计时器"""
+        """鼠标离开窗口；已到期的 LLM Toast 在确认真正移出后关闭。"""
         self.mouse_inside = False
         if self.pause_and_resume:
-            # 智能时长：从剩余时间继续计时。拖拽过的窗口不再计时；流式阶段没有
-            # 计时器（_timer_remaining 为 None），悬停后移开也不应启动
-            if not self._never_auto_close and self._timer_remaining is not None:
-                self._schedule_destroy(self._timer_remaining)
+            if self._timer_expired and not self._never_auto_close:
+                # Toplevel 与子控件都绑定了 Enter/Leave；在内部控件之间移动时 Tk 会先
+                # 发送 Leave 再发送 Enter。排到当前事件批次末尾，避免把内部移动误判
+                # 为离开整个 Toast。
+                try:
+                    self.window.after_idle(self._destroy_if_expired_outside)
+                except tk.TclError:
+                    pass
             return
         if not self.streaming:
             self._start_destroy_timer()
@@ -678,7 +677,7 @@ class ToastWindowBase(ABC):
         self.timer_id = self.window.after(self.duration, self._destroy_window)
 
     # --------------------------------------------------------
-    # 智能时长（LLM 角色白色对话框）：时长随字数、悬停暂停续时、拖拽永不自动关闭
+    # 智能时长（LLM 角色白色对话框）：时长随字数、悬停不顺延、拖拽永不自动关闭
     # --------------------------------------------------------
 
     @staticmethod
@@ -695,40 +694,32 @@ class ToastWindowBase(ABC):
         ))
 
     def _start_smart_destroy_timer(self) -> None:
-        """智能时长：按最终文本字数确定倒计时总量，然后从当前时刻起计时。
-
-        鼠标在窗口内（悬停）或已拖拽时只记录总量、不调度计时器——
-        前者待移开后续时，后者永不自动关闭。
-        """
-        self._timer_remaining = self._compute_smart_duration(self.duration, self.full_text)
-        if not self.mouse_inside and not self._never_auto_close:
-            self._schedule_destroy(self._timer_remaining)
-
-    def _schedule_destroy(self, remaining_ms: int) -> None:
-        """以剩余毫秒启动/继续销毁计时；剩余 ≤ 0 立即销毁（悬停超过总时长后移开）。"""
+        """按最终文本字数确定绝对倒计时；悬停不会暂停或顺延截止时间。"""
         if self._never_auto_close:
             return
-        self._timer_remaining = max(0, int(remaining_ms))
+        self._timer_expired = False
         if self.timer_id:
             self.window.after_cancel(self.timer_id)
             self.timer_id = None
-        if self._timer_remaining <= 0:
-            self._destroy_window()
-            return
-        self._timer_start = time.monotonic()
+        duration = self._compute_smart_duration(self.duration, self.full_text)
         try:
-            self.timer_id = self.window.after(self._timer_remaining, self._destroy_window)
+            self.timer_id = self.window.after(duration, self._on_smart_timer_expired)
         except tk.TclError:
-            # 窗口已被销毁（如被新 LLM 回复顶掉后鼠标移出触发），忽略
             self.timer_id = None
 
-    def _pause_destroy_timer(self) -> None:
-        """悬停进入：按已走时间结算剩余毫秒并取消计时器（冻结，移开后续时）。"""
-        if self.timer_id and self._timer_start is not None:
-            elapsed_ms = (time.monotonic() - self._timer_start) * 1000
-            self._timer_remaining = max(0, int(self._timer_remaining - elapsed_ms))
-            self.window.after_cancel(self.timer_id)
-            self.timer_id = None
+    def _on_smart_timer_expired(self) -> None:
+        """智能时长到期：未悬停则关闭，悬停则等真正移出后关闭。"""
+        self.timer_id = None
+        if self._never_auto_close:
+            return
+        self._timer_expired = True
+        if not self.mouse_inside:
+            self._destroy_window()
+
+    def _destroy_if_expired_outside(self) -> None:
+        """Leave 事件批次结束后，确认鼠标确已移出整个 Toast。"""
+        if self._timer_expired and not self.mouse_inside and not self._never_auto_close:
+            self._destroy_window()
 
     def _on_never_auto_close(self) -> None:
         """智能时长窗口被拖拽：取消自动关闭计时，转为永不自动关闭。
@@ -739,7 +730,7 @@ class ToastWindowBase(ABC):
         if not self.pause_and_resume:
             return
         self._never_auto_close = True
-        self._timer_remaining = None
+        self._timer_expired = False
         if self.timer_id:
             self.window.after_cancel(self.timer_id)
             self.timer_id = None
@@ -940,7 +931,7 @@ class ToastWindowBase(ABC):
                 self._switch_to_markdown()
 
             # 智能时长模式：从「内容全部生成完成」起算，时长按最终文本字数计算；
-            # 鼠标在窗口内则冻结（移开后续时），拖拽过的窗口不再计时
+            # 悬停不顺延截止时间，到期时仍悬停则移开即关；拖拽过的窗口不再计时
             if self.pause_and_resume:
                 self._start_smart_destroy_timer()
             # 普通模式：只有当鼠标不在窗口内时才启动计时器
