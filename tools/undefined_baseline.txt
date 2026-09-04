@@ -1,0 +1,9 @@
+# check_undefined.py 的已知豁免：`文件相对路径:名字`
+#
+# 这里的每一条都在 `if __name__ == '__main__':` 自测块里，生产路径跑不到，
+# 属于本项目接手前就存在的状况。刻意不记行号（见 load_baseline 的说明）。
+# 新增条目前请先确认它真的跑不到，而不是拿基线掩盖一个真 bug。
+core/client/hotword/algo_phoneme.py:logging
+core/client/hotword/hot_rule.py:CorrectorRule
+core/client/hotword/hot_rule.py:更新热词词典
+core/client/hotword/hot_rule.py:热词替换
