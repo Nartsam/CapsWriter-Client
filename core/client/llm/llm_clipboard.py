@@ -12,6 +12,7 @@ LLM 剪贴板工具
 # 从新位置导入，保持向后兼容
 from core.client.clipboard import (
     safe_paste,
+    try_paste,
     safe_copy,
     paste_text,
     save_and_restore_clipboard,
@@ -21,6 +22,7 @@ from core.client.clipboard import (
 
 __all__ = [
     'safe_paste',
+    'try_paste',
     'safe_copy',
     'paste_text',
     'save_and_restore_clipboard',

@@ -12,7 +12,7 @@ import time
 import pyclip
 import keyboard
 from . import logger
-from .llm_clipboard import safe_paste
+from .llm_clipboard import safe_paste, try_paste
 
 
 # 全局变量：记录每个角色最后一次使用的选中文字
@@ -38,8 +38,11 @@ def get_selected_text(role_config, state) -> str:
     role_name = role_config.name
 
     try:
-        # 保存当前剪贴板内容
-        original_clipboard = safe_paste()
+        # 保存当前剪贴板内容。必须用 try_paste：safe_paste 把「读不到」也折叠成
+        # 空字符串，而下面要把它写回剪贴板——剪贴板里是图片时（视觉输入功能一开，
+        # 这就成了常态）读取必然失败，拿那个空串写回去会先 EmptyClipboard，
+        # 把用户待用的截图直接清掉
+        original_clipboard = try_paste()
 
         # 模拟 Ctrl+C 复制选中的文字
         keyboard.press_and_release('ctrl+c')
@@ -50,11 +53,16 @@ def get_selected_text(role_config, state) -> str:
         # 读取新的剪贴板内容
         selected_text = safe_paste()
 
-        # 还原原来的剪贴板内容
-        pyclip.copy(original_clipboard)
+        # 还原原来的剪贴板内容。原内容读不到（非文本）时一律不动剪贴板：
+        # 此时若用户没有选中任何文字，Ctrl+C 不会改变剪贴板，图片就能原样保住。
+        # （若确实选中了文字，Ctrl+C 本身已经覆盖掉图片，那是模拟 Ctrl+C 取选区的
+        # 固有代价，除非连图片格式一并备份还原，不值得）
+        if original_clipboard is not None:
+            pyclip.copy(original_clipboard)
 
-        # 如果内容没有变化，说明没有选中文字，返回空字符串
-        if selected_text == original_clipboard or selected_text == state.last_output_text:
+        # 如果内容没有变化，说明没有选中文字，返回空字符串。
+        # 原内容读不到时按空串比较：那种情况下没选中文字读到的同样是空串
+        if selected_text == (original_clipboard or "") or selected_text == state.last_output_text:
             return ""
 
         # 检查长度限制

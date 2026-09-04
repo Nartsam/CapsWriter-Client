@@ -11,6 +11,7 @@
 import asyncio
 import platform
 from contextlib import contextmanager
+from typing import Optional
 import pyclip
 from pynput import keyboard
 from . import logger
@@ -18,6 +19,37 @@ from . import logger
 
 # 支持的编码列表
 CLIPBOARD_ENCODINGS = ['utf-8', 'gbk', 'utf-16', 'latin1']
+
+
+def try_paste() -> Optional[str]:
+    """
+    从剪贴板读取文本，能区分「读不到」与「本来就是空文本」
+
+    Returns:
+        解码后的文本；剪贴板里不是文本（典型是图片）或解码失败时返回 None
+
+    **凡是之后要把读到的内容写回剪贴板的调用方，必须用本函数而不是 safe_paste()**：
+    后者把失败也折叠成空字符串，拿它写回去会先 EmptyClipboard，把原内容
+    （典型是一张待用的截图）直接清掉。
+    """
+    try:
+        clipboard_data = pyclip.paste()
+    except Exception as e:
+        # 剪贴板里是图片等非文本内容时 pyclip 必然抛异常，这是预期情况而非故障。
+        # 走 WARNING 会直接刷到运行终端（logger.py 把控制台处理器固定在 WARNING 级），
+        # 而带图对话时每句都要触发两次
+        logger.debug(f"剪贴板中没有可读的文本内容: {e}")
+        return None
+
+    # 尝试多种编码方式
+    for encoding in CLIPBOARD_ENCODINGS:
+        try:
+            return clipboard_data.decode(encoding)
+        except (UnicodeDecodeError, AttributeError):
+            continue
+
+    logger.debug(f"剪贴板解码失败，尝试了编码: {CLIPBOARD_ENCODINGS}")
+    return None
 
 
 def safe_paste() -> str:
@@ -29,23 +61,8 @@ def safe_paste() -> str:
     Returns:
         解码后的文本字符串，失败返回空字符串
     """
-    try:
-        clipboard_data = pyclip.paste()
-
-        # 尝试多种编码方式
-        for encoding in CLIPBOARD_ENCODINGS:
-            try:
-                return clipboard_data.decode(encoding)
-            except (UnicodeDecodeError, AttributeError):
-                continue
-
-        # 如果所有编码都失败，返回空字符串
-        logger.debug(f"剪贴板解码失败，尝试了编码: {CLIPBOARD_ENCODINGS}")
-        return ""
-
-    except Exception as e:
-        logger.warning(f"剪贴板读取失败: {e}")
-        return ""
+    text = try_paste()
+    return text if text is not None else ""
 
 
 def safe_copy(content: str) -> bool:

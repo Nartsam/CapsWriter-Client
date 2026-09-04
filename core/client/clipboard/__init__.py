@@ -12,6 +12,7 @@
 from .. import logger
 from core.client.clipboard.clipboard import (
     safe_paste,
+    try_paste,
     safe_copy,
     copy_to_clipboard,
     save_and_restore_clipboard,
@@ -22,6 +23,7 @@ from core.client.clipboard.clipboard import (
 __all__ = [
     'logger',
     'safe_paste',
+    'try_paste',
     'safe_copy',
     'copy_to_clipboard',
     'save_and_restore_clipboard',
