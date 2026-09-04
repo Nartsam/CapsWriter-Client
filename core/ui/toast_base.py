@@ -9,7 +9,6 @@ import tkinter as tk
 from tkinter import font
 from typing import Optional, Callable, Any, Tuple
 from abc import ABC, abstractmethod
-import ctypes
 
 import markdown
 from tkhtmlview import HTMLLabel
@@ -29,15 +28,12 @@ from .toast_constants import (
     SMART_DURATION_CAP_MS,
 )
 from . import logger
+from .dpi import ensure_dpi_awareness
 
 TRANSPARENT_COLOR = "#010203"
 
-# DPI 感知设置（只调用一次，避免重复调用）
-try:
-    ctypes.windll.shcore.SetProcessDpiAwareness(1)
-except (OSError, AttributeError):
-    # Windows 7 或不支持 DPI 感知的系统
-    pass
+# DPI 感知：统一由 core/ui/dpi.py 声明，避免多处各自调用时「谁先导入谁生效」
+ensure_dpi_awareness()
 
 
 # ============================================================

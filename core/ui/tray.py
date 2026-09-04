@@ -359,12 +359,10 @@ def enable_min_to_tray(name: Optional[str] = None, icon_path: Optional[str] = No
         logger.info("托盘功能不可用，跳过启用")
         return
 
-    # DPI 感知设置
-    try:
-        import ctypes
-        ctypes.windll.shcore.SetProcessDpiAwareness(2)
-    except Exception:
-        pass
+    # DPI 感知：统一走 core/ui/dpi.py。此处原先声明的是 PER_MONITOR(2)，但
+    # toast_base 在导入期就已经声明过，这句从来没有生效过
+    from .dpi import ensure_dpi_awareness
+    ensure_dpi_awareness()
 
     with _lock:
         if _tray_instance is not None:

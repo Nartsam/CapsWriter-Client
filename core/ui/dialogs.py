@@ -5,19 +5,15 @@
 提供对话框的通用工具函数和基类。
 """
 
-import ctypes
 import tkinter as tk
 from tkinter import ttk
 from typing import Optional, Callable
 
 from .toast_constants import DEFAULT_FONT_FAMILY
 from . import logger
+from .dpi import ensure_dpi_awareness
 
-# DPI 感知设置（与 toast_base.py 保持一致）
-try:
-    ctypes.windll.shcore.SetProcessDpiAwareness(1)
-except (OSError, AttributeError):
-    pass
+ensure_dpi_awareness()
 
 
 # ============================================================
