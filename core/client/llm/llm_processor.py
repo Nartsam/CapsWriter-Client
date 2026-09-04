@@ -14,7 +14,7 @@ from typing import Callable, Optional, Dict, Any, List, Tuple
 from .llm_role_config import RoleConfig
 from .llm_interfaces import IContextManager
 from .llm_client_pool import ClientPool
-from .llm_constants import estimate_tokens, ToolNames
+from .llm_constants import estimate_tokens, ToolNames, IMAGE_PLACEHOLDER
 from .llm_exceptions import (
     APIException,
     wrap_openai_error, OpenAIErrorWrapper,
@@ -167,6 +167,33 @@ class LLMProcessor:
 
         return params
 
+    @staticmethod
+    def _to_responses_content(content: Any) -> Any:
+        """把 Chat Completions 口味的多模态 content 转成 Responses API 口味
+
+        MessageBuilder 统一产出 Chat 口味作为内部表示（历史里存的也是它），
+        两边的差异只在这一处收敛：文本条目 type 由 text 变 input_text；图片条目
+        type 由 image_url 变 input_image，且 image_url 从 {'url': ...} 嵌套对象
+        变成裸字符串。纯字符串 content 两边通用，原样返回（此前一直如此，
+        所以不带图的请求行为逐字不变）。
+        """
+        if not isinstance(content, list):
+            return content
+        items = []
+        for part in content:
+            if not isinstance(part, dict):
+                continue
+            part_type = part.get('type')
+            if part_type in ('text', 'input_text'):
+                items.append({'type': 'input_text', 'text': part.get('text', '')})
+            elif part_type in ('image_url', 'input_image'):
+                url = part.get('image_url')
+                if isinstance(url, dict):
+                    url = url.get('url', '')
+                if url:
+                    items.append({'type': 'input_image', 'image_url': url})
+        return items
+
     def _build_responses_params(
         self,
         role_config: RoleConfig,
@@ -183,7 +210,11 @@ class LLMProcessor:
             if msg.get('role') == 'system' and not instructions:
                 instructions = msg.get('content', '')
             else:
-                input_items.append(msg)
+                content = self._to_responses_content(msg.get('content'))
+                if content is msg.get('content'):
+                    input_items.append(msg)
+                else:
+                    input_items.append({'role': msg.get('role'), 'content': content})
 
         params = {
             'model': role_config.model,
@@ -211,6 +242,27 @@ class LLMProcessor:
 
         return params
 
+    @staticmethod
+    def _describe_messages(messages: List[Dict[str, str]]) -> str:
+        """一行请求构成摘要（几条历史、带几张图）
+
+        完整请求 JSON 只在 DEBUG 打，而控制台固定在 WARNING、日志平时也是 INFO，
+        于是「这次到底把历史里的图带上了没有」在事后完全无从查证——2026-09-04 排查
+        「历史里的图模型看不到」时只能靠写探针反推。这行是那次排查留下的常备诊断。
+        """
+        images = 0
+        for msg in messages:
+            content = msg.get('content')
+            if isinstance(content, list):
+                images += sum(
+                    1 for part in content
+                    if isinstance(part, dict)
+                    and part.get('type') in ('image_url', 'input_image')
+                )
+        # 减去本句自己，剩下的才是历史
+        history = max(0, sum(1 for m in messages if m.get('role') != 'system') - 1)
+        return f"{history} 条历史 + 本句，{images} 张图"
+
     def _stream_request(
         self,
         client: Any,
@@ -223,6 +275,8 @@ class LLMProcessor:
         used_tools: Optional[List[str]] = None
     ) -> Tuple[str, int, float]:
         """执行流式请求并协调不同处理引擎"""
+
+        logger.info(f"请求构成：{self._describe_messages(messages)}")
 
         if role_config.provider == 'ollama':
             result = self._process_ollama_stream(
@@ -247,11 +301,18 @@ class LLMProcessor:
 
         # 更新历史
         if role_config.enable_history and context_manager:
-            from .llm_output_openmate import strip_state_tags
-            context_manager.add_message('user', messages[-1]['content'])
-            # 状态标签是 OpenMate 展示层指令，进入历史会诱导后续回复在本地
-            # Toast 展示时也输出标签，污染显示，故存历史前统一剥离
-            context_manager.add_message('assistant', strip_state_tags(full_response))
+            user_content = messages[-1]['content']
+            if isinstance(user_content, list):
+                # 新一轮带图：先把历史里更早的图降成占位符，历史中因此最多只有一张真图
+                demoted = context_manager.demote_images(IMAGE_PLACEHOLDER)
+                if demoted:
+                    logger.debug(f"历史中 {demoted} 张旧图已降级为占位符")
+            context_manager.add_message('user', user_content)
+            # 存**原文**，标签一并进历史。此前这里剥离过，结果是历史里的 assistant
+            # 消息永远不带标签，模型从第二轮起照抄自己上一条的形态、不再输出标签
+            # （few-shot 漂移压过 system 指令，2026-09-04 探针实测复现）。标签是展示
+            # 层指令，剥离改由各输出路径在展示前做（见 llm_state_tags）。
+            context_manager.add_message('assistant', full_response)
             logger.debug(f"已更新历史记录")
 
         return result

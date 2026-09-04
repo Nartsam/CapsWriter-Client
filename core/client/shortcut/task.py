@@ -91,6 +91,10 @@ class ShortcutTask:
         # 尚未消费的快照上去（UDP 控制录音与键盘钩子不在同一线程，确实可能撞上）
         snapshot = self._prepare_continuous()
 
+        # 待挂图片在这一刻绑定到本次录音。剪贴板读取是异步的，此刻还没读完就是
+        # 一次不带图的普通录音——「下一条」从图片挂载成功那一刻起算（见约定 21）
+        pending_image = self.state.begin_image_snapshot()
+
         # 更新录音状态
         self.state.start_recording(self.recording_start_time)
 
@@ -101,6 +105,7 @@ class ShortcutTask:
             self.shortcut.key,
             snapshot.indicator_mode(),
             snapshot.sticky_role or '',
+            pending_image is not None,
         )
 
         # 通知 Companion 开始录音
@@ -143,10 +148,11 @@ class ShortcutTask:
         self.state.stop_recording()
         self._status.stop()
 
-        # 这次录音不算数，本次录音期间按过的连续对话切换键也一并回滚
-        self.state.rollback_continuous_snapshot(
-            self.recorder.task_id if self.recorder else None
-        )
+        # 这次录音不算数，本次录音期间按过的连续对话切换键、挂上的图片一并回滚
+        cancel_task_id = self.recorder.task_id if self.recorder else None
+        self.state.rollback_continuous_snapshot(cancel_task_id)
+        if self.state.rollback_image_snapshot(cancel_task_id):
+            logger.info("短按取消，图片已退回待挂状态")
         # 短按取消录音时同步隐藏悬浮提示，避免空提示残留。
         from core.client.ui import hide_recording_indicator
         hide_recording_indicator()
@@ -206,6 +212,8 @@ class ShortcutTask:
             restored = self.state.rollback_continuous_snapshot(task_id)
             if restored:
                 logger.info(f"打断已撤销本次退出，仍在连续对话中: {restored}")
+            if self.state.rollback_image_snapshot(task_id):
+                logger.info("打断已把图片退回待挂状态")
 
             from core.client.ui import show_cancelled_indicator
             show_cancelled_indicator(Config.cancel_recording_key)

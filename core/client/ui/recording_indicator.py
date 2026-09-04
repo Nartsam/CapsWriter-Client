@@ -56,6 +56,16 @@ CONTINUOUS_ACTIVE_BG = "#E8F5E9"
 CONTINUOUS_ACTIVE_FROST = "#F1FAF2"
 CONTINUOUS_ACTIVE_BORDER = "#BFDFC4"
 
+# 本次录音挂着待上传的图片：在面板内侧单独画一圈描边，与连续对话的底色
+# 完全正交，两个信号可以同时出现（例：浅绿底 + 彩圈）。
+IMAGE_BORDER = "#3D75E6"
+# 挂图标记单独画一圈内嵌描边，不能只把最外层 outline 换色：那圈是 Tk 默认的
+# 1 物理像素，而面板尺寸是物理像素、字体是磅值，200% 缩放下它细到几乎看不见
+# （2026-09-04 实机反馈「看不出特殊效果」的根因）。内嵌避开了 Tk 描边以路径为
+# 中心、外侧一半会被窗口裁掉的问题，画在磨砂层之上、文字之下，不影响任何布局。
+IMAGE_BORDER_WIDTH = 6
+IMAGE_BORDER_INSET = 2
+
 # 面板尺寸：布局仍是像素级固定，只有宽度会按标题内容加宽。
 # PANEL_W 是最小宽度而非固定宽度——面板宽度是物理像素、不随 DPI 放大，而字体是
 # 磅值、会随 DPI 放大，200% 缩放下 450px 的盒子只有设计意图的一半宽，长标题必然溢出。
@@ -145,6 +155,8 @@ class IndicatorState:
     continuous_mode: str = ""
     # 连续对话的粘滞角色名，仅 continuous_mode == "active" 时用于文案。
     continuous_role: str = ""
+    # 本次录音是否绑定了待上传的图片，只影响最外圈描边颜色。
+    has_image: bool = False
     # 错误提示自动隐藏的截止时间戳。
     auto_hide_at: float = 0.0
     # 提示框锚点：输入光标位置或屏幕中心靠下的位置。
@@ -201,6 +213,7 @@ class RecordingIndicator:
         shortcut_key: str = "",
         continuous_mode: str = "",
         continuous_role: str = "",
+        has_image: bool = False,
     ) -> None:
         """显示录音状态。"""
         self._post(
@@ -209,6 +222,7 @@ class RecordingIndicator:
             shortcut_key=shortcut_key,
             continuous_mode=continuous_mode,
             continuous_role=continuous_role,
+            has_image=has_image,
         )
 
     def update_continuous(self, mode: str = "", role: str = "") -> None:
@@ -335,6 +349,7 @@ class RecordingIndicator:
                 shortcut_key=payload.get("shortcut_key", ""),
                 continuous_mode=payload.get("continuous_mode", ""),
                 continuous_role=payload.get("continuous_role", ""),
+                has_image=payload.get("has_image", False),
                 anchor=anchor,
                 anchor_source=source,
             )
@@ -554,6 +569,14 @@ class RecordingIndicator:
         # 内层浅色整面叠加，模拟磨砂玻璃的层次；不画横向分隔线，避免割裂上下两行。
         self._rounded_rect(x1 + 3, y1 + 3, x2 - 3, y2 - 3, RADIUS - 3, fill=frost_mid, outline="")
 
+        # 本次录音挂着待上传的图片：内嵌一圈描边（颜色/粗细/内嵌量见文件头常量）
+        if self.state.mode == "recording" and self.state.has_image:
+            inset = IMAGE_BORDER_INSET
+            self._rounded_rect(
+                x1 + inset, y1 + inset, x2 - inset, y2 - inset, RADIUS - inset,
+                fill="", outline=IMAGE_BORDER, width=IMAGE_BORDER_WIDTH,
+            )
+
         # 圆点和标题共用 TITLE_Y 基线，保证视觉中心对齐。
         self.canvas.create_oval(
             DOT_X - DOT_R,
@@ -669,9 +692,12 @@ class RecordingIndicator:
         if self.state.mode == "recording":
             mode = self.state.continuous_mode
             if mode in ("armed", "exited"):
-                return CONTINUOUS_PENDING_BG, CONTINUOUS_PENDING_FROST, CONTINUOUS_PENDING_BORDER
-            if mode == "active" and self.state.continuous_role:
-                return CONTINUOUS_ACTIVE_BG, CONTINUOUS_ACTIVE_FROST, CONTINUOUS_ACTIVE_BORDER
+                bg, frost, border = CONTINUOUS_PENDING_BG, CONTINUOUS_PENDING_FROST, CONTINUOUS_PENDING_BORDER
+            elif mode == "active" and self.state.continuous_role:
+                bg, frost, border = CONTINUOUS_ACTIVE_BG, CONTINUOUS_ACTIVE_FROST, CONTINUOUS_ACTIVE_BORDER
+            else:
+                bg, frost, border = PANEL_BG, FROST_MID, BORDER
+            return bg, frost, border
         return PANEL_BG, FROST_MID, BORDER
 
     def _compose_text(self, stable: bool = False) -> Tuple[str, str, str]:
@@ -857,8 +883,11 @@ def show_recording_indicator(
     shortcut_key: str = "",
     continuous_mode: str = "",
     continuous_role: str = "",
+    has_image: bool = False,
 ) -> None:
-    RecordingIndicator().show_recording(start_time, shortcut_key, continuous_mode, continuous_role)
+    RecordingIndicator().show_recording(
+        start_time, shortcut_key, continuous_mode, continuous_role, has_image
+    )
 
 
 def update_recording_indicator_continuous(mode: str = "", role: str = "") -> None:

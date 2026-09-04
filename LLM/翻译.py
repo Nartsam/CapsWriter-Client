@@ -8,10 +8,11 @@ name = '翻译'                           # 角色名称（留空表示默认）
 enabled = True                           # 是否启用此角色
 
 # ==================== API 配置 ====================
-provider = 'deepseek'                   # API 提供商：'ollama', 'openai', 'deepseek', 'moonshot', 'zhipu', 'claude', 'gemini'
-api_url = ''                            # 留空则自动使用 provider 对应的默认值
-api_key = DEEPSEEK_API_KEY              # API Key
-model = 'deepseek-v4-flash'             # 模型名称
+provider = 'deepseek'                               # API 提供商：'ollama', 'openai', 'deepseek', 'moonshot', 'zhipu', 'claude', 'gemini'
+api_url = 'https://api.deepseek.com'                # 联网搜索走 Responses API，官方示例的 base_url 不带 /v1，而 provider 默认值是 .../v1，故此处显式指定
+api_key = DEEPSEEK_API_KEY                          # API Key
+model = 'deepseek-v4-flash-vision-exp'              # 模型名称。视觉模型，联网搜索（Responses API + web_search）已实测可与图片共存
+enable_vision = True                                # 接收 vision_capture_key 挂载的图片。注意本项不会校验 model 是否真支持视觉，写错了服务端会返 400
 
 # ==================== 上下文管理 ====================
 max_context_length = 128*1024               # 最大上下文长度（token 数）

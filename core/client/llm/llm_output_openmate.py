@@ -26,7 +26,6 @@ LLM OpenMate 输出模式
 """
 import json
 import queue
-import re
 import threading
 import time
 import urllib.error
@@ -37,13 +36,10 @@ import uuid
 from core.tools.asyncio_to_thread import to_thread
 from . import logger
 
-# OpenMate 内联状态标签，与其文档 §4.4 的约束一致（非空、≤64 字符、无控制字符和嵌套 <）
-STATE_TAG_RE = re.compile(r'<(?:state|状态):[^<>\x00-\x1f]{1,64}>')
-
-
-def strip_state_tags(text: str) -> str:
-    """剥离 OpenMate 内联状态标签，用于本地展示、历史存储和 UDP 广播"""
-    return STATE_TAG_RE.sub('', text) if text else text
+# 状态标签的正则与剥离统一放在 llm_state_tags：本地 Toast / 打字两条路径也要用，
+# 让它们反向 import 这个 OpenMate 专用模块说不通（见该模块开头的说明）。
+# 这里再导出一次，原先从本模块 import 的调用方不必改。
+from .llm_state_tags import STATE_TAG_RE, strip_state_tags  # noqa: F401
 
 
 def build_emotion_prompt(states: list, default_state: str = '') -> str:
@@ -497,11 +493,13 @@ def _set_typing_safe(client: OpenMateClient, active: bool) -> bool:
         return False
 
 
-async def try_openmate_mode(handler, role_config, content, matched_hotwords, used_tools=None) -> tuple:
+async def try_openmate_mode(handler, role_config, content, matched_hotwords, used_tools=None,
+                            image_data=None) -> tuple:
     """尝试 OpenMate 展示路径
 
     Args:
         used_tools: 出参列表，本次请求触发的服务端工具 ID 会追加进来
+        image_data: 随本句上传的图片（base64 data URL）
 
     Returns:
         (result, token_count, gen_time) 元组；OpenMate 未启用或不可用时返回 None，
@@ -517,11 +515,12 @@ async def try_openmate_mode(handler, role_config, content, matched_hotwords, use
         return None
 
     logger.info('OpenMate 可用，LLM 输出将转交 OpenMate 展示')
-    return await _handle_openmate_mode(handler, client, role_config, content, matched_hotwords, used_tools)
+    return await _handle_openmate_mode(handler, client, role_config, content, matched_hotwords,
+                                       used_tools, image_data)
 
 
 async def _handle_openmate_mode(handler, client, role_config, content, matched_hotwords,
-                                used_tools=None) -> tuple:
+                                used_tools=None, image_data=None) -> tuple:
     import dataclasses
     from config_client import ClientConfig as Config
     from .llm_role_config import RoleConfig
@@ -557,7 +556,8 @@ async def _handle_openmate_mode(handler, client, role_config, content, matched_h
         sender = OpenMateStreamSender(client, target_character)
     try:
         polished_text, token_count, gen_time = await to_thread(
-            handler.process, llm_config, content, matched_hotwords, sender.push, None, used_tools
+            handler.process, llm_config, content, matched_hotwords, sender.push, None, used_tools,
+            image_data
         )
 
         if handler.monitor.should_stop():

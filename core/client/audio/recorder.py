@@ -113,6 +113,8 @@ class AudioRecorder:
             # 连续对话的路由快照在 launch() 时就建好了（那时粘滞角色已确定），
             # 这里补上 task_id 索引，供结果到达时查回本次录音的路由意图
             self.state.bind_continuous_snapshot(self.task_id)
+            # 图片快照同理：launch() 时已把待挂图片移入本次录音，这里补索引
+            self.state.bind_image_snapshot(self.task_id)
             logger.debug(f"创建录音任务，任务ID: {self.task_id}")
             
             self._start_time = 0.0

@@ -41,9 +41,12 @@ class MicRunner:
         if Config.udp_control:
             self.app.udp.start()
 
-        # 5. 开启后台服务 (热词、LLM)
+        # 5. 开启后台服务 (热词、LLM、视觉输入)
         self.app.hotword.start()
         self.app.llm.start()
+        # 必须排在 llm.start() 之后：截图快捷键与 llm_stop_key 共用同一个
+        # GlobalHotKeys 单例，register 会重启 Listener，先注册的那个会被一并带上
+        self.app.vision.start()
 
     async def run(self):
         """麦克风模式主入口"""

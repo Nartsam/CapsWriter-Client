@@ -26,6 +26,10 @@ class RoleConfig:
     api_url: str = ''                             # API 地址
     api_key: str = ''                             # API Key
     model: str = 'gemma3:4b'                      # 模型名称
+    enable_vision: bool = False                   # 该角色能否接收图片。为真时，待挂图片会随
+                                                  # 这句话一并上传；**不校验 model 是否真支持
+                                                  # 视觉**——写错了服务端会返 400，约定 18 的
+                                                  # 诊断日志会把错误正文打到终端
 
     # 上下文管理
     max_context_length: int = 4096                # 最大上下文长度（token 数）

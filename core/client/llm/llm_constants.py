@@ -19,6 +19,10 @@ class ContextConstants:
     CN_CHAR_START = '\u4e00'
     CN_CHAR_END = '\u9fff'
 
+    # 单张图片按 DeepSeek 声明的每图上限计。图片在消息里是一个几十万字符的
+    # base64 串，按字符估算会得出荒谬的 token 数，把历史裁剪逻辑整个冲垮
+    IMAGE_TOKENS = 384
+
 
 # ==================== RAG 常量 ====================
 class RAGConstants:
@@ -121,19 +125,45 @@ class ToolNames:
         return cls.STATUS.get(tool_id, f'正在调用 {tool_id}…')
 
 
+# 图片在纯文本场合（对话历史里的旧图、日记 md、UDP 广播）的占位表示。
+# 历史里只保留最近一张真图，更早的一律降级成它——多轮追问「那第三行呢」需要
+# 模型还能看见最近这张，而每轮重传全部历史图片是纯浪费（见约定 21）
+IMAGE_PLACEHOLDER = '［图片］'
+
+
 # ==================== Token 估算工具 ====================
-def estimate_tokens(text: str) -> int:
+def _estimate_part_tokens(part) -> int:
+    """估算多模态 content 列表里单个条目的 token 数"""
+    if isinstance(part, str):
+        return estimate_tokens(part)
+    if isinstance(part, dict):
+        # Chat Completions 用 image_url，Responses API 用 input_image
+        if part.get('type') in ('image_url', 'input_image'):
+            return ContextConstants.IMAGE_TOKENS
+        return estimate_tokens(part.get('text') or '')
+    return 0
+
+
+def estimate_tokens(text) -> int:
     """
     估算文本的 token 数量
 
     Args:
-        text: 待估算的文本
+        text: 待估算的文本；带图消息的 content 是条目列表而非字符串
 
     Returns:
         估算的 token 数量
     """
     if not text:
         return 0
+
+    # 带图消息的 content 形如 [{'type':'text',...}, {'type':'image_url',...}]，
+    # 落到下面的逐字符迭代会拿 dict 去和字符比大小，直接 TypeError。历史里一旦
+    # 存进一条带图消息，此后每次裁剪都会炸（见 docs/DEV_NOTES.md）
+    if isinstance(text, (list, tuple)):
+        return max(sum(_estimate_part_tokens(part) for part in text), 1)
+    if not isinstance(text, str):
+        return 1
 
     # 统计中文字符数量
     chinese_chars = sum(

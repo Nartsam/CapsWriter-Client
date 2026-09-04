@@ -377,6 +377,8 @@ class ShortcutManager:
             restored = self.state.rollback_continuous_snapshot(task_id)
             if restored:
                 logger.info(f"打断已撤销本次退出，仍在连续对话中: {restored}")
+            if self.state.rollback_image_snapshot(task_id):
+                logger.info("打断已把图片退回待挂状态")
 
             show_cancelled_indicator(self._cancel_key)
 

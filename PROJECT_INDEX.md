@@ -34,6 +34,7 @@ CapsWriter-Offline 是一个 Windows 离线语音输入工具（GitHub: HaujetZh
 │   │   ├── transcribe/        # 文件转录
 │   │   ├── udp/               # UDP 控制与广播
 │   │   ├── global_hotkey/     # 全局快捷键（pynput GlobalHotKeys）
+│   │   ├── vision/            # 视觉输入（剪贴板图片 → 随下一句上传）
 │   │   ├── manager/           # 运行器（MicRunner, FileRunner, TrayManager）
 │   │   └── ui/                # 客户端 UI（录音指示器、启动提示）
 │   ├── server/                # ======= 服务端模块 =======
@@ -76,8 +77,8 @@ CapsWriter-Offline 是一个 Windows 离线语音输入工具（GitHub: HaujetZh
 |---|---|
 | `config_client.py` | 所有客户端配置项。快捷键列表 `shortcuts`、服务端地址、LLM 开关、热词阈值、粘贴模式等 |
 | `core/client/app.py` | **CapsWriterClient** 门面类。`__init__` 实例化所有子系统，`start()` 根据命令行参数选择 MicRunner 或 FileRunner |
-| `core/client/state.py` | **ClientState** dataclass。共享状态：`queue_in`（音频队列）、`websocket`、`recording`、`audio_files` 等；`pending_task_id`（当前可打断的任务）与 `cancelled_task_ids`（已打断待丢弃结果的定长名单，见约定 12）；连续对话的 `continuous_role`（粘滞角色名）、`continuous_last_active`（闲置超时基准）与 `ContinuousChatSnapshot` 路由快照（`continuous_current` + 按 task_id 索引的定长字典，见约定 19） |
-| `core/client/manager/mic_runner.py` | 麦克风模式运行器。启动顺序：托盘→提示→音频流→快捷键→UDP→热词→LLM→Companion→ResultProcessor |
+| `core/client/state.py` | **ClientState** dataclass。共享状态：`queue_in`（音频队列）、`websocket`、`recording`、`audio_files` 等；`pending_task_id`（当前可打断的任务）与 `cancelled_task_ids`（已打断待丢弃结果的定长名单，见约定 12）；连续对话的 `continuous_role`（粘滞角色名）、`continuous_last_active`（闲置超时基准）与 `ContinuousChatSnapshot` 路由快照（`continuous_current` + 按 task_id 索引的定长字典，见约定 19）；视觉输入的 `pending_image`（待挂图片槽）与同构的图片快照 `image_current`/`image_snapshots`（见约定 21） |
+| `core/client/manager/mic_runner.py` | 麦克风模式运行器。启动顺序：托盘→提示→音频流→快捷键→UDP→热词→LLM→视觉输入→Companion→ResultProcessor（视觉输入必须排在 LLM 之后：两者共用 `GlobalHotkeyManager` 单例） |
 | `core/client/manager/file_runner.py` | 文件转录模式运行器。遍历文件，对媒体文件调用 FileTranscriber，对文本文件调用 SrtAdjuster |
 
 ### 2. 快捷键子系统 (`core/client/shortcut/`)
@@ -91,7 +92,7 @@ CapsWriter-Offline 是一个 Windows 离线语音输入工具（GitHub: HaujetZh
 | `shortcut_manager.py` | **ShortcutManager**。创建 keyboard/mouse Listener，在 `win32_event_filter` 中处理按键事件。包含防自捕获逻辑（`_emulating_keys`、`_restoring_keys`）、打断键处理（`_handle_cancel_key`，抑制决策锁存，见约定 12）与连续对话切换键处理（`_handle_chat_key` + `_resolve_chat_key` 的五条配置校验，见约定 19） |
 | `event_handler.py` | **ShortcutEventHandler**。处理 keydown/keyup 逻辑。hold_mode：按下→launch()，松开→判断时长→finish()/cancel()+补发。click_mode：单击切换录音 |
 | `emulator.py` | **ShortcutEmulator**。使用 pynput Controller 补发被阻塞的按键/鼠标点击。`_emulating_keys` 标志防止补发的按键被自身钩子再次捕获 |
-| `task.py` | **ShortcutTask**。单个快捷键的录音任务状态。`launch()`：记录时间→设状态→连续对话超时懒判断与建快照（`_prepare_continuous`）→显示 UI→通知 Companion→启动 AudioRecorder。`finish()`：落地连续对话退出→通知 Companion 结束录音→停止录音。`cancel()`/`abort()`：取消录音并回滚本次录音的连续对话切换 |
+| `task.py` | **ShortcutTask**。单个快捷键的录音任务状态。`launch()`：记录时间→设状态→连续对话超时懒判断与建快照（`_prepare_continuous`）→把待挂图片移入本次录音（`begin_image_snapshot`）→显示 UI→通知 Companion→启动 AudioRecorder。`finish()`：落地连续对话退出→通知 Companion 结束录音→停止录音。`cancel()`/`abort()`：取消录音，并回滚本次录音的连续对话切换与图片绑定 |
 
 **数据流**：`win32_event_filter` → `ShortcutEventHandler.handle_keydown/up` → `ShortcutTask.launch/cancel/finish` → `AudioRecorder.record_and_send`
 
@@ -117,7 +118,7 @@ CapsWriter-Offline 是一个 Windows 离线语音输入工具（GitHub: HaujetZh
 
 | 文件 | 职责 |
 |---|---|
-| `result_processor.py` | **ResultProcessor**。主工作循环：连接 WebSocket → 接收消息 → 热词替换 → 去标点 → 正则替换 → LLM 润色 → 文本输出 → 日记/音频保存。`_format_llm_result` 负责控制台那行 `模型结果[角色(工具)]：…`，工具名来自 `LLMResult.used_tools`；结果为空时显示黄色「（空回复，详见日志）」而不是原样打印文本（见约定 18）。`_resolve_forced_role`/`_update_continuous_state` 按本次录音的路由快照决定连续对话归属并做状态迁移（见约定 19） |
+| `result_processor.py` | **ResultProcessor**。主工作循环：连接 WebSocket → 接收消息 → 热词替换 → 去标点 → 正则替换 → LLM 润色 → 文本输出 → 日记/音频保存。`_format_llm_result` 负责控制台那行 `模型结果[角色(工具)]：…`，工具名来自 `LLMResult.used_tools`；结果为空时显示黄色「（空回复，详见日志）」而不是原样打印文本（见约定 18）。`_resolve_forced_role`/`_update_continuous_state` 按本次录音的路由快照决定连续对话归属并做状态迁移（见约定 19）。`_report_image_usage` 报告本次绑定图片的去向：用掉记 INFO，丢弃打一行黄色控制台提示并说明原因（见约定 21） |
 | `text_output.py` | **TextOutput**。两种输出方式：`_type_text()`（keyboard.write 模拟打字）和 `_paste_text()`（Ctrl+V 粘贴）。`strip_punc()` 去除末尾标点 |
 
 ### 6. 热词系统 (`core/client/hotword/`)
@@ -135,17 +136,18 @@ CapsWriter-Offline 是一个 Windows 离线语音输入工具（GitHub: HaujetZh
 
 | 文件 | 职责 |
 |---|---|
-| `llm_handler.py` | **LLMHandler** 协调器。`process_and_output()`：角色检测 → Companion 转发（若已连接则跳过 LLM）→ LLM 调用 → 输出。传入 `forced_role` 时（连续对话）跳过角色检测、整句原样发给该角色。`resolve_role()` 按显示名取回启用中的具名角色，供连续对话每次请求重新解析。管理角色加载、上下文、客户端池 |
-| `llm_role_config.py` | **RoleConfig** dataclass。角色配置字段：provider、model、system_prompt、output_mode(typing/toast)、Toast 宽度边界与样式（字体、颜色、透明度、圆角）、显示时长（`toast_duration`，智能时长下作为最短停留保底基数，见约定 17）、联网搜索三件套（`enable_web_search`/`enable_datetime`/`request_timeout`）等 |
+| `llm_handler.py` | **LLMHandler** 协调器。`process_and_output()`：角色检测 → Companion 转发（若已连接则跳过 LLM）→ LLM 调用 → 输出。传入 `forced_role` 时（连续对话）跳过角色检测、整句原样发给该角色；传入 `image_data` 时只有 `enable_vision=True` 的角色才真的带图，否则静默丢弃并在 `LLMResult.image_used` 上标记（见约定 21）。`resolve_role()` 按显示名取回启用中的具名角色，供连续对话每次请求重新解析。管理角色加载、上下文、客户端池 |
+| `llm_role_config.py` | **RoleConfig** dataclass。角色配置字段：provider、model、`enable_vision`（能否接收图片，不校验 model 是否真支持视觉）、system_prompt、output_mode(typing/toast)、Toast 宽度边界与样式（字体、颜色、透明度、圆角）、显示时长（`toast_duration`，智能时长下作为最短停留保底基数，见约定 17）、联网搜索三件套（`enable_web_search`/`enable_datetime`/`request_timeout`）等 |
 | `llm_role_loader.py` | **RoleLoader**。扫描 `LLM/` 目录下的 .py 文件，每个文件作为一个角色模块加载 |
 | `llm_role_detector.py` | **RoleDetector**。根据输入文本前缀匹配角色（如 "翻译 xxx" → 翻译角色） |
-| `llm_processor.py` | **LLMProcessor**。执行 LLM API 调用（支持 OpenAI/Ollama/DeepSeek 等），流式输出。三条流式路径：Ollama 原生流、Chat Completions 流、Responses API 流（角色开启 `enable_web_search` 时走此路，挂载服务端内置 `web_search` 工具，见约定 15）。工具事件同时触发展示占位文案与 `used_tools` 出参回传（见约定 16）。三条路径都带空回复诊断：Responses 流解析 `response.completed/incomplete/failed` 与 refusal，记录截断原因、usage（含 reasoning token）与事件类型计数；Chat 流记录 `finish_reason`（见约定 18） |
+| `llm_processor.py` | **LLMProcessor**。执行 LLM API 调用（支持 OpenAI/Ollama/DeepSeek 等），流式输出。三条流式路径：Ollama 原生流、Chat Completions 流、Responses API 流（角色开启 `enable_web_search` 时走此路，挂载服务端内置 `web_search` 工具，见约定 15）。工具事件同时触发展示占位文案与 `used_tools` 出参回传（见约定 16）。`_to_responses_content` 把内部统一的 Chat 口味多模态 content 转成 Responses 口味（`text`→`input_text`、`image_url` 嵌套对象→`input_image` + 裸字符串），纯字符串原样透传因此不带图的请求逐字不变。三条路径都带空回复诊断：Responses 流解析 `response.completed/incomplete/failed` 与 refusal，记录截断原因、usage（含 reasoning token）与事件类型计数；Chat 流记录 `finish_reason`（见约定 18）。每次请求在 INFO 打一行 `请求构成：N 条历史 + 本句，M 张图`（`_describe_messages`）——完整请求 JSON 只在 DEBUG 打，没有这行时「这次到底带没带历史/图」事后完全无从查证 |
 | `llm_client_pool.py` | **ClientPool**。按 provider+url 缓存 OpenAI 客户端实例 |
-| `llm_message_builder.py` | 构建发送给 LLM 的消息列表（system prompt + 当前时间 + 热词 + 选中文字 + 用户输入） |
-| `llm_context.py` | **ContextManager**。管理对话历史记录 |
+| `llm_message_builder.py` | 构建发送给 LLM 的消息列表（system prompt + 对话历史 + 当前时间 + 热词 + 选中文字 + 用户输入）。历史必须走 `context_manager.get_history()`（只返回 `{role, content}` 副本）：`history` 原对象还带一个 `timestamp` 字段，而 `_build_responses_params` 对纯字符串 content 是原样透传的，那个字段会跟着上行到厂商 API |
+| `llm_context.py` | **ContextManager**。管理对话历史记录。`demote_images()` 在写入新的带图消息前把历史里更早的图降级成 `［图片］` 占位符，保证历史里最多只有一张真图（见约定 21）。`get_history()` 是对外唯一出口，不要直接读 `history`（见 `llm_message_builder.py` 那行） |
 | `llm_output_typing.py` | typing 模式输出（直接模拟打字/粘贴） |
 | `llm_output_toast.py` | toast 模式输出（弹窗显示，支持 Markdown 渲染，并按角色配置传入字体、颜色、透明度、圆角等样式）。窗口走智能时长（`smart_duration=True`）：时长随字数对数计算、悬停不顺延且到期后移开即关、拖拽后永不自动关闭；创建新窗口前顶掉所有旧的 LLM 白色对话框（见约定 17） |
 | `llm_output_openmate.py` | OpenMate 桌面看板输出。toast 角色在探测到 OpenMate 以 external 模式运行（`GET /health`）时改由其展示：未配置目标角色时按 `GET /v1/presentation` 解析当前生效角色（每次都查），自动获取该角色情绪状态列表（`GET /v1/characters/{id}/states`，带缓存）并注入 `<state:情绪ID>` 标签指令、后台线程聚合分片发送（流/队列固定到已注入状态的角色）、ESC 中断映射为取消、OpenMate 中途失效时剥离标签回退本地 Toast。角色开启 `enable_result_splitter` 时走 open 分段队列（`POST /v1/messages` + `PATCH` 追加）：回复按 `result_split_delimiter` 切成多条消息逐条展示，边生成边追加；否则走流式正文。接管确认后本地「正在处理结果」悬浮提示移交为 OpenMate 的 typing 指示（`PUT /v1/presentation/typing`，开启失败则保留本地提示）。API 文档见 OpenMate/docs/api/external-http-api.md |
+| `llm_state_tags.py` | **状态标签的识别与剥离**（`STATE_TAG_RE` / `strip_state_tags` / `StateTagFilter`）。标签是**展示层**指令：对话历史存原文，本地 Toast、打字、md、UDP 在展示前才剥（见约定 10）。流式分片会把 `<state:微笑>` 切成 `<sta` + `te:微笑>`，逐片正则拦不住，故提供 `StateTagFilter`：只暂存可能还会补成标签的那截尾巴，其余立即放行 |
 | `llm_stop_monitor.py` | **StopMonitor**。监听 ESC 键中断 LLM 输出 |
 | `llm_watcher.py` | 监视 LLM/ 目录变化，自动重载角色 |
 | `llm_get_selection.py` | 通过 Ctrl+C 获取选中文字 |
@@ -163,6 +165,7 @@ CapsWriter-Offline 是一个 Windows 离线语音输入工具（GitHub: HaujetZh
 | `core/ui/toast_base.py` | Toast 窗口基类。负责置顶无边框窗口、透明度、Canvas 透明色圆角背景、40px 顶部空白拖动区（`DEFAULT_PADDING_TOP`）、内容宽度测量、只增不减的窗口增宽、拖动锚点、滚轮、复制、Markdown 最终视图字体/tag 样式同步与按真实内容重算高度，以及文字区域选择和空白/边缘区域拖动的事件隔离。另含智能时长（`smart_duration`/`pause_and_resume` 标志）：随字数对数计时、悬停不顺延绝对截止时间且到期后移开即关（`_timer_expired`）、拖拽后永不自动关闭（`_never_auto_close`，见约定 17）；普通 toast 保持固定时长 + 悬停移开重置的旧行为 |
 | `core/ui/toast_text.py` | 基于 Text 的 Toast 窗口。用于 LLM 流式输出，支持增量更新、按内容自动增宽/增高、达到最大宽度后自动换行、选中文字和复制 |
 | `core/ui/toast_label.py` | 基于 Label 的 Toast 窗口。用于普通提示，支持自动换行、自动增高和 Markdown 转换 |
+| `core/ui/dpi.py` | 进程 DPI 感知声明。`SetProcessDpiAwareness` 每进程只能成功一次，历史上三处各自调用、谁先导入谁生效，现统一到此并固定 `PROCESS_SYSTEM_DPI_AWARE(1)`（等同于此前实际生效的那条，行为不变） |
 | `core/ui/tray.py` | 系统托盘图标（pystray） |
 | `core/ui/toast_manager.py` | Toast 窗口管理器。`ToastMessage` 支持字体、颜色、持续时间、Markdown、可编辑、透明度和圆角配置 |
 
@@ -170,7 +173,7 @@ CapsWriter-Offline 是一个 Windows 离线语音输入工具（GitHub: HaujetZh
 
 | 文件 | 职责 |
 |---|---|
-| `core/client/clipboard/clipboard.py` | 剪贴板操作工具（safe_paste, safe_copy, paste_text） |
+| `core/client/clipboard/clipboard.py` | 剪贴板操作工具（try_paste, safe_paste, safe_copy, paste_text）。`try_paste()` 能区分「读不到」（返回 None，典型是剪贴板里是图片）与「本来就是空文本」（返回 ''）；**凡是之后要把读到的内容写回剪贴板的调用方必须用它**，用 `safe_paste()` 会拿失败折叠出的空串写回去，先 EmptyClipboard 把原内容清掉 |
 | `core/client/diary/diary_writer.py` | **DiaryWriter**。按日期归档识别结果到 Markdown 文件（YYYY/MM/DD.md） |
 | `core/client/transcribe/file_transcriber.py` | **FileTranscriber**。文件转录：FFmpeg 提取音频 → 分块发送 → 接收结果 → 热词替换 → 保存 |
 | `core/client/transcribe/srt_adjuster.py` | **SrtAdjuster**。调整 SRT 字幕时间轴 |
@@ -179,6 +182,9 @@ CapsWriter-Offline 是一个 Windows 离线语音输入工具（GitHub: HaujetZh
 | `core/client/companion/companion_server.py` | **CompanionServer**。Companion WebSocket 服务器，管理与 Electron 伴侣应用的连接。当有客户端连接时，CapsWriter 跳过本地 LLM，将去前缀后的文本直接转发给 Electron。事件：`recording_start` / `recording_end` / `recording_cancel`（作废与正常结束分开）/ `user_message` |
 | `core/client/companion/companion_protocol.py` | Companion 通信协议。定义出站事件类型（`EventType`）和 JSON 消息构造函数（`make_event`） |
 | `core/client/global_hotkey/global_hotkey.py` | **GlobalHotkeyManager**。使用 pynput GlobalHotKeys 实现全局快捷键（单例） |
+| `core/client/vision/clipboard_image.py` | 剪贴板图片读取。按 `"PNG"` → `CF_DIBV5` → `CF_DIB` 顺序取当前剪贴板内容（不支持 `CF_HDROP` 文件引用），DIB 靠拼 `BITMAPFILEHEADER` 交给 PIL 解码，最长边超 1920 等比缩小，编码 PNG 后超 1MB 即丢弃，产出 `PendingImage`（base64 data URL + 尺寸 + 字节数 + 来源） |
+| `core/client/vision/clipboard_watcher.py` | **ClipboardWatcher**。记录剪贴板最近一次变更的时刻——Windows 剪贴板不带时间戳，只能自己轮询 `GetClipboardSequenceNumber`（不需 `OpenClipboard`、零争用、单次 0.455µs）。周期 5s，检查时再同步补读一次以捕捉刚发生的变化；误差单向（只会高估新鲜度、不会误杀新图），上限一个周期 |
+| `core/client/vision/vision_manager.py` | **VisionManager**。注册截图快捷键（`vision_capture_key`），回调只做一次 submit、读取全在工作线程——回调跑在低级键盘钩子线程上，PNG 编码几百毫秒会触发系统摘钩（同约定 12）。注册前用 `keyboard.HotKey.parse` 自校验，非法字符串会让共用的 GlobalHotKeys Listener 整个起不来、把 `llm_stop_key` 一起带走 |
 
 ---
 
@@ -305,6 +311,35 @@ AudioRecorder (recorder.py)
   → 丢弃快照；已落地的退出恢复回去
 ```
 
+### 视觉输入（剪贴板图片随下一句上传，见约定 21）
+```
+用截图工具截图（Win+Shift+S 等），图片进剪贴板
+  → 按下 vision_capture_key（默认 ctrl+alt+d）
+    → VisionManager._on_hotkey()        # 低级钩子线程，只 submit 不干活
+    → 工作线程 _is_fresh()              # 剪贴板变更距今 > vision_clipboard_max_age 则整个跳过
+    → 工作线程 grab_clipboard_image()   # PNG / CF_DIBV5 / CF_DIB，缩放 + 编码 + 限额
+    → state.set_pending_image()         # 待挂槽，后按的覆盖先按的
+
+按下录音键
+  → ShortcutTask.launch()
+    → state.begin_image_snapshot()      # 待挂图移入本次录音（互斥）
+    → show_recording_indicator(..., has_image)   # 最外圈描边变淡紫
+  → AudioRecorder.record_and_send()
+    → state.bind_image_snapshot(task_id)
+
+服务端返回最终结果
+  → ResultProcessor._handle_message
+  → state.pop_image_snapshot(task_id)          # 只看快照，不读全局待挂槽
+  → LLMHandler.process_and_output(..., image_data)
+      角色 enable_vision=True  → MessageBuilder 产出 Chat 口味多模态 content
+                                 → _build_responses_params 转 Responses 口味 → 上传
+      角色 enable_vision=False → 不带图，image_used=False
+  → _report_image_usage()   用掉记 INFO；丢弃打一行黄色控制台提示 + 原因
+
+录音作废（短按取消 / ESC 打断 / 等待阶段 ESC）
+  → state.rollback_image_snapshot(task_id)     # 图退回待挂槽（新图已在则不覆盖）
+```
+
 ### 文件转录
 ```
 命令行传入文件路径
@@ -355,7 +390,7 @@ Electron 应用连接到 ws://127.0.0.1:6019
 7. **热词文件**：`hot.txt` 每行一个热词（音素模糊匹配），`hot-rule.txt` 每行 `正则 = 替换` 格式
 8. **Companion 模式**：当 Electron 伴侣应用连接到 CompanionServer 时，匹配角色前缀的文本跳过本地 LLM，直接转发给 Electron 处理
 9. **多 Tk 解释器与字体约束**：录音指示器与 Toast 弹窗分别在独立线程运行各自的 Tk 解释器；创建 `tkinter.font.Font` 时必须显式传 `root=` 绑定所属窗口的解释器，否则命名字体会建到进程内第一个 Tk（`_default_root`）上，跨解释器引用时字体名会被当作不存在的字体家族，静默回退为小号宋体
-10. **OpenMate 展示**：toast 角色在 LLM 调用前探测 OpenMate（`config_client.py` 的 `openmate_*` 配置），可用则自动获取角色情绪状态列表、注入情绪标签指令（标签用状态 ID，别名作语义注解）并将流式输出转交 OpenMate 展示；`<state:...>` 标签由 OpenMate 解析剥离，本地存历史/广播前也统一剥离。OpenMate 隐藏在托盘时收到消息会自行无激活恢复显示，无需客户端干预。`openmate_character` 留空时每次请求走 `GET /v1/presentation` 解析当前生效角色，按该角色取情绪状态并把流/分段队列固定到它
+10. **OpenMate 展示**：toast 角色在 LLM 调用前探测 OpenMate（`config_client.py` 的 `openmate_*` 配置），可用则自动获取角色情绪状态列表、注入情绪标签指令（标签用状态 ID，别名作语义注解）并将流式输出转交 OpenMate 展示；`<state:...>` 标签由 OpenMate 解析剥离；本地侧的剥离规则见约定 22。OpenMate 隐藏在托盘时收到消息会自行无激活恢复显示，无需客户端干预。`openmate_character` 留空时每次请求走 `GET /v1/presentation` 解析当前生效角色，按该角色取情绪状态并把流/分段队列固定到它
 11. **悬浮指示器状态优先级**：录音进行中（`mode == "recording"`）时服务端回传的分段进度只更新数据、不切换模式。麦克风边录边发，服务端每攒够 `mic_seg_duration + mic_seg_overlap * 2`（默认 68s）才切一段回传一次，切成 progress 会让实时录音计时被一个一分钟内都不变的「已处理」时长顶掉
 12. **录音打断**：`cancel_recording_key`（默认 esc，留空禁用）在录音中或等待识别结果时按下，本次输入彻底作废（不上屏、不触发角色、不写日记、删除录音文件）。服务端的 `AudioCache` 按连接持有、只有 `is_final` 才 reset，所以打断**必须仍发一个 `is_final`** 冲掉缓冲，否则残余音频会拼进下一次录音；结果回来后按 `cancelled_task_ids` 在 `_handle_message` 入口丢弃（含非最终包）。**抑制决策必须在 KEYDOWN 锁存、KEYUP 沿用**——判据 `state.recording` 会被打断动作自身翻转，两次分别判断会产生「吞掉按下、放行松开」的不配对事件，前台程序与 pynput 组合键状态都会因此错乱。只在录音阶段拦截，等待结果阶段放行（那个状态依赖远程服务端回包，拦截会让打断键全局失灵）。打断键分支运行在键盘钩子线程里，只做状态翻转和派发：低级钩子超过 300ms 会被系统摘掉，之后所有快捷键失效
 13. **Tk 几何字符串与负坐标**：`wm geometry` 把 `±x±y` 开头的符号当作「从左/上边缘量」还是「从右/下边缘量」的标志位消费掉，符号之后的数字再单独按有符号数解析。负坐标必须写成 `+-100+50`（即 `f"+{x}+{y}"`）；`f"{x:+d}"` 产出的 `-100` 会被理解成「距屏幕右边缘 100px」，窗口拖出左/上边界时会跳到屏幕另一侧。Toast 的位置/尺寸统一走 `ToastWindowBase._set_geometry()` / `_set_position()`
@@ -397,6 +432,30 @@ Electron 应用连接到 ws://127.0.0.1:6019
 
     ④ **「不切换」必须在日志里自证**。「另一台明明开着却不切过去」是刻意设计但极其反直觉，半年后自己看到都会当 bug 查：锁定后重连失败打一条写明「按设计不会切换到其他候选，如需换机请重启客户端」的 WARNING（仅多候选时打，单候选那句话没有意义）；一轮全不可达打一条列出全部候选的 WARNING。两者都走 `_connect_fail_logged` 闸门、连上即复位，所以不会刷屏。
 
+21. **视觉输入（剪贴板图片随下一句上传）**：`vision_capture_key`（默认 `<ctrl>+<alt>+d`，留空禁用）按下时读取**剪贴板当前内容**里的图片暂存内存，随下一句话上传给开启了 `enable_vision` 的 LLM 角色。八条约束：
+
+    ① **不自己实现框选，读剪贴板当前内容**。系统截图工具本身就是框选，落进剪贴板的已经是用户圈定的那块区域，自绘一套拿到的图完全一样，却要额外背上全屏遮罩、虚拟屏空洞（本机副屏在主屏正下方且左缩进 485px，虚拟矩形里有两条不属于任何显示器的竖带）、DPI 与第三个 Tk 解释器这一堆边界。格式优先级 `"PNG"` → `CF_DIBV5` → `CF_DIB`；**刻意不支持 `CF_HDROP`**（资源管理器里对文件 Ctrl+C 只放文件引用，要读盘，可能是网络路径）。Win+V 的剪贴板历史是另一套机制，本功能走 `OpenClipboard`/`GetClipboardData` 读当前剪贴板，不受其影响。
+
+    ② **快捷键回调不能干活**。`GlobalHotKeys` 是 pynput `keyboard.Listener` 的子类，Windows 上走 `WH_KEYBOARD_LL`，**回调在钩子线程上同步执行**；而 DIB 解码 + 缩放 + PNG 编码在 4K 图上可达数百毫秒，超过系统 300ms 容忍上限就会被摘钩，连 `llm_stop_key` 一起失效（同约定 12）。回调只 submit，读取全在工作线程。
+
+    ③ **「下一条」从图片挂载成功那一刻起算**，不是从按下快捷键起算。②的异步是架构必然，所以「按完快捷键立刻开始录音」时槽位还空着，那次录音就是一次普通不带图的录音，图留给再下一次——这是正确语义而非缺陷。
+
+    ④ **严格「下一条」，无超时、无过期**。下一次录音一旦有效落地，图必然消失：命中开启 `enable_vision` 的角色就上传，否则丢弃。**命中了角色但该角色 `enable_vision=False` 同样丢弃**，一条规则不留例外——留着会重新引入「图什么时候真的消失」的不确定性，而那正是拒绝超时方案的理由（超时静默失效不可见，弹提示又太吵）。
+
+    ⑤ **路由按每句话的快照决定**，与约定 19 同构同因：图片绑定在 `launch()`、`task_id` 生成后登记、最终结果到达时 pop，定长兜底。**`pop_image_snapshot` 不得清 `image_current`**——上一句的结果到达时下一次录音可能已 launch 但还没 bind（`record_and_send` 是另一个协程），清掉会把新录音的图凭空抹掉。
+
+    ⑥ **任何让这次录音作废的路径都要把图退回待挂**（短按取消、录音阶段 ESC、等待阶段 ESC），与约定 19③ 同一条规则：重截一张图的代价比重说一句话高得多。退回时若待挂槽已有更新的图则不覆盖。
+
+    ⑧ **唯一的可见信号是录音悬浮框内侧多出一圈描边**（`IMAGE_BORDER` / `IMAGE_BORDER_WIDTH` / `IMAGE_BORDER_INSET`），不弹任何窗。它出现在唯一还来得及补救的时刻——录音刚开始、话还没说。**必须单独画这一圈，不能只把面板最外层 `outline` 换色**：那圈是 Tk 默认的 1 **物理**像素，而面板尺寸是物理像素、字体是磅值，200% 缩放下它细到几乎看不见（2026-09-04 实机反馈「看不出特殊效果」的根因）；内嵌还避开了 Tk 描边以路径为中心、`MARGIN=0` 时外侧一半会被窗口裁掉的问题。这圈描边与连续对话完全正交（约定 19⑧ 管的是**面板底色**），所以浅绿底 + 彩圈 = 连续对话中且这次带图。图片被丢弃时只打一行黄色控制台提示（事后已无从补救，弹窗只会打断正在上屏的输出）。
+
+    ⑧ **`enable_vision` 不校验 `model` 是否真支持视觉**，写错了服务端返 400，由约定 18 的诊断日志打到终端。因此开启该字段的角色必须自己把 `model` 换成视觉模型，它会作用于该角色的**每一次**请求而不只是带图那次。图片实测可与 `web_search` 内置工具在同一个 Responses 请求里共存，无需降级分支。编码链路：最长边 >1920 等比缩小 → 编码 PNG → **超 1MB 丢弃**（不做 JPEG 兜底，那会额外引入编码延迟；后果是截图基本都能过、照片会经常被拒）。历史里**只保留最近一张真图**，更早的由 `ContextManager.demote_images()` 降级成 `［图片］`。`image_data` 与 `used_tools` 一样要逐层转发到三条输出路径，**新增输出模式时漏了不报错、只是图片静默丢失**。
+
+    ⑨ **图片必须足够新**（`vision_clipboard_max_age`，默认 60s，0 表示不检查）。防的是「很久以前截的图还躺在剪贴板里，按快捷键时被误当成刚截的那张附上去」——**淡紫边框只说明「这次带了图」，说明不了「带的是哪张」**，唯独这种误配它看不出来。Windows 剪贴板不带时间戳（`GetClipboardSequenceNumber` 只是变更计数器，`GetClipboardOwner` 只给 HWND，Win+V 的历史时间戳又漏掉 `CF_DIB` 那类来源且要 WinRT），只能自己轮询序号记录变更时刻。三个要点：**检查时必须再同步补读一次序号**，否则「截完图 0.2s 就按快捷键」会因轮询没跟上而把新图误杀；误差方向是单向的（只会把稍旧的当成刚变的），所以轮询周期必须显著小于阈值（5s 对 60s）；**客户端启动后剪贴板一直没变过时，时刻是「未知」，按过期处理**——规则是「必须是近 N 秒内写入的」，证不出来就不算，代价是重启客户端后要重新复制一次。序号读不到（无剪贴板访问权限）时**退回不检查**而不是拒绝挂载，避免把整个功能连坐禁掉。
+
+    ⑩ **本功能只读剪贴板，但项目里另有会写剪贴板的路径，两者会互相干扰**。`llm_get_selection.get_selected_text`（`enable_read_selection`，五个角色里四个开着）是读—改—写：存原内容 → 模拟 Ctrl+C → 读 → 写回还原。剪贴板里是图片时读取必然失败，若拿失败折叠出的空串写回，就会把用户待用的截图清掉——**已用 `try_paste()` 修掉**（读不到就完全不动剪贴板）。仍有一个救不了的情形：用户确实选中了文字时，Ctrl+C 本身就会覆盖图片，那是模拟取选区的固有代价。粘贴模式 `paste_text` 同理必须写剪贴板。所以「本程序只读剪贴板」这个直觉是错的，改动这一带时要记得。
+
+22. **状态标签在展示层剥离，不在记忆层剥离**：`<state:微笑>` 这类标签是 OpenMate 的展示指令，实现集中在 `llm/llm_state_tags.py`。**对话历史必须存原文**——此前存历史前先剥离，结果是历史里的 assistant 消息永远不带标签，模型从第二轮起照抄自己上一条的形态、不再输出任何标签（few-shot 漂移压过 system 指令），表现为「情绪立绘只在每轮对话的第一句变化，之后全是默认状态」。2026-09-04 用真实 API 三轮对照实测：历史剥标签 → 微笑/无/无，历史留标签 → 微笑/失落/微笑。代价是**每条本地展示路径都必须自己剥**：Toast、打字、md 记录、UDP 广播。其中两条流式路径不能逐分片跑正则——`<state:微笑>` 会被切成 `<sta` + `te:微笑>`，打字模式下漏一个就是真的敲进用户正在编辑的文档，必须用 `StateTagFilter`（只暂存可能补成标签的尾巴）。**新增输出模式时漏剥不会报错，只会把标签直接显示/打出去。**
+
 ---
 
 ## 开发环境与验证
@@ -405,8 +464,10 @@ Electron 应用连接到 ws://127.0.0.1:6019
 
 - **运行方式**：双击 `start_client.exe`，它使用 `internal/` 内嵌的 Python 3.8 运行时和依赖库
 - **系统 Python 不可直接使用**：没有本项目的依赖（rich、pynput、sounddevice 等），且 `import core` 会在包 `__init__` 中连锁导入 rich 而失败；单元测试需先在 `sys.modules` 预注入桩模块（伪造 `core`、`core.client.llm` 等包及其 `logger`），再用 `importlib` 按文件路径加载目标模块
-- **验证手段从轻到重**：`ast.parse` 语法检查 → 桩模块单元测试 → `start_client.exe` 实机验证
+- **验证手段从轻到重**：`ast.parse` 语法检查 → 未定义名字检查 → 桩模块单元测试 → `start_client.exe` 实机验证。前三步已封装成 **`python tools/run_tests.py`**（离线、零依赖、不花额度），改完代码提交前跑一遍
+- **`ast.parse` 只验语法，抓不到 `NameError`**：跨函数转发参数（`used_tools`、`image_data` 这类，见约定 16/21⑧）时改错函数，语法检查和桩测试可能全过，直到那条分支真被走到才炸——而它常常要「开着某个外部程序」才走得到。补救手段是 `tools/check_undefined.py`（AST 作用域链检查，按 局部→外层函数→模块→内置 解析每个 Load 名字，无第三方依赖）；已知豁免记在 `tools/undefined_baseline.txt`，**它看的是有没有新增而不是归零**
 - **严禁提交 pyc**：`__pycache__` 不得进仓库（历史上误提交过，见提交 71103d3）；语法检查用 `ast.parse` 而非 `py_compile`，避免生成缓存文件
+- **厂商行为要单独验**：有几条结论押在 DeepSeek 当前行为上（图片与 `web_search` 共存、历史里的图仍可见、情绪标签跨轮保持、`thinking:disabled` 无效），本地单测证不了，厂商改了也不会报错、只会悄悄失灵。`python tools/probe_llm_live.py` 一次性重测这四条，**会真发请求消耗额度**，所以不在 `run_tests.py` 里
 - **文档同步**：行为变更需同步更新本文档相关章节；跨会话的待办、决策与已知怪状态记录在 [docs/DEV_NOTES.md](docs/DEV_NOTES.md)
 
 ---
@@ -423,6 +484,10 @@ Electron 应用连接到 ws://127.0.0.1:6019
 | 修改录音打断行为 | `config_client.py` (`cancel_recording_key`)、`shortcut/shortcut_manager.py` (`_handle_cancel_key`)、`shortcut/task.py` (`abort`)、`audio/recorder.py` (abort 分支) |
 | 修改连续对话行为 | `config_client.py` (`continuous_chat_key` / `continuous_chat_timeout`)、`core/client/state.py` (`ContinuousChatSnapshot` 与 `continuous_*` 方法)、`shortcut/shortcut_manager.py` (`_handle_chat_key` / `_resolve_chat_key`)、`shortcut/task.py` (`_prepare_continuous` / `finish` / `cancel`)、`output/result_processor.py` (`_resolve_forced_role` / `_update_continuous_state`)、`llm/llm_handler.py` (`forced_role` / `resolve_role`) |
 | 修改连续对话的指示器配色/文案 | `core/client/ui/recording_indicator.py` (`CONTINUOUS_*` 常量、`_compose_text`、`_panel_colors`) |
+| 修改视觉输入行为 | `config_client.py` (`vision_capture_key` / `vision_clipboard_max_age`)、`core/client/vision/clipboard_watcher.py` (`POLL_INTERVAL`)、`core/client/vision/clipboard_image.py` (`MAX_EDGE_PX` / `MAX_PNG_BYTES` / 格式优先级)、`core/client/vision/vision_manager.py` (快捷键校验与线程)、`core/client/state.py` (`pending_image` 与 `*_image_snapshot` 方法)、`output/result_processor.py` (`_report_image_usage`)、`llm/llm_handler.py` (`image_data` / `image_used`) |
+| 修改带图请求的消息格式 | `llm/llm_message_builder.py` (Chat 口味产出)、`llm/llm_processor.py` (`_to_responses_content`) |
+| 给某个角色开启视觉 | 角色文件加 `enable_vision = True` 并把 `model` 换成视觉模型（两者都要改） |
+| 修改挂图时的指示器描边 | `core/client/ui/recording_indicator.py` (`IMAGE_BORDER` / `IMAGE_BORDER_WIDTH` / `IMAGE_BORDER_INSET` 三个常量，以及 `_render` 里画内嵌环那句 `_rounded_rect`) |
 | 修改服务端地址 / 多候选探测 | `config_client.py` (`addr` / `port` / `addr_probe_timeout` / `addr_probe_timeout_lan`)、`connection/websocket_manager.py` (`resolve_server_endpoints` / `connect` / `_probe_timeout`)、`core/client/ui/tips.py` (`_get_server_display`) |
 | 修改录音/音频发送 | `audio/recorder.py`, `audio/stream.py` |
 | 修改识别结果处理 | `output/result_processor.py` |
@@ -442,6 +507,8 @@ Electron 应用连接到 ws://127.0.0.1:6019
 | 修改 Companion 服务器行为 | `core/client/companion/companion_server.py` |
 | 启用/禁用 Companion | `config_client.py` (`companion_enabled`, `companion_port`) |
 | 配置/修改 OpenMate 接入 | `config_client.py` (`openmate_*`), `llm/llm_output_openmate.py`；角色级覆盖字段 `openmate_enabled`/`openmate_character`/`enable_result_splitter`/`result_split_delimiter` |
+| 修改状态标签的识别/剥离 | `llm/llm_state_tags.py`（`STATE_TAG_RE` / `strip_state_tags` / `StateTagFilter`）；新增输出模式时**必须**在展示前剥离，流式路径用 `StateTagFilter`（见约定 22） |
+| 跑验证 / 加测试 | `tools/`（`run_tests.py` 一把梭、`probe_llm_live.py` 真发请求），说明见 `tools/README.md` |
 
 ---
 

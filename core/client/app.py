@@ -31,6 +31,7 @@ from .companion import CompanionServer
 
 from .hotword.manager import HotwordManager
 from .llm.llm_handler import LLMHandler
+from .vision import VisionManager
 from .output.text_output import TextOutput
 from .diary.diary_writer import DiaryWriter
 from core.tools.empty_working_set import empty_current_working_set
@@ -78,6 +79,7 @@ class CapsWriterClient:
         self.shortcut = ShortcutManager(self, [Shortcut(**sc) for sc in Config.shortcuts])
         self.udp = UDPController(self.shortcut)
         self.companion = CompanionServer(self)
+        self.vision = VisionManager(self)
 
         # 内存清理
         empty_current_working_set()
@@ -107,6 +109,7 @@ class CapsWriterClient:
         # 3. 关闭监控
         self.hotword.stop()
         self.llm.stop()
+        self.vision.stop()
 
         # 4. 关闭 WebSocket 连接
         self.ws.close_sync()

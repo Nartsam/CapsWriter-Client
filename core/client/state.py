@@ -134,6 +134,13 @@ class ClientState:
     continuous_current: Optional[ContinuousChatSnapshot] = None
     continuous_snapshots: Dict[str, ContinuousChatSnapshot] = field(default_factory=dict)
 
+    # 待挂图片（按下截图快捷键后从剪贴板读入，纯内存、不落盘）。
+    # 与连续对话同构地按录音快照绑定：图片归属由「说这句话时它挂着没有」决定，
+    # 而不是结果到达时的全局槽位——中间隔着一整个服务端往返（见约定 21）
+    pending_image: Optional[Any] = None
+    image_current: Optional[Any] = None
+    image_snapshots: Dict[str, Any] = field(default_factory=dict)
+
     # 最近一次识别结果（用于手动添加纠错记录）
     last_recognition_text: Optional[str] = None
     
@@ -179,6 +186,9 @@ class ClientState:
         self.continuous_last_active = 0.0
         self.continuous_current = None
         self.continuous_snapshots.clear()
+        self.pending_image = None
+        self.image_current = None
+        self.image_snapshots.clear()
 
         logger.debug("客户端状态重置完成")
     
@@ -371,6 +381,69 @@ class ClientState:
         if time.time() - self.continuous_last_active < timeout:
             return None
         return self.exit_continuous()
+
+    # ========== 待挂图片 ==========
+
+    def set_pending_image(self, image: Any) -> None:
+        """存入一张待挂图片。连按快捷键时后者覆盖前者，不排队。"""
+        self.pending_image = image
+
+    def clear_pending_image(self) -> None:
+        """丢弃尚未绑定到任何录音的待挂图片"""
+        self.pending_image = None
+
+    def begin_image_snapshot(self) -> Any:
+        """录音启动时把待挂图片移入本次录音的快照
+
+        「移入」而非「复制」：图片一旦绑定到某次录音就不再是待挂状态，
+        这样「已绑定」与「待挂」互斥，指示器边框和后续录音的归属都不会含糊。
+        还没读完剪贴板时槽位为空，本次录音就是一次普通录音——这正是
+        「下一条」从**挂载成功那一刻**起算的含义（见约定 21）。
+        """
+        image = self.pending_image
+        self.pending_image = None
+        self.image_current = image
+        return image
+
+    def bind_image_snapshot(self, task_id: Optional[str]) -> None:
+        """拿到 task_id 后登记图片快照，供结果到达时按任务查回"""
+        image = self.image_current
+        if not task_id or image is None:
+            return
+        self.image_snapshots[task_id] = image
+        while len(self.image_snapshots) > MAX_CONTINUOUS_SNAPSHOTS:
+            self.image_snapshots.pop(next(iter(self.image_snapshots)))
+
+    def pop_image_snapshot(self, task_id: str) -> Any:
+        """取出并移除指定任务绑定的图片（消耗）
+
+        **不清 image_current**：上一句的结果到达时，下一次录音可能已经 launch
+        但还没跑到 bind（record_and_send 是另一个协程），此刻清掉会把新录音刚
+        绑定的图凭空抹掉。image_current 由下一次 begin_image_snapshot 覆盖，
+        不会累积。
+        """
+        return self.image_snapshots.pop(task_id, None)
+
+    def rollback_image_snapshot(self, task_id: Optional[str] = None) -> Any:
+        """本次录音作废：把绑定的图片退回待挂状态
+
+        与连续对话的回滚同一条规则——让这次录音作废的任何路径（短按取消、
+        录音阶段 ESC、等待阶段 ESC）都不该顺带烧掉一张图，重截的代价比重说一句高。
+
+        Returns:
+            被退回的图片；没有可退回的返回 None
+        """
+        image = self.image_current
+        self.image_current = None
+        if task_id:
+            image = self.image_snapshots.pop(task_id, None) or image
+        if image is None:
+            return None
+        # 期间若已按过快捷键读进新图，就不要用旧图把它顶掉
+        if self.pending_image is None:
+            self.pending_image = image
+            return image
+        return None
 
     def set_output_text(self, text: str) -> None:
         """

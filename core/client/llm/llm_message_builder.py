@@ -64,8 +64,12 @@ class MessageBuilder:
 
         # 2. 对话历史
         if context_manager:
-            if hasattr(context_manager, 'history') and isinstance(context_manager.history, list):
-                messages.extend(context_manager.history)
+            # 必须走 get_history()：它只返回 {role, content} 副本，而 history 原对象还带
+            # 着一个 timestamp 字段。_build_responses_params 对纯字符串 content 是原样
+            # 透传的，那个字段会跟着上行到厂商 API（DeepSeek 目前容忍，但没有理由发）。
+            # 顺带避免把历史条目的活引用交出去——demote_images() 是原地改 content 的。
+            if hasattr(context_manager, 'get_history'):
+                messages.extend(context_manager.get_history())
             elif isinstance(context_manager, list):
                 messages.extend(context_manager)
 

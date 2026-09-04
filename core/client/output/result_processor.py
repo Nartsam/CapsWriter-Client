@@ -24,7 +24,7 @@ from core.client.udp.udp_broadcaster import broadcast_output_udp
 from core.tools.zhconv import convert as zhconv_convert
 from core.client.audio.file_manager import AudioFileManager
 from core.client.llm.llm_write_md import write_llm_md
-from core.client.llm.llm_constants import ToolNames
+from core.client.llm.llm_constants import ToolNames, IMAGE_PLACEHOLDER
 from core.client.llm.llm_role_config import RoleConfig
 # 悬浮录音提示：用于显示等待、进度、错误和处理完成后的隐藏。
 from core.client.ui import (
@@ -183,6 +183,26 @@ class ResultProcessor:
             console.print(f'    连续对话：[yellow]角色「{snapshot.forced_role}」已失效，已退出[/yellow]')
         return role_config
 
+    def _report_image_usage(self, pending_image, llm_result) -> None:
+        """报告本次录音绑定图片的去向
+
+        「下一条」是严格的：这次录音一旦有效落地，图必然消失——用掉或丢掉，没有
+        第三种结果，也不会留到下一句（见约定 21）。丢弃只打控制台一行、不弹窗：
+        它发生在事后、已无从补救，而弹窗会打断正在上屏的输出。
+        """
+        if pending_image is None:
+            return
+        if llm_result and llm_result.image_used:
+            logger.info(f"图片已随本句上传: {pending_image.width}×{pending_image.height}")
+            return
+
+        if not Config.llm_enabled or not llm_result or not llm_result.processed:
+            reason = '本句未触发 LLM 角色'
+        else:
+            reason = f'角色「{llm_result.role_name}」未开启视觉'
+        console.print(f'    [yellow]已挂载的图片未使用，已丢弃[/yellow]（{reason}）')
+        logger.info(f"图片未使用已丢弃：{reason}")
+
     def _update_continuous_state(self, snapshot, llm_result) -> None:
         """
         按本次录音的路由快照更新连续对话状态
@@ -272,6 +292,7 @@ class ResultProcessor:
                 self.state.release_cancelled_task(message.task_id)
                 # 打断路径已经做过回滚，这里只是把可能残留的快照清掉（pop 幂等）
                 self.state.pop_continuous_snapshot(message.task_id)
+                self.state.pop_image_snapshot(message.task_id)
                 logger.info(f"丢弃已打断任务的识别结果，任务ID: {message.task_id}")
             return
 
@@ -372,6 +393,10 @@ class ResultProcessor:
         snapshot = self.state.pop_continuous_snapshot(message.task_id)
         forced_role = self._resolve_forced_role(snapshot)
 
+        # 本次录音绑定的图片。同样只看快照：按下录音键那一刻挂着什么就是什么，
+        # 与此刻的全局待挂槽位无关（期间用户可能已经又截了一张）
+        pending_image = self.state.pop_image_snapshot(message.task_id)
+
         # LLM 处理和输出
         llm_result = None
         if Config.llm_enabled:
@@ -379,7 +404,8 @@ class ResultProcessor:
                 text,
                 paste=paste,
                 matched_hotwords=potential_hotwords,  # 传递上下文热词给 LLM
-                forced_role=forced_role
+                forced_role=forced_role,
+                image_data=pending_image.data_url if pending_image else None
             )
         else:
             await self.output.output(text, paste=paste)
@@ -405,13 +431,21 @@ class ResultProcessor:
         # LLM 结果显示和保存
         if Config.llm_enabled and llm_result and llm_result.processed:
             console.print(self._format_llm_result(llm_result))
+            # md 是这段对话事后唯一可读的记录，图片本体不落盘，但「当时带了图」
+            # 必须留痕，否则半年后回看会觉得模型答非所问
+            md_input = llm_result.input_text
+            if llm_result.image_used:
+                md_input = f'{IMAGE_PLACEHOLDER}{md_input}'
             write_llm_md(
-                llm_result.input_text,
+                md_input,
                 llm_result.result,
                 llm_result.role_name,
                 message.time_start,
                 file_audio
             )
+
+        # 图片去向如实告知：不论用掉还是丢掉，这次录音之后它都不复存在
+        self._report_image_usage(pending_image, llm_result)
 
         # 连续对话状态迁移（进入判定放在最后：要等 role_name 确定）
         self._update_continuous_state(snapshot, llm_result)

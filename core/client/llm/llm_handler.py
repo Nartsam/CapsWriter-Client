@@ -36,6 +36,7 @@ class LLMResult:
     input_text: str                # 输入文本（已移除角色前缀）
     generation_time: float = 0.0   # 生成时间（秒，从第一个 token 开始）
     used_tools: List[str] = field(default_factory=list)  # 本次请求实际触发的服务端工具 ID
+    image_used: bool = False       # 本次绑定的图片是否真的随请求上传了
 
 
 # ======================================================================
@@ -167,7 +168,7 @@ class LLMHandler:
         return role_config
 
     def process(self, role_config: RoleConfig, content: str, matched_hotwords=None, callback=None,
-                status_callback=None, used_tools=None) -> Tuple[str, int, float]:
+                status_callback=None, used_tools=None, image_data=None) -> Tuple[str, int, float]:
         """执行实际的 LLM 模型调用（内部方法）
 
         Args:
@@ -177,6 +178,8 @@ class LLMHandler:
             callback: 流式输出的回调函数
             status_callback: 过程状态回调（如联网搜索中），仅用于展示
             used_tools: 出参列表，本次请求触发的服务端工具 ID 会追加进来
+            image_data: 随本句上传的图片（base64 data URL）。与 used_tools 一样，
+                新增输出模式时必须记得转发，漏了不报错、只是图片静默丢失
 
         Returns:
             (处理后的文本, 输出token数, 生成时间秒)
@@ -198,6 +201,7 @@ class LLMHandler:
         # 构建消息
         messages = self.message_builder.build_messages(
             role_config, content, context_manager,
+            image_data=image_data,
             hotwords=matched_hotwords,
             selection_text=selection_text
         )
@@ -219,7 +223,8 @@ class LLMHandler:
         return result_text, token_count, gen_time
 
     async def process_and_output(self, text: str, paste: bool = None, matched_hotwords=None,
-                                 forced_role: Optional[RoleConfig] = None) -> Optional[LLMResult]:
+                                 forced_role: Optional[RoleConfig] = None,
+                                 image_data: Optional[str] = None) -> Optional[LLMResult]:
         """
         统一入口：处理输入文本并根据配置执行输出（打字或弹屏）
 
@@ -228,6 +233,8 @@ class LLMHandler:
             paste: 是否强制使用粘贴模式（None 则遵循配置）
             matched_hotwords: 潜在热词列表
             forced_role: 连续对话指定的粘滞角色。给出时跳过角色前缀检测，整句原样发给它
+            image_data: 本次录音绑定的图片（base64 data URL）。只有角色
+                enable_vision=True 时才真的带上，否则静默丢弃（见约定 21）
         """
         import time
         from .llm_output_typing import handle_typing_mode, output_text
@@ -273,12 +280,20 @@ class LLMHandler:
         # 不用返回值携带：三个输出模式里有十来处提前 return 的降级分支，扩成四元组
         # 漏改一处就是运行时崩溃；也不用 handler 上的实例属性，避免跨请求残留
         used_tools = []
+        # 角色不支持视觉就不带图。不校验 model 是否真是视觉模型——那是角色文件
+        # 作者的责任，写错了服务端会返 400 并由约定 18 的诊断日志打到终端
+        image_for_request = image_data if role_config.enable_vision else None
+        if image_data and not image_for_request:
+            logger.info(f"角色「{role_config.display_name or RoleConfig.DEFAULT_ROLE_NAME}」"
+                        f"未开启 enable_vision，本次图片不上传")
+        image_used = bool(image_for_request)
         if role_config.output_mode == 'toast':
             result, token_count, gen_time = await handle_toast_mode(
-                self, text, role_config, matched_hotwords, content, used_tools)
+                self, text, role_config, matched_hotwords, content, used_tools, image_for_request)
         else: # typing
             result, token_count, gen_time = await handle_typing_mode(
-                self, text, paste, matched_hotwords, role_config, content, used_tools)
+                self, text, paste, matched_hotwords, role_config, content, used_tools,
+                image_for_request)
 
         # 5. 后置处理
         # 更新全局状态（即便是中断了，也记录已经输出的部分）
@@ -294,7 +309,8 @@ class LLMHandler:
             polish_time=time.time() - start_time,
             input_text=content,
             generation_time=gen_time,
-            used_tools=used_tools
+            used_tools=used_tools,
+            image_used=image_used
         )
 
 

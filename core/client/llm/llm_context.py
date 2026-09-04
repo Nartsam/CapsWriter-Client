@@ -36,6 +36,35 @@ class ContextManager:
             self.last_interaction = timestamp
             self._trim_history()
 
+    def demote_images(self, placeholder: str) -> int:
+        """把历史里所有图片条目降级成占位文本，只应在写入新的带图消息前调用
+
+        为什么只留最近一张：截图提问天然是多轮的（「这什么报错」→「那第三行呢」），
+        模型必须还能看见最近那张；但把每一轮的图都留着，每次请求都要重传全部图片，
+        而历史没有按时间过期的清理，图会一直占着内存直到被 token 压力挤出去。
+
+        Returns:
+            被降级的图片数量
+        """
+        demoted = 0
+        with self._lock:
+            for msg in self.history:
+                content = msg.get('content')
+                if not isinstance(content, list):
+                    continue
+                parts = []
+                for part in content:
+                    if isinstance(part, dict) and part.get('type') in ('image_url', 'input_image'):
+                        parts.append(placeholder)
+                        demoted += 1
+                    elif isinstance(part, dict):
+                        parts.append(part.get('text') or '')
+                    elif isinstance(part, str):
+                        parts.append(part)
+                # 降级后整条消息退回纯字符串，历史里因此最多只有一条列表形态的消息
+                msg['content'] = '\n'.join(p for p in parts if p)
+        return demoted
+
     def clear(self):
         """清除对话历史"""
         with self._lock:
