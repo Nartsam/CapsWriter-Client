@@ -26,7 +26,8 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 # core/server 是上游 vendored 的推理引擎，internal 是内嵌运行时，都不是本项目源码
 SKIP_DIRS = {'__pycache__', '.git', 'internal', 'logs', 'assets'}
 
-SUITES = ['test_vision.py', 'test_state_tags.py', 'test_history_payload.py']
+SUITES = ['test_vision.py', 'test_state_tags.py', 'test_history_payload.py',
+          'test_backends.py']
 
 
 def syntax_check() -> int:

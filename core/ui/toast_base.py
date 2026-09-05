@@ -18,6 +18,7 @@ from .toast_constants import (
     DEFAULT_PADDING_X,
     DEFAULT_PADDING_TOP,
     DEFAULT_PADDING_BOTTOM,
+    COMPACT_PADDING_TOP,
     DEFAULT_MIN_WIDTH_PX,
     DEFAULT_MAX_WIDTH_PX,
     MIN_WINDOW_HEIGHT,
@@ -146,6 +147,13 @@ class ToastWindowBase(ABC):
         self.pause_and_resume = smart_duration
         self._timer_expired = False                  # 截止时间已到；悬停时延迟到移开再关闭
         self._never_auto_close = False               # 拖拽后置 True，窗口转为永不自动关闭
+
+        # 顶部留白按窗口种类取值。smart_duration 在本项目里事实上等同于「这是 LLM 角色
+        # 白色对话框」（close_llm_windows 同样拿它做判别），只有这类窗口需要 40px 纯空白
+        # 拖动抓手；托盘/错误这类几秒即逝的提示不可拖拽也无需抓手，顶部与底部对齐即可。
+        # height_padding 是上下留白之和，供子类按行数反推窗口高度
+        self.padding_top = DEFAULT_PADDING_TOP if smart_duration else COMPACT_PADDING_TOP
+        self.height_padding = self.padding_top + DEFAULT_PADDING_BOTTOM
         
         # 拖动锚点：按下时同时记录指针屏幕坐标和窗口左上角，
         # 拖动中用「指针位移 + 起始窗口位置」计算，避免逐帧累加误差
@@ -335,7 +343,7 @@ class ToastWindowBase(ABC):
 
         self._content_window_item = self.content_canvas.create_window(
             DEFAULT_PADDING_X,
-            DEFAULT_PADDING_TOP,
+            self.padding_top,
             anchor='nw',
             window=widget,
         )
@@ -392,12 +400,12 @@ class ToastWindowBase(ABC):
             if self._content_window_item is not None:
                 content_width = max(1, width - DEFAULT_PADDING_X * 2)
                 content_height = max(
-                    1, height - DEFAULT_PADDING_TOP - DEFAULT_PADDING_BOTTOM
+                    1, height - self.height_padding
                 )
                 self.content_canvas.coords(
                     self._content_window_item,
                     DEFAULT_PADDING_X,
-                    DEFAULT_PADDING_TOP,
+                    self.padding_top,
                 )
                 self.content_canvas.itemconfigure(
                     self._content_window_item,
@@ -867,9 +875,7 @@ class ToastWindowBase(ABC):
             # fit_height() 已给出 Markdown 正文的实际高度；这里只叠加明确的
             # 顶部拖动区和底边距，避免按比例放大后在长文本下方留下大块空白。
             final_h = max(
-                int(content_height)
-                + DEFAULT_PADDING_TOP
-                + DEFAULT_PADDING_BOTTOM,
+                int(content_height) + self.height_padding,
                 MARKDOWN_MIN_HEIGHT,
             )
             # 完成视图保持流式阶段达到的宽度，只重新计算高度。
@@ -884,7 +890,7 @@ class ToastWindowBase(ABC):
 
             logger.info(
                 f"Markdown 窗口: {final_w}x{final_h} "
-                f"(内容: {content_height}px, 顶部拖动区: {DEFAULT_PADDING_TOP}px)"
+                f"(内容: {content_height}px, 顶部留白: {self.padding_top}px)"
             )
 
         except Exception as e:

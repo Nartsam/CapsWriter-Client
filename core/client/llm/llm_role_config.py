@@ -57,7 +57,7 @@ class RoleConfig:
     toast_max_width_ratio: Optional[float] = None  # 最大宽度比例回退值
     toast_initial_height: int = 0                 # Toast 窗口初始高度（0 表示自动计算）
     toast_font_family: str = '微软雅黑'           # Toast 字体
-    toast_font_size: int = 16                     # Toast 字体大小（角色缺省值）
+    toast_font_size: int = 18                     # Toast 字体大小（角色缺省值）
     toast_font_color: str = 'black'               # Toast 字体颜色
     toast_bg_color: str = '#f7fbff'               # Toast 背景颜色
     toast_duration: int = 3000                    # Toast 显示时长（毫秒）

@@ -96,7 +96,8 @@ def show_error_notification(error: Exception, role_name: str = "LLM"):
             max_width_px=0,
             min_width_ratio=0.3,
             max_width_ratio=0.6,
-            initial_height=80,      # 固定最小高度 80 像素
+            initial_height=0,       # 高度按内容算：写死 80 会盖过计算值，
+                                    # 省下的顶部留白只会原样挪到底部
             streaming=False,
             window_type='text'
         )

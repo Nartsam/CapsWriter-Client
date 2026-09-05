@@ -56,6 +56,8 @@ CapsWriter-Offline 是一个 Windows 离线语音输入工具（GitHub: HaujetZh
 │   │   └── ...
 │   └── ui/                    # 通用 UI 组件（Toast 弹窗、系统托盘）
 ├── LLM/                       # LLM 角色定义（.py 文件，每个文件=一个角色）
+│   ├── backends.py            # 角色的后端切换（DeepSeek 直连 / CPA 局域网网关），见约定 23
+│   └── secrets.py             # API 密钥（未被 git 跟踪）
 ├── hot.txt                    # 热词列表
 ├── hot-rule.txt               # 正则替换规则
 ├── hot-server.txt             # 服务端热词（部分引擎支持）
@@ -152,7 +154,7 @@ CapsWriter-Offline 是一个 Windows 离线语音输入工具（GitHub: HaujetZh
 | `llm_watcher.py` | 监视 LLM/ 目录变化，自动重载角色 |
 | `llm_get_selection.py` | 通过 Ctrl+C 获取选中文字 |
 
-**角色文件格式**（`LLM/*.py`）：每个文件定义一组变量（name、provider、model、system_prompt 等），由 RoleLoader 自动加载。当前内置角色文件为 `default.py`、`翻译.py`、`助理.py`。翻译角色开启选中文字读取：有选中文字时将其视为原文、语音输入仅作为目标语言或风格要求；无选中文字时语音输入本身为原文。未指定目标语言时，中文译为英文，其他语言译为简体中文。助理角色面向简单日常与知识问答，默认用一至三句纯文本直接作答，不输出寒暄、问题复述、无关扩展或 Markdown 等特殊格式。助理、雾切响子、新岛真三个角色开启联网搜索与当前时间注入（见约定 15），提示词均规定只有时效性问题才检索、闲聊与稳定知识不检索，且检索结果不得改变各自的输出格式（纯文本、无网址与引用编号）。
+**角色文件格式**（`LLM/*.py`）：每个文件定义一组变量（name、provider、model、system_prompt 等），由 RoleLoader 自动加载。当前内置角色文件为 `default.py`、`翻译.py`、`助理.py`。四个 toast 角色（助理、雾切响子、新岛真、翻译）的 API 段不再写死，改为 `backend = 'deepseek' | 'cpa'` 一行加 `resolve()` 取值，见约定 23。翻译角色开启选中文字读取：有选中文字时将其视为原文、语音输入仅作为目标语言或风格要求；无选中文字时语音输入本身为原文。未指定目标语言时，中文译为英文，其他语言译为简体中文。助理角色面向简单日常与知识问答，默认用一至三句纯文本直接作答，不输出寒暄、问题复述、无关扩展或 Markdown 等特殊格式。助理、雾切响子、新岛真三个角色开启联网搜索与当前时间注入（见约定 15），提示词均规定只有时效性问题才检索、闲聊与稳定知识不检索，且检索结果不得改变各自的输出格式（纯文本、无网址与引用编号）。
 
 ### 8. UI 子系统
 
@@ -162,9 +164,9 @@ CapsWriter-Offline 是一个 Windows 离线语音输入工具（GitHub: HaujetZh
 | `core/client/ui/recording_indicator.py` | **RecordingIndicator**。录音悬浮指示器（Tk 实现，单例，线程安全）。显示录音时长、等待状态、处理进度、错误提示。通过 Windows API 获取输入光标位置定位。状态优先级：录音进行中时服务端分段进度只记录不切换模式（见约定 11）。手动打断时原地换成 `cancelled` 文案（浅蓝 `CANCEL_ACCENT`），1.2s 后自动隐藏。录音态另有连续对话四态：底色白/浅黄/浅绿区分，圆点恒为蓝，切换走独立的 `update_continuous` 命令（见约定 19）。面板宽度 `PANEL_W` 是**最小值不是固定值**：只由标题驱动、可增可减、上限为屏幕宽度的 90%（`_fit_panel_to_title`），详情行不参与测宽，测量一律用 `_compose_text(stable=True)` 把省略号动画固定成三个点 |
 | `core/client/ui/tips.py` | **TipsDisplay**。启动时的 Rich 控制台提示信息 |
 | `core/ui/toast.py` | Toast 浮动消息通知（Tk 实现，支持 Markdown 渲染） |
-| `core/ui/toast_base.py` | Toast 窗口基类。负责置顶无边框窗口、透明度、Canvas 透明色圆角背景、40px 顶部空白拖动区（`DEFAULT_PADDING_TOP`）、内容宽度测量、只增不减的窗口增宽、拖动锚点、滚轮、复制、Markdown 最终视图字体/tag 样式同步与按真实内容重算高度，以及文字区域选择和空白/边缘区域拖动的事件隔离。另含智能时长（`smart_duration`/`pause_and_resume` 标志）：随字数对数计时、悬停不顺延绝对截止时间且到期后移开即关（`_timer_expired`）、拖拽后永不自动关闭（`_never_auto_close`，见约定 17）；普通 toast 保持固定时长 + 悬停移开重置的旧行为 |
-| `core/ui/toast_text.py` | 基于 Text 的 Toast 窗口。用于 LLM 流式输出，支持增量更新、按内容自动增宽/增高、达到最大宽度后自动换行、选中文字和复制 |
-| `core/ui/toast_label.py` | 基于 Label 的 Toast 窗口。用于普通提示，支持自动换行、自动增高和 Markdown 转换 |
+| `core/ui/toast_base.py` | Toast 窗口基类。负责置顶无边框窗口、透明度、Canvas 透明色圆角背景、顶部留白（`padding_top`：LLM 角色白框 40px 拖动区，普通 toast 15px 与底部对齐，见约定 17）、内容宽度测量、只增不减的窗口增宽、拖动锚点、滚轮、复制、Markdown 最终视图字体/tag 样式同步与按真实内容重算高度，以及文字区域选择和空白/边缘区域拖动的事件隔离。另含智能时长（`smart_duration`/`pause_and_resume` 标志）：随字数对数计时、悬停不顺延绝对截止时间且到期后移开即关（`_timer_expired`）、拖拽后永不自动关闭（`_never_auto_close`，见约定 17）；普通 toast 保持固定时长 + 悬停移开重置的旧行为 |
+| `core/ui/toast_text.py` | 基于 Text 的 Toast 窗口。用于 LLM 流式输出，支持增量更新、按内容自动增宽/增高、达到最大宽度后自动换行、选中文字和复制。窗口高度 = 行数 × 行高 + 基类的 `height_padding` |
+| `core/ui/toast_label.py` | 基于 Label 的 Toast 窗口。用于普通提示，支持自动换行、自动增高和 Markdown 转换。高度同样叠加基类的 `height_padding` |
 | `core/ui/dpi.py` | 进程 DPI 感知声明。`SetProcessDpiAwareness` 每进程只能成功一次，历史上三处各自调用、谁先导入谁生效，现统一到此并固定 `PROCESS_SYSTEM_DPI_AWARE(1)`（等同于此前实际生效的那条，行为不变） |
 | `core/ui/tray.py` | 系统托盘图标（pystray） |
 | `core/ui/toast_manager.py` | Toast 窗口管理器。`ToastMessage` 支持字体、颜色、持续时间、Markdown、可编辑、透明度和圆角配置 |
@@ -395,10 +397,11 @@ Electron 应用连接到 ws://127.0.0.1:6019
 12. **录音打断**：`cancel_recording_key`（默认 esc，留空禁用）在录音中或等待识别结果时按下，本次输入彻底作废（不上屏、不触发角色、不写日记、删除录音文件）。服务端的 `AudioCache` 按连接持有、只有 `is_final` 才 reset，所以打断**必须仍发一个 `is_final`** 冲掉缓冲，否则残余音频会拼进下一次录音；结果回来后按 `cancelled_task_ids` 在 `_handle_message` 入口丢弃（含非最终包）。**抑制决策必须在 KEYDOWN 锁存、KEYUP 沿用**——判据 `state.recording` 会被打断动作自身翻转，两次分别判断会产生「吞掉按下、放行松开」的不配对事件，前台程序与 pynput 组合键状态都会因此错乱。只在录音阶段拦截，等待结果阶段放行（那个状态依赖远程服务端回包，拦截会让打断键全局失灵）。打断键分支运行在键盘钩子线程里，只做状态翻转和派发：低级钩子超过 300ms 会被系统摘掉，之后所有快捷键失效
 13. **Tk 几何字符串与负坐标**：`wm geometry` 把 `±x±y` 开头的符号当作「从左/上边缘量」还是「从右/下边缘量」的标志位消费掉，符号之后的数字再单独按有符号数解析。负坐标必须写成 `+-100+50`（即 `f"+{x}+{y}"`）；`f"{x:+d}"` 产出的 `-100` 会被理解成「距屏幕右边缘 100px」，窗口拖出左/上边界时会跳到屏幕另一侧。Toast 的位置/尺寸统一走 `ToastWindowBase._set_geometry()` / `_set_position()`
 14. **Toast 构造失败是静默的**：`ToastMessageManager._process_queue` 用 `except Exception` 兜住窗口构造，失败时调用方只看到 `wait_for_window` 超时和「Toast 窗口创建失败」。改 `core/ui/toast_*.py` 后必须真弹一次窗口验证，只看日志没红色报错不足以说明可用
-15. **角色联网搜索**：`enable_web_search` 让该角色改用 DeepSeek 的 **Responses API**（`client.responses.create`），并挂载服务端内置工具 `[{"type": "web_search"}]`，检索在 DeepSeek 侧执行，本地不需要任何搜索 API Key。是否检索由模型自行判断，不触发时的延迟与普通请求一致。三个连带约束：①Responses API 的 base_url 官方示例不带 `/v1`，而 `APIConfig.DEFAULT_API_URLS['deepseek']` 带 `/v1`，开启该功能的角色必须显式写 `api_url = 'https://api.deepseek.com'`；②检索期间数秒没有任何分片，provider 默认 2s 超时会直接失败，必须设 `request_timeout`（助理为 60s）；③参数名与 Chat Completions 不同——system 消息走 `instructions`、其余走 `input`、`max_tokens` 变 `max_output_tokens`、没有 `stop`。搭配 `enable_datetime`（在用户消息里注入当前时间，让模型判断记忆是否过期；放用户消息而非 system 是为了不破坏服务端前缀缓存）。目前仅 `deepseek-v4-flash` 支持 Responses API
+15. **角色联网搜索**：`enable_web_search` 让该角色改用 DeepSeek 的 **Responses API**（`client.responses.create`），并挂载服务端内置工具 `[{"type": "web_search"}]`，检索在 DeepSeek 侧执行，本地不需要任何搜索 API Key。是否检索由模型自行判断，不触发时的延迟与普通请求一致。三个连带约束：①Responses API 的 base_url 官方示例不带 `/v1`，而 `APIConfig.DEFAULT_API_URLS['deepseek']` 带 `/v1`，开启该功能的角色必须显式写 `api_url = 'https://api.deepseek.com'`；②检索期间数秒没有任何分片，provider 默认 2s 超时会直接失败，必须设 `request_timeout`（助理为 60s）；③参数名与 Chat Completions 不同——system 消息走 `instructions`、其余走 `input`、`max_tokens` 变 `max_output_tokens`、没有 `stop`。搭配 `enable_datetime`（在用户消息里注入当前时间，让模型判断记忆是否过期；放用户消息而非 system 是为了不破坏服务端前缀缓存）。DeepSeek 侧目前仅 `deepseek-v4-flash` 系列支持 Responses API。CPA 网关同样实现了 `/v1/responses` 与 `web_search`（2026-09-05 在小主机侧补齐并实机验证通过），因此这条约定对两套后端一致，角色不需要按 backend 开特例。网关补齐之前曾有过「接受参数但不实现」的阶段，症状是「闲聊正常、一问时效性问题就空回复」，判据与排查路径留在 docs/DEV_NOTES.md「已知状态」，日后换网关版本时可据此快速定位同类症状
 16. **工具调用的回传用出参列表**：本次请求实际触发了哪些服务端工具，由流解析层沿 `used_tools` 列表逐层追加，最终进 `LLMResult.used_tools`，控制台显示成 `模型结果[助理(搜索)]`。之所以不扩成四元组返回：三个输出模式（typing/toast/openmate）里有十余处 `return ("", 0, 0.0)` 的降级分支，漏改一处就是运行时崩溃；之所以不挂 handler 实例属性：那会引入跨请求残留。工具 ID 从事件名 `response.<工具ID>_call.<阶段>` 解析而来（`_extract_tool_id`），不硬编码 `web_search`；ID → 中文的映射集中在 `llm_constants.ToolNames`，未登记的新工具回退显示原始 ID 而不是静默丢弃。**新增输出模式或在其中新增 `handler.process` 调用点时必须一并转发 `used_tools`**，漏了不会报错，只是标签永远不出现
 
-17. **LLM 角色 Toast 智能时长**：toast 模式角色（`smart_duration=True`，`handle_toast_mode` 与 OpenMate 回退 `_show_fallback_toast`）的自动关闭时长不再固定 `toast_duration`，而是从内容生成完成（`finish()`）起按最终文本字数对数计算：`min(toast_duration + 1200·ln(1+字数), 30s)`；`toast_duration` 退化为最短停留保底基数。悬停只阻止销毁、不改变计时：鼠标进入后倒计时仍按原绝对截止时间推进，到期时仍悬停则记录 `_timer_expired` 并保留窗口，真正移出整个 Toast 后立即关闭；到期前移出则只剩实际剩余时间，反复移入移出也不顺延。拖拽发生任何位移后窗口永不自动关闭（`_never_auto_close`），只在新的 LLM 回复窗口生成或命中提前关闭路径（ESC/异常/中断/Markdown 失败/程序退出）时结束。**新 LLM 回复窗口创建时（`ToastMessageManager.close_llm_windows`，在 `add_message` 入队前调用）立即顶掉所有旧的 LLM 白色对话框——无论旧窗口是否被拖拽**，保证新窗口一弹出（即使还是空文本占位）旧窗口已消失、新旧不叠加。`close_llm_windows` 在 destroy 前会触发旧窗口的 `stop_callback`（与 ESC 关闭路径语义对称）。OpenMate 接管展示时同样调用 `close_llm_windows`（`handle_toast_mode` 的接管分支），否则拖拽过的旧本地窗口会在一直走 OpenMate 路径时永久残留。**这些行为仅作用于 `smart_duration=True` 的窗口（基类 `pause_and_resume` 标志），普通 toast 保持旧的固定时长 + 悬停移开重置行为**。实现集中在 `toast_base.py` 的 `_timer_expired` + `_start_smart_destroy_timer`/`_on_smart_timer_expired`/`_destroy_if_expired_outside`；滚轮调整位置不算拖拽（只认鼠标拖拽位移）。`active_windows` 的 `<Destroy>` 回调必须校验被销毁的是 Toplevel 本身（`str(e.widget) == str(w.window)`）——Tk 的 `<Destroy>` 在任意子 widget 销毁时也会触发 Toplevel 绑定，裸绑定会把已 finish 的窗口误移出列表、导致顶不掉（详见 docs/DEV_NOTES.md「已知状态」）
+17. **LLM 角色 Toast 智能时长**：toast 模式角色（`smart_duration=True`，`handle_toast_mode` 与 OpenMate 回退 `_show_fallback_toast`）的自动关闭时长不再固定 `toast_duration`，而是从内容生成完成（`finish()`）起按最终文本字数对数计算：`min(toast_duration + 1200·ln(1+字数), 30s)`；`toast_duration` 退化为最短停留保底基数。悬停只阻止销毁、不改变计时：鼠标进入后倒计时仍按原绝对截止时间推进，到期时仍悬停则记录 `_timer_expired` 并保留窗口，真正移出整个 Toast 后立即关闭；到期前移出则只剩实际剩余时间，反复移入移出也不顺延。拖拽发生任何位移后窗口永不自动关闭（`_never_auto_close`），只在新的 LLM 回复窗口生成或命中提前关闭路径（ESC/异常/中断/Markdown 失败/程序退出）时结束。**新 LLM 回复窗口创建时（`ToastMessageManager.close_llm_windows`，在 `add_message` 入队前调用）立即顶掉所有旧的 LLM 白色对话框——无论旧窗口是否被拖拽**，保证新窗口一弹出（即使还是空文本占位）旧窗口已消失、新旧不叠加。`close_llm_windows` 在 destroy 前会触发旧窗口的 `stop_callback`（与 ESC 关闭路径语义对称）。OpenMate 接管展示时同样调用 `close_llm_windows`（`handle_toast_mode` 的接管分支），否则拖拽过的旧本地窗口会在一直走 OpenMate 路径时永久残留。**这些行为仅作用于 `smart_duration=True` 的窗口（基类 `pause_and_resume` 标志），普通 toast 保持旧的固定时长 + 悬停移开重置行为**。实现集中在 `toast_base.py` 的 `_timer_expired` + `_start_smart_destroy_timer`/`_on_smart_timer_expired`/`_destroy_if_expired_outside`；滚轮调整位置不算拖拽（只认鼠标拖拽位移）。`active_windows` 的 `<Destroy>` 回调必须校验被销毁的是 Toplevel 本身（`str(e.widget) == str(w.window)`）——Tk 的 `<Destroy>` 在任意子 widget 销毁时也会触发 Toplevel 绑定，裸绑定会把已 finish 的窗口误移出列表、导致顶不掉（详见 docs/DEV_NOTES.md「已知状态」）。
+    **`smart_duration` 同时是「这是 LLM 角色白框」的事实判别器**，除时长语义外还决定顶部留白：基类 `__init__` 按它取 `padding_top`——`True` 用 `DEFAULT_PADDING_TOP`(40px) 提供一条不会误触正文的拖动抓手，`False` 用 `COMPACT_PADDING_TOP`(15px) 与底部对齐。`height_padding = padding_top + DEFAULT_PADDING_BOTTOM` 是上下留白之和，`toast_text`/`toast_label` 按行数反推窗口高度时用它（原本是 `HEIGHT_PADDING` / `LABEL_HEIGHT_PADDING` 两个模块常量，已降为实例属性）。**顶部不能取 0**：单行普通 toast 会算出 51px 撞上 `MIN_WINDOW_HEIGHT`(60px) 兜底，省下的留白原样挪到底部，白改。同理错误提示的 `initial_height` 已从 80 改成 0，否则写死的高度会盖过计算值。留白分岔的真 Tk 冒烟测试见 `tools/test_toast_padding.py`
 
 18. **空回复必须显形，不得降级成识别原文**：LLM 返回空正文时，`handle_toast_mode` 与 OpenMate 路径**返回空串**而不是 `polished_text or content`——那段识别原文在这两种模式下从未展示给用户，拿它冒充模型输出会让控制台、`年/月/日-角色.md` 记录、UDP 广播三处同时误报成一次成功回复，静默失败连事后都查不出来（typing 模式保留 `or content` 降级：那里的文本是真的打字输出去了，如实反映）。控制台由 `_format_llm_result` 显示黄色「（空回复，详见日志）」。原因由 `llm_processor.py` 的诊断日志给出：Responses 流把 `response.incomplete`（打印 `incomplete_details.reason`）、`response.failed`、refusal 事件全部记录，并在流结束时汇总「状态 + usage（含 reasoning token）+ 事件类型计数」——**未被解析分支认领的事件只会在这个计数里显形**，是判断「额度被思考内容吃光」的唯一线索；Chat Completions 流记录 `finish_reason`，`length` 单独告警。空回复走 WARNING，而 `logger.py` 把控制台处理器固定在 WARNING 级，因此这些诊断会直接出现在运行终端里。新增流式路径时必须一并补上这两条（空正文告警 + 终局状态解析），否则又会退回静默
 
@@ -456,6 +459,20 @@ Electron 应用连接到 ws://127.0.0.1:6019
 
 22. **状态标签在展示层剥离，不在记忆层剥离**：`<state:微笑>` 这类标签是 OpenMate 的展示指令，实现集中在 `llm/llm_state_tags.py`。**对话历史必须存原文**——此前存历史前先剥离，结果是历史里的 assistant 消息永远不带标签，模型从第二轮起照抄自己上一条的形态、不再输出任何标签（few-shot 漂移压过 system 指令），表现为「情绪立绘只在每轮对话的第一句变化，之后全是默认状态」。2026-09-04 用真实 API 三轮对照实测：历史剥标签 → 微笑/无/无，历史留标签 → 微笑/失落/微笑。代价是**每条本地展示路径都必须自己剥**：Toast、打字、md 记录、UDP 广播。其中两条流式路径不能逐分片跑正则——`<state:微笑>` 会被切成 `<sta` + `te:微笑>`，打字模式下漏一个就是真的敲进用户正在编辑的文档，必须用 `StateTagFilter`（只暂存可能补成标签的尾巴）。**新增输出模式时漏剥不会报错，只会把标签直接显示/打出去。**
 
+23. **LLM 后端切换（DeepSeek 直连 / CPA 局域网网关）**：四个 toast 角色（助理、雾切响子、新岛真、翻译）的 API 段改为角色文件里一行 `backend = 'deepseek' | 'cpa'`，其余取自 `LLM/backends.py` 的 `resolve(backend)`（返回 `provider`/`api_url`/`api_key`/`model`/`request_timeout` 五项的副本）。`default`（typing 角色）不在范围内，逐字未动。六条约束：
+
+    ① **`backends.py` 的文件名必须排在所有角色文件之前**。`load_all_roles` 对 `sorted(glob('LLM/*.py'))` 逐个 `del sys.modules` 再 import，共享模块只有先被重新执行，角色随后 import 到的才是新值。`b` 排在 `default.py`/`secrets.py` 与四个中文角色名之前，这一点成立；改成 `zz_backends.py` 之类会让热切换静默失效（读到上一轮的旧值，不报错）。`tools/test_backends.py` 有一条断言钉住它。
+
+    ② **模型选择只在 `backends.py`（`CPA_MODEL`），后端选择只在角色文件**。分层的目的是角色文件里只剩一个旋钮；换模型改一处、四个走 cpa 的角色一起变，改后端则是每个角色各自决定。两处都是 `LLM/` 下的 .py，存盘即触发 watcher 重载，都不必重启客户端。
+
+    ③ **`resolve()` 对未知名字回退到 DeepSeek 并打印告警，不抛异常**。角色文件在 import 期抛异常会被 `RoleLoader.load_all_roles` 的 `except Exception` 接住、该角色**整个从 `roles_registry` 消失**，而 errors 列表没有任何调用方在看（`llm_handler.reload_roles` 直接丢弃返回值），现象只剩「这个角色不响应了」。
+
+    ④ **`request_timeout` 也由 backend 给出，两套统一 60s**。provider 兜底的 2s 两边都不够——DeepSeek 侧检索期数秒无分片（约定 15②），CPA 侧实测中位 3~7s、带图约 20s。**这让翻译角色在 DeepSeek 下的超时由 2s 变成 60s**，是本次改造唯一一处 DeepSeek 侧的行为偏差（它原本没写这一行）。
+
+    ⑤ **CPA 侧 `provider` 写 `'cpa'` 而不是 `'gemini'`**：同一个网关还代理 kimi、glm、grok 等十几个模型，换 `CPA_MODEL` 时这个名字不用跟着改。它只影响日志/错误信息里的名字与 `APIConfig` 的兜底查表，而④恒定给出 `request_timeout > 0`，那张兜底超时表永远走不到。
+
+    ⑥ **切换只是配置，`core/` 一行未改**：没有重试、没有自动回退、没有多候选探测。网关只在局域网内可达，人不在那个网里时走 cpa 的角色一律请求失败；上游抖动（`oauth2.googleapis.com/token` EOF、`auth_unavailable` 503 等）同样直接失败。要切回去就改角色文件里那一行。
+
 ---
 
 ## 开发环境与验证
@@ -493,11 +510,15 @@ Electron 应用连接到 ws://127.0.0.1:6019
 | 修改识别结果处理 | `output/result_processor.py` |
 | 修改文本输出方式 | `output/text_output.py` |
 | 添加 LLM 角色 | 在 `LLM/` 目录新建 .py 文件 |
+| 把某个角色在 DeepSeek / CPA 网关之间切换 | 该角色文件里的 `backend = 'deepseek'` 或 `'cpa'`（存盘即热生效，见约定 23） |
+| 换 CPA 网关用哪个模型 / 改网关地址 | `LLM/backends.py` 的 `CPA_MODEL` / `CPA_URL`（改一处，所有走 cpa 的角色一起变） |
+| 新增一套后端 | `LLM/backends.py` 的 `PROFILES`，密钥加进 `LLM/secrets.py`（未被 git 跟踪） |
 | 修改 LLM 处理逻辑 | `llm/llm_handler.py`, `llm/llm_processor.py` |
 | 开关角色联网搜索 | 角色文件的 `enable_web_search`/`enable_datetime`/`request_timeout`/`api_url`；实现在 `llm/llm_processor.py` 的 `_build_responses_params` 与 `_process_responses_stream` |
 | 修改热词匹配 | `hotword/hot_phoneme.py` |
 | 修改 UI 悬浮提示 | `core/client/ui/recording_indicator.py` |
 | 修改 Toast 弹窗 | `core/ui/toast.py`, `core/ui/toast_manager.py`, `core/ui/toast_base.py`, `core/ui/toast_text.py`, `core/ui/toast_label.py` |
+| 调整 Toast 顶部留白 / 拖动区 | `core/ui/toast_constants.py` 的 `DEFAULT_PADDING_TOP`(LLM 白框) / `COMPACT_PADDING_TOP`(普通 toast)；分岔在 `toast_base.py` 的 `padding_top`，验证跑 `tools/test_toast_padding.py`（约定 17） |
 | 修改系统托盘 | `core/ui/tray.py`, `core/client/manager/tray_manager.py` |
 | 修改 ASR 引擎 | `core/server/engines/` 对应子目录 |
 | 修改识别流水线 | `core/server/worker/pipeline.py` |

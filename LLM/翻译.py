@@ -1,17 +1,19 @@
 """
 翻译助手角色
 """
-from LLM.secrets import DEEPSEEK_API_KEY
+from LLM.backends import resolve
 
 # ==================== 基本信息 ====================
 name = '翻译'                           # 角色名称（留空表示默认）
 enabled = True                           # 是否启用此角色
 
 # ==================== API 配置 ====================
-provider = 'deepseek'                               # API 提供商：'ollama', 'openai', 'deepseek', 'moonshot', 'zhipu', 'claude', 'gemini'
-api_url = 'https://api.deepseek.com'                # 联网搜索走 Responses API，官方示例的 base_url 不带 /v1，而 provider 默认值是 .../v1，故此处显式指定
-api_key = DEEPSEEK_API_KEY                          # API Key
-model = 'deepseek-v4-flash-vision-exp'              # 模型名称。视觉模型，联网搜索（Responses API + web_search）已实测可与图片共存
+backend = 'deepseek'                                # 后端：'deepseek'（直连）或 'cpa'（局域网网关）。模型 / 地址 / 超时见 LLM/backends.py
+backend_config = resolve(backend)
+provider = backend_config['provider']               # API 提供商
+api_url = backend_config['api_url']                 # API 地址
+api_key = backend_config['api_key']                 # API Key
+model = backend_config['model']                     # 模型名称
 enable_vision = True                                # 接收 vision_capture_key 挂载的图片。注意本项不会校验 model 是否真支持视觉，写错了服务端会返 400
 
 # ==================== 上下文管理 ====================
@@ -23,6 +25,7 @@ enable_thinking = False                 # 是否启用思考（仅 Ollama）
 enable_history = False                  # 是否保留对话历史
 enable_read_selection = True            # 是否启用获取选中文字（通过 Ctrl+C）
 selection_max_length = 2048             # 选中文字最大长度
+request_timeout = backend_config['request_timeout'] # 单次请求超时。两套后端都远超 provider 默认的 2s：DeepSeek 检索期数秒无输出，CPA 中位 3~7s、带图约 20s
 
 # ==================== 输出配置 ====================
 output_mode = 'toast'                   # 输出方式：'typing' 直接打字, 'toast' 浮动窗口
@@ -34,7 +37,7 @@ toast_min_width_ratio = 0.3             # 最小宽度比例回退值（像素�
 toast_max_width_ratio = 0.5             # 最大宽度比例回退值（像素值无效时使用）
 toast_initial_height = 0                # 窗口初始高度（0 表示自动计算）
 toast_font_family = 'Consolas'
-toast_font_size = 16                     # 字体大小
+toast_font_size = 18                     # 字体大小
 toast_font_color = 'black'              # 字体颜色
 toast_bg_color = '#f7fbff'              # 背景颜色
 toast_duration = 3000                   # 显示时长（毫秒）

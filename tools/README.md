@@ -26,7 +26,21 @@ python tools/run_tests.py
 | `test_vision.py` | 视觉输入：剪贴板解码、DIB→BMP、待挂图片状态机、时效判定、带图消息构建 |
 | `test_state_tags.py` | `StateTagFilter`。重点是**穷举分片切割位置**——标签被切在任意一处都必须被完整吃掉 |
 | `test_history_payload.py` | 对话历史的上行载荷：不带 `timestamp`、不交出活引用、assistant 保留状态标签、旧图降级 |
+| `test_backends.py` | LLM 后端切换（约定 23）：两套 profile 取值、未知名字回退、`backends.py` 必须排在角色文件之前（热切换的前提）、四个角色在 `backend='deepseek'` 下与改造前逐字相同 |
+| `test_toast_padding.py` | Toast 顶部留白分岔（约定 17）：LLM 白框 40px 拖动区 / 普通 toast 15px、画布坐标与窗口高度、`MIN_WINDOW_HEIGHT` 兜底未触发、判别器与 `close_llm_windows` 同源。**真构造 Tk 窗口、会闪窗**，不进流水线，见下 |
 | `probe_llm_live.py` | **真发请求、消耗额度**，单独跑。见下 |
+
+## 为什么 test_toast_padding.py 不进流水线
+
+它是唯一一个真的建 `tk.Tk()` 和 Toplevel 的测试——留白只有落到画布坐标和窗口
+几何上才算数，桩不出来。代价是需要桌面会话、屏幕上会闪几个无边框窗口，而
+`run_tests.py` 要能在没有桌面的环境里跑完，所以单列：
+
+```
+python tools/test_toast_padding.py
+```
+
+改完 `core/ui/toast_*.py` 手动跑一次。它不联网、不花额度。
 
 ## 为什么需要 probe_llm_live.py
 

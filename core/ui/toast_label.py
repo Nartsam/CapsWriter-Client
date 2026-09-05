@@ -20,7 +20,6 @@ from .toast_constants import (
     DEFAULT_MIN_WIDTH_RATIO,
     DEFAULT_MAX_WIDTH_RATIO,
     MIN_WINDOW_HEIGHT,
-    LABEL_HEIGHT_PADDING,
 )
 from .toast_logger import get_toast_logger
 
@@ -157,7 +156,7 @@ class ToastWindowLabel(ToastWindowBase):
             screen_height = self.window.winfo_screenheight()
 
             # 获取 Label 的理想高度
-            needed_h = self.label.winfo_reqheight() + LABEL_HEIGHT_PADDING
+            needed_h = self.label.winfo_reqheight() + self.height_padding
 
             # 如果设置了初始高度，使用较大值
             if self.initial_height > 0:
@@ -215,7 +214,7 @@ class ToastWindowLabel(ToastWindowBase):
                     self.window.update_idletasks()
 
                 # 计算窗口需要的新高度
-                needed_h = self.label.winfo_reqheight() + LABEL_HEIGHT_PADDING
+                needed_h = self.label.winfo_reqheight() + self.height_padding
                 current_h = self.window.winfo_height()
                 current_w = self.window.winfo_width()
 

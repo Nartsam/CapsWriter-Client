@@ -11,8 +11,11 @@ import tkinter as tk
 
 DEFAULT_FONT_FAMILY = 'Microsoft YaHei UI'
 DEFAULT_PADDING_X = 20
-DEFAULT_PADDING_TOP = 40    # 顶部纯空白拖动区高度；正文下移这么多，窗口高度也相应叠加
+DEFAULT_PADDING_TOP = 40    # 顶部纯空白拖动区高度；正文下移这么多，窗口高度也相应叠加。
+                            # 只给 LLM 角色白色对话框用：它常驻、可拖拽，又要允许选中正文，
+                            # 需要一条不会误触正文的抓手
 DEFAULT_PADDING_BOTTOM = 15
+COMPACT_PADDING_TOP = DEFAULT_PADDING_BOTTOM  # 普通 toast（托盘/错误）的顶部留白，与底部对齐
 
 # ============================================================
 # 窗口尺寸常量
@@ -23,11 +26,10 @@ MIN_WINDOW_HEIGHT = 60  # 最小窗口高度
 # Text 组件专用
 STREAMING_TEXT_HEIGHT = 5  # 流式模式预设行数，避免初始窗口过大
 NON_STREAMING_TEXT_HEIGHT = 1  # 非流式模式初始行数
-HEIGHT_PADDING = DEFAULT_PADDING_TOP + DEFAULT_PADDING_BOTTOM
 TEXT_WRAP_MODE = tk.CHAR  # Text 组件的换行模式（CHAR=按字符换行，WORD=按单词换行）
 
-# Label 组件专用
-LABEL_HEIGHT_PADDING = DEFAULT_PADDING_TOP + DEFAULT_PADDING_BOTTOM
+# 上下留白之和原本是这里的两个模块常量（HEIGHT_PADDING / LABEL_HEIGHT_PADDING）。
+# 顶部留白改为按窗口种类取值后，它们降成了 ToastWindowBase.height_padding 实例属性
 
 # Markdown 渲染专用
 MARKDOWN_MIN_HEIGHT = 50  # Markdown 窗口最小高度

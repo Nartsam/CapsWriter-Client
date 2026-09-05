@@ -19,7 +19,6 @@ from .toast_constants import (
     MIN_WINDOW_HEIGHT,
     STREAMING_TEXT_HEIGHT,
     NON_STREAMING_TEXT_HEIGHT,
-    HEIGHT_PADDING,
     TEXT_WRAP_MODE,
 )
 from .toast_logger import get_toast_logger
@@ -177,7 +176,7 @@ class ToastWindowText(ToastWindowBase):
             current_lines = result[0] if result else 1
 
             # 精确计算高度：行数 * 行高 + 上下 Padding
-            needed_h = (current_lines * self.line_height) + HEIGHT_PADDING
+            needed_h = (current_lines * self.line_height) + self.height_padding
 
             # 如果设置了初始高度，使用较大值
             if self.initial_height > 0:
@@ -249,7 +248,7 @@ class ToastWindowText(ToastWindowBase):
                 # 计算需要的窗口高度
                 result = self.text_area.count('1.0', 'end', 'displaylines')
                 current_lines = result[0] if result else 1
-                needed_h = (current_lines * self.line_height) + HEIGHT_PADDING
+                needed_h = (current_lines * self.line_height) + self.height_padding
                 current_h = self.window.winfo_height()
                 current_w = self.window.winfo_width()
 
