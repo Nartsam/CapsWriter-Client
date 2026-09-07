@@ -19,9 +19,6 @@ from LLM.secrets import CPA_API_KEY, DEEPSEEK_API_KEY
 # 改这一行即可换模型，存盘立即生效，不必重启客户端。
 # 网关上可用的 Gemini 有四个，分属两条不同上游：
 #   'gemini-3.8-flash'        / 'gemini-3.7-flash'          → antigravity
-#   'vertex/gemini-3.8-flash' / 'vertex/gemini-3.7-flash'   → Google Vertex
-# 完整清单见 GET http://192.168.5.8:8317/v1/models（还挂着 kimi-k3、glm-5.3-flash、
-# grok-4.6 等十几个非 Gemini 模型）
 CPA_MODEL = 'gemini-3.8-flash'
 
 # 只有局域网内可达。人不在这个网里时，走 cpa 的角色一律请求失败，**不会自动回退**

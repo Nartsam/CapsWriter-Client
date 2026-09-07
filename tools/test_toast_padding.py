@@ -14,6 +14,7 @@ core/ui/toast_*.py 后手动跑一次。
 from __future__ import annotations
 
 import importlib
+import ctypes
 import os
 import sys
 import types
@@ -78,6 +79,10 @@ def install_stubs():
 
 install_stubs()
 
+# 在加载 toast_base 的进程 DPI 声明之前设置，避免文字度量被系统虚拟化。
+if os.name == 'nt':
+    ctypes.windll.shcore.SetProcessDpiAwareness(2)
+
 import tkinter as tk  # noqa: E402
 
 from core.ui.toast_constants import (  # noqa: E402
@@ -91,6 +96,7 @@ from core.ui.toast_constants import (  # noqa: E402
 
 ToastWindowText = importlib.import_module('core.ui.toast_text').ToastWindowText
 ToastWindowLabel = importlib.import_module('core.ui.toast_label').ToastWindowLabel
+ToastWindowReminder = importlib.import_module('core.ui.toast_reminder').ToastWindowReminder
 
 
 def geometry_size(window):
@@ -121,7 +127,7 @@ def make(cls, smart, text='测试文本', **kw):
         root, text,
         font_size=kw.pop('font_size', 14),
         font_family='Microsoft YaHei UI',
-        bg='#f7fbff', fg='black',
+        bg=kw.pop('bg', '#f7fbff'), fg=kw.pop('fg', 'black'),
         duration=kw.pop('duration', 60000),        # 不会触发：本测试从不进 mainloop
         initial_height=kw.pop('initial_height', 0),
         streaming=kw.pop('streaming', False),
@@ -135,6 +141,47 @@ def make(cls, smart, text='测试文本', **kw):
 
 
 try:
+    print('[提醒状态窗口]')
+    reminder_style = importlib.import_module('core.ui.toast_reminder')
+    reminder = make(ToastWindowReminder, False,
+                    text='提醒已设置：今天 12:39:56「助理」会提醒你站起来活动一下',
+                    font_size=reminder_style.REMINDER_FONT_SIZE,
+                    bg=reminder_style.REMINDER_BG, fg=reminder_style.REMINDER_FG,
+                    window_alpha=1.0, corner_radius=12)
+    x, y = reminder.window.winfo_x(), reminder.window.winfo_y()
+    width, height = geometry_size(reminder.window)
+    check('提醒窗口位于主屏底部', y + height == reminder.window.winfo_screenheight() - 80)
+    check('提醒窗口水平居中', x == (reminder.window.winfo_screenwidth() - width) // 2)
+    check('提醒专用字号为18', reminder.my_font.cget('size') == 18)
+    check('提醒为浅暖黄底深色字', reminder.bg == '#FFF4D6' and reminder.fg == '#332B1A')
+    check('提醒不透明', float(reminder.window.attributes('-alpha')) == 1.0)
+    check('提醒独立最大宽度', reminder.max_width == min(1600, int(root.winfo_screenwidth() * 0.8)))
+    check('小屏宽度不越界', ToastWindowReminder._resolve_width_range(320, 800, .2, .5, 400) == (320, 320))
+    required_width = reminder._measure_text_width(reminder.full_text, reminder.my_font)
+    if required_width <= reminder.max_width:
+        line = reminder.text_area.dlineinfo('1.0')
+        last = reminder.text_area.dlineinfo('end-2c')
+        check('示例确认文案完整显示一行', line is not None and last is not None and line[1] == last[1],
+              'width=%s required=%s first=%s last=%s' % (width, required_width, line, last))
+    event = types.SimpleNamespace(x_root=x + 50, y_root=y + 50, delta=120)
+    timer = reminder.timer_id
+    reminder._on_mouse_enter(event)
+    reminder._on_mouse_leave(event)
+    reminder._on_drag_start(event)
+    event.x_root += 100
+    reminder._on_drag_motion(event)
+    reminder._on_mouse_wheel(event)
+    reminder.window.update_idletasks()
+    check('提醒窗口悬停不重置计时器', reminder.timer_id == timer)
+    check('拖动和滚轮不移动提醒窗口', (reminder.window.winfo_x(), reminder.window.winfo_y()) == (x, y))
+    check('提醒窗口不转为常驻', not reminder._never_auto_close and not reminder.pause)
+    # 真实 Tk 定时器验证：悬停后仍按原时长销毁，不依赖手工调用 destroy。
+    expiring = make(ToastWindowReminder, False, duration=120)
+    expiring._on_mouse_enter(event)
+    root.after(180, root.quit)
+    root.mainloop()
+    check('提醒窗口悬停期间到期销毁', not expiring.window.winfo_exists())
+
     # ================================================================
     # 1. 两类窗口的留白取值
     # ================================================================

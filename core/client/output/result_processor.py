@@ -196,7 +196,9 @@ class ResultProcessor:
             logger.info(f"图片已随本句上传: {pending_image.width}×{pending_image.height}")
             return
 
-        if not Config.llm_enabled or not llm_result or not llm_result.processed:
+        if llm_result and getattr(llm_result, 'reminder_handled', False):
+            reason = '提醒任务不使用图片'
+        elif not Config.llm_enabled or not llm_result or not llm_result.processed:
             reason = '本句未触发 LLM 角色'
         else:
             reason = f'角色「{llm_result.role_name}」未开启视觉'
@@ -383,11 +385,6 @@ class ResultProcessor:
             paste = True
             logger.debug(f"检测到兼容性应用: {process_name}，使用粘贴模式")
 
-        # 自动回车检测
-        for app, delay in Config.enter_apps:
-            if app.lower() == process_name:
-                asyncio.create_task(_auto_enter(delay))
-
         # 连续对话路由：由说这句话时的快照决定，而不是此刻的全局状态。两者之间隔着
         # 一整个服务端往返，期间用户完全可能已经开始说下一句或切换了状态
         snapshot = self.state.pop_continuous_snapshot(message.task_id)
@@ -405,7 +402,8 @@ class ResultProcessor:
                 paste=paste,
                 matched_hotwords=potential_hotwords,  # 传递上下文热词给 LLM
                 forced_role=forced_role,
-                image_data=pending_image.data_url if pending_image else None
+                image_data=pending_image.data_url if pending_image else None,
+                reminder_anchor=message.time_start + message.duration
             )
         else:
             await self.output.output(text, paste=paste)
@@ -414,6 +412,13 @@ class ResultProcessor:
 
         # 文本已经完成输出，此时关闭悬浮提示。
         hide_recording_indicator()
+
+        reminder_handled = bool(llm_result and getattr(llm_result, 'reminder_handled', False))
+        # 提醒只有通知，不应向用户当前文档注入一个回车。
+        if not reminder_handled:
+            for app, delay in Config.enter_apps:
+                if app.lower() == process_name:
+                    asyncio.create_task(_auto_enter(delay))
 
         # 保存录音与写入 md 文件
         file_audio = None
@@ -429,7 +434,9 @@ class ResultProcessor:
             self.diary.write(text, message.time_start, file_audio)
 
         # LLM 结果显示和保存
-        if Config.llm_enabled and llm_result and llm_result.processed:
+        if reminder_handled:
+            console.print(f'    {llm_result.result}', markup=False)
+        elif Config.llm_enabled and llm_result and llm_result.processed:
             console.print(self._format_llm_result(llm_result))
             # md 是这段对话事后唯一可读的记录，图片本体不落盘，但「当时带了图」
             # 必须留痕，否则半年后回看会觉得模型答非所问

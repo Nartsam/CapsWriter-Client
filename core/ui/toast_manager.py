@@ -100,6 +100,7 @@ class ToastMessage:
     smart_duration: bool = False  # 智能时长模式（LLM 角色白色对话框）：时长随字数、
                                   # 悬停不顺延且到期后移开即关、拖拽后永不自动关闭；
                                   # 普通 toast 保持旧行为
+    reminder_status: bool = False  # 内部提醒通知，固定底部、固定时长、不可拖动
 
 
 # ============================================================
@@ -187,6 +188,9 @@ class ToastMessageManager:
 
                 # 根据 window_type 选择窗口类
                 WindowClass = ToastWindowLabel if msg.window_type == 'label' else ToastWindowText
+                if msg.reminder_status:
+                    from .toast_reminder import ToastWindowReminder
+                    WindowClass = ToastWindowReminder
 
                 toast_window = WindowClass(
                     self.root,

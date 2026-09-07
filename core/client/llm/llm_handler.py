@@ -37,6 +37,7 @@ class LLMResult:
     generation_time: float = 0.0   # 生成时间（秒，从第一个 token 开始）
     used_tools: List[str] = field(default_factory=list)  # 本次请求实际触发的服务端工具 ID
     image_used: bool = False       # 本次绑定的图片是否真的随请求上传了
+    reminder_handled: bool = False  # 独立提醒任务，不写角色对话归档、不广播输出
 
 
 # ======================================================================
@@ -224,7 +225,8 @@ class LLMHandler:
 
     async def process_and_output(self, text: str, paste: bool = None, matched_hotwords=None,
                                  forced_role: Optional[RoleConfig] = None,
-                                 image_data: Optional[str] = None) -> Optional[LLMResult]:
+                                 image_data: Optional[str] = None,
+                                 reminder_anchor: Optional[float] = None) -> Optional[LLMResult]:
         """
         统一入口：处理输入文本并根据配置执行输出（打字或弹屏）
 
@@ -235,6 +237,7 @@ class LLMHandler:
             forced_role: 连续对话指定的粘滞角色。给出时跳过角色前缀检测，整句原样发给它
             image_data: 本次录音绑定的图片（base64 data URL）。只有角色
                 enable_vision=True 时才真的带上，否则静默丢弃（见约定 21）
+            reminder_anchor: 录音结束时间戳；仅实时录音入口提供，用作提醒时间基准
         """
         import time
         from .llm_output_typing import handle_typing_mode, output_text
@@ -265,6 +268,19 @@ class LLMHandler:
             return LLMResult(result=text, role_name=None, processed=False, 
                                 token_count=0, polish_time=0, input_text=text)
 
+
+        # 只有录音入口提供 anchor，文件转录和默认角色不会创建提醒。
+        # 拦截在 Companion、选区读取和图片上传之前；none 才恢复原来的角色请求。
+        reminders = getattr(self.app, 'reminders', None)
+        if (reminders is not None and reminder_anchor is not None
+                and role_config.display_name
+                and role_config.display_name != RoleConfig.DEFAULT_ROLE_NAME):
+            message = await reminders.handle(role_config, content, reminder_anchor)
+            if message is not None:
+                return LLMResult(
+                    result=message, role_name=role_config.display_name, processed=True,
+                    token_count=0, polish_time=time.time() - start_time, input_text=content,
+                    reminder_handled=True)
 
         # 3. Companion 转发：连接 Electron 时，跳过本地 LLM，将清洗后的文本转发
         if self.app.companion.has_connections:
@@ -365,5 +381,3 @@ if __name__ == "__main__":
             handler.stop()
 
     asyncio.run(run_test_cases())
-
-

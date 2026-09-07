@@ -145,6 +145,16 @@ class ClientConfig:
                                                 # 最终角色通过 HTTP 自动获取，无需手工维护
     openmate_health_timeout = 0.5               # 探测 /health 的超时（秒），超时视为 OpenMate 不可用
 
+    # 一次性提醒：仅具名角色（含连续对话）可触发，待执行任务保存在 data/reminders.json。
+    reminder_enabled = True
+    reminder_implicit_date_max_hours = 6        # 未说日期的时刻，仅取未来最近一次且距录音结束不超过此值
+    reminder_min_lead_seconds = 15             # 解析完成时至少还剩多少秒
+    reminder_overdue_max_hours = 6             # 重启后补报多少小时内的过期提醒；更早的静默过期
+    reminder_max_pending = 50                  # 待执行提醒上限
+    reminder_request_timeout = 60             # 独立语义解析的总等待上限（秒）
+    reminder_status_duration = 6000            # 内部状态 Toast 的固定显示时长（毫秒）
+    reminder_status_font_size = 20             # 提醒内部通知专用字号（Tk 磅值），不跟随角色字号
+
 
 # 快捷键配置说明
 r"""
@@ -188,4 +198,3 @@ r"""
   {'key': 'f12', 'type': 'keyboard', 'suppress': True, 'hold_mode': True, 'enabled': True},
   {'key': 'x2', 'type': 'mouse', 'suppress': True, 'hold_mode': True, 'enabled': True},
 """
-

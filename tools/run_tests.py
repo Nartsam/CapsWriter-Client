@@ -27,7 +27,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 SKIP_DIRS = {'__pycache__', '.git', 'internal', 'logs', 'assets'}
 
 SUITES = ['test_vision.py', 'test_state_tags.py', 'test_history_payload.py',
-          'test_backends.py']
+          'test_backends.py', 'test_reminders.py']
 
 
 def syntax_check() -> int:
@@ -39,6 +39,8 @@ def syntax_check() -> int:
             if not name.endswith('.py'):
                 continue
             path = os.path.join(root, name)
+            if os.path.relpath(path, REPO).replace(os.sep, '/') == 'LLM/secrets.py':
+                continue  # 项目安全约定：验证工具同样不得读取凭证文件
             total += 1
             try:
                 ast.parse(io.open(path, encoding='utf-8-sig').read())

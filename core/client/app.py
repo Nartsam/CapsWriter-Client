@@ -32,6 +32,7 @@ from .companion import CompanionServer
 from .hotword.manager import HotwordManager
 from .llm.llm_handler import LLMHandler
 from .vision import VisionManager
+from .reminder.service import ReminderService
 from .output.text_output import TextOutput
 from .diary.diary_writer import DiaryWriter
 from core.tools.empty_working_set import empty_current_working_set
@@ -80,6 +81,7 @@ class CapsWriterClient:
         self.udp = UDPController(self.shortcut)
         self.companion = CompanionServer(self)
         self.vision = VisionManager(self)
+        self.reminders = ReminderService(self)
 
         # 内存清理
         empty_current_working_set()
@@ -98,6 +100,7 @@ class CapsWriterClient:
             pass
 
         # 1. 停止核心运行组件
+        self.reminders.stop()
         self.companion.stop()
         self.udp.stop()
         self.shortcut.stop()

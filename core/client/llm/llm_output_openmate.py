@@ -111,6 +111,11 @@ class OpenMateClient:
         return self._request(
             'GET', f'/v1/characters/{urllib.parse.quote(character_id, safe="")}/states')
 
+    def post_reminder_batch(self, items: list, request_id: str) -> dict:
+        """成功仅表示 OpenMate 已将整批接收入内存，不等待实际展示。"""
+        return self._request('POST', '/v1/message-batches', {
+            'protocolVersion': 1, 'requestId': request_id, 'items': items})
+
     def create_open_queue(self, segments: list, character: str = '', request_id: str = '') -> str:
         """创建 open 分段消息队列（先创建、后追加、最终封口），返回消息 ID"""
         body = {'protocolVersion': 1, 'segments': segments, 'open': True}

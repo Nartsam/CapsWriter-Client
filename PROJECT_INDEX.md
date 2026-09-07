@@ -352,6 +352,14 @@ AudioRecorder (recorder.py)
   → ResultHandler.save_results() → 保存 SRT/TXT/JSON
 ```
 
+### 一次性提醒（具名角色入口）
+
+`ResultProcessor` 提供录音结束时间 → `LLMHandler` 具名角色检查 → `reminder/analyzer.py` 宽松预筛与隔离的非流式语义分析 → `model.py` 本地校验 → `store.py` 原子保存 → `service.py` 调度 → `output.py` 内部状态 / 角色 Toast / OpenMate 批次。
+
+`fullscreen.py` 用 Win32 判断前台全屏、锁屏和屏保；`toast_reminder.py` 专用于底部固定超时且不可拖动的内部状态。`app.py` 持有服务，`MicRunner` 在资源就绪后恢复，退出时停止。配置、协议、恢复边界和验收清单见 [docs/REMINDERS.md](docs/REMINDERS.md)。
+
+内部提醒使用独立 18 号字体、浅暖黄底深色字与不透明圆角；宽度按正文测量，最大取 1600px 与主屏 80% 的较小值。`reminder_status_font_size` 单独配置，不影响 LLM 角色。创建分析提示词区分事项短语与自然提醒口吻，具体表达交由模型，展示层不拼接固定语气前缀。
+
 ### Companion 模式（Electron 伴侣应用连接时）
 ```
 Electron 应用连接到 ws://127.0.0.1:6019
@@ -366,7 +374,8 @@ Electron 应用连接到 ws://127.0.0.1:6019
 服务端返回识别结果
   → ResultProcessor → 热词替换 → LLMHandler.process_and_output()
   → RoleDetector 检测角色前缀（如 "助理 xxx"）
-  → 检测到 companion 已连接 → 跳过本地 LLM
+  → 具名角色先经过独立提醒入口（见约定 24）；已处理则结束
+  → 普通角色请求检测到 companion 已连接 → 跳过本地 LLM
   → CompanionServer.emit_user_message(content, role)
     → 广播 {"type": "user_message", "text": "xxx", "role": "助理"}
   → 返回 LLMResult（不执行打字/Toast 输出）
@@ -474,6 +483,8 @@ Electron 应用连接到 ws://127.0.0.1:6019
     ⑥ **切换只是配置，`core/` 一行未改**：没有重试、没有自动回退、没有多候选探测。网关只在局域网内可达，人不在那个网里时走 cpa 的角色一律请求失败；上游抖动（`oauth2.googleapis.com/token` EOF、`auth_unavailable` 503 等）同样直接失败。要切回去就改角色文件里那一行。
 
 ---
+
+24. **一次性提醒是独立任务**：仅具名角色/连续具名角色且录音入口有结束时间基准时参与，拦截位置早于 Companion。宽松预筛仅作减流，LLM 一次返回操作、时间语义、事项与角色文案，本地强校验时间与存储；`none` 才串行恢复普通角色流程，失败直接内部通知。提醒不读选区/历史/图片，不调用工具/搜索，不记角色历史/md，不更新角色输出状态或 UDP；原始听写归档保留，连续对话照常进入/刷新，本句图片成功失败都消费且注明「提醒任务不使用图片」。处理完成后仅普通任务安排自动回车，避免提醒向前台注入按键。内部状态独立底部固定超时窗口；到期文案复用普通角色窗口或 OpenMate 批次。Client 原子持久化待执行事件，OpenMate 接受后的队列暂不持久化。完整行为与崩溃边界见 [docs/REMINDERS.md](docs/REMINDERS.md)。
 
 ## 开发环境与验证
 

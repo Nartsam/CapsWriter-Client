@@ -17,7 +17,8 @@ class ClientPool:
     def __init__(self):
         self._clients: Dict[str, Any] = {}
 
-    def get_client(self, provider: str, api_url: str = '', api_key: str = '') -> Any:
+    def get_client(self, provider: str, api_url: str = '', api_key: str = '',
+                   request_timeout: float = 0) -> Any:
         """获取 LLM 客户端（带缓存）
 
         Args:
@@ -29,6 +30,8 @@ class ClientPool:
             OpenAI 或 ollama.Client 客户端实例
         """
         cache_key = f"{provider}_{api_url}"
+        if request_timeout > 0:
+            cache_key += f"_timeout_{request_timeout}"
 
         if cache_key not in self._clients:
             # 获取 api_url（优先使用配置的 URL，否则使用默认值）
@@ -39,6 +42,8 @@ class ClientPool:
 
             # 获取超时配置（根据 provider 选择，未配置则使用默认值）
             timeout = APIConfig.DEFAULT_TIMEOUTS.get(provider, APIConfig.DEFAULT_TIMEOUT)
+            if request_timeout > 0:
+                timeout = request_timeout
 
             # 创建客户端
             if provider == 'ollama':

@@ -5,6 +5,10 @@
 
 ## 待验证
 
+- [ ] 提醒状态新样式与自然口吻（2026-09-07）：浅暖黄底深色字、独立 18 号字体、不透明、最大宽度 1600px/主屏 80%；真实 Tk 已验证示例确认文案一行显示。提醒提示词要求自然口吻，保留角色差异，不机械拼接。重启 Client 后创建新提醒验收；已有提醒的文案快照不变。
+
+- [ ] 一次性提醒真实录音与双端联调（2026-09-07）：Client 已实现，离线规则/调度/路由及真实 Tk 冒烟通过；未调用真实 LLM，未完成实际录音、全屏游戏、重启恢复与 OpenMate TTS 联合验收。配置与六组步骤见 [REMINDERS.md](REMINDERS.md)。OpenMate 全屏置顶漏检修复已复查，相关 107 项测试通过，发行包尚未更新由用户确认不阻塞 Client 开发。
+
 - [ ] 回复分段实机验收：启动 OpenMate 后对「新岛真」或「雾切响子」说话，验证多行回复逐条展示、第一条不等全文、ESC 停止剩余段、OpenMate 不在时回退本地完整弹窗。（2026-07-17）
 
 - [ ] 视觉输入实机验收（桩模块单测 92 项通过，**一次真实录音都没跑过**；DeepSeek 侧的图片上传已用探针实测，剪贴板读取链路没有）：
@@ -57,6 +61,12 @@
 
 ## 已知状态
 
+- **角色字号间歇与配置观感不一致，原因未确定**（2026-09-07）：用户观察助理配置 18 在电脑重启后偶尔看起来像 20 或更大；改为 16 重启，再改回 18 重启后恢复。配置到 Text/Markdown 均直接传递同一字号；当前运行进程 DPI awareness=1 符合预期。独立双 Tk 探针表明不同线程的 scaling 不互相覆盖，未复现线程启动顺序导致放大。18pt×固定 Tk scaling≈2 只解释正常尺寸，不能解释此次间歇变化。尚无异常时运行字体/缩放记录，不能判定为配置缓存、DPI 或字体替换问题；本轮未修改角色字号及 DPI 行为，后续建议记录加载值、font actual/metrics 与 scaling，比较异常/正常运行。
+
+- OpenMate 提醒检测剩余双屏边界（2026-09-07）：`shouldDeferReminderForFullscreen()` 已修复置顶全屏漏检，但仍使用全局 QUNS 状态独立阻塞队列，前台切到副屏非全屏文档时可能继续等待。Client 已去掉这种全局兜底；OpenMate 的精确改造要求见 [REMINDERS.md](REMINDERS.md#openmate-剩余改点2026-09-07-复查)，本次未修改外部项目。
+
+- 一次性提醒交付边界（2026-09-07）：Client 在窗口创建/远端接受后才删除持久化事件，期间崩溃可能重复。OpenMate 已接受队列暂不持久化，意外退出可能丢失未展示事件；按用户确认当前不处理恢复。网络超时后本地回退也可能与远端重复，详见 [REMINDERS.md](REMINDERS.md)。
+
 - **CPA 网关的 `web_search` 已补齐（2026-09-05 当天在小主机侧解决，实机验证通过）**。以下是修复前的症状记录，留着是因为它给出了一套可复用的判据——网关换版本或换上游时若再出现「闲聊正常、一问时效性问题就空回复」，照这个查最快：网关 `POST /v1/responses` 带 `tools:[{"type":"web_search"}]` 不报 400，普通提问也一切正常；但**当提问真的需要检索时**，整个流里只有 `response.output_item.added/done` 各一个、`item.type` 是 `reasoning`，**没有 message 项、没有一个 `output_text.delta`、也没有任何 `web_search_call` 事件**，而终局是干净的 `status: completed`（不是 `incomplete`、不是 `failed`），`usage` 显示 output_tokens 17、reasoning_tokens 120。客户端拿到的 `full_response` 是空串，走约定 18 的空回复路径。**客户端观测到的现象与 2026-08-12 那次「空回复」（任务 `49be29b3`）一模一样、走的也是同一条代码路径，但成因无关**：那次是 DeepSeek 直连，怀疑 `max_output_tokens` 被推理内容吃光（服务端侧至今未定论）；这次是工具调用被网关吞掉、回合直接结束。区别是这次可稳定复现：同一个提示词，问「列出三原色」正常出 delta，问「今天美元兑人民币汇率」必空。**判据**：日志里那行 `请求构成：N 条历史 + 本句，M 张图` 正常，但终端出现「模型没有返回任何正文」且截断原因是 `completed`——`completed` 而不是 `incomplete`，正是「工具调用被吞掉、回合直接结束」区别于「额度被推理吃光」的关键。当时按用户决定**没有做客户端特例**（没在 cpa 下关掉 `enable_web_search`），事后看这个选择省掉了一次回头删代码——特例若加了，现在网关能搜了反而要拆。（2026-09-05）
 
 - **CPA 网关的上游是间歇性不可用的，四种失败形态**（2026-09-05 实测）：累计约 30 发请求里挂了 10 发左右，错误各不相同——`Post "https://api.commandcode.ai/provider/v1/chat/completions": EOF`、`Post "https://oauth2.googleapis.com/token": EOF`、`Post "https://cloudcode-pa.googleapis.com/v1internal:generateContent": EOF`、以及 `503 auth_unavailable: no auth available (providers=vertex, ...)`（0.0s 秒拒，看起来像凭据被短时锁出）。**失败是成片的而不是均匀分布**：某个时刻三条路径（chat 非流 / chat 流 / responses 流）会同时全挂，几分钟后又全好。所以「某个模型比另一个稳」这种结论不要从小样本里读出来——同一轮 5 发的采样结果（`gemini-3.8-flash` 5/5、`vertex/gemini-3.7-flash` 5/5、`gemini-3.7-flash` 3/5、`vertex/gemini-3.8-flash` 1/5）很可能只是反映了采样时刻的上游状态。客户端侧按用户决定不做重试与回退。（2026-09-05）
@@ -100,7 +110,7 @@
 
 - ~~OpenMate 情绪立绘不切换~~（2026-07-16 验收发现，2026-07-17 已修复）：曾因 `openmate_character` 留空时按角色列表第一个取状态，注入了非当前角色（雾切响子）的状态 ID，标签全部失配回退默认立绘。OpenMate 侧新增 `GET /v1/presentation` 后，客户端改为留空时每次请求解析当前生效角色再取其状态，并把流固定到该角色，待实机复验。
 
-- Companion WebSocket 服务器（端口 6019）目前没有已知的对端应用：它在提交 38ea3a4（2026-06-14）随一批混杂改动引入，设计对端是一个 Electron 伴侣应用，但该应用不在本仓库、也未部署。注意 Companion 连接存在时优先级高于本地 LLM/OpenMate（角色文本直接转发、跳过本地处理）。OpenMate 走 HTTP 18760，与其无关。（2026-07-16）
+- Companion WebSocket 服务器（端口 6019）目前没有已知的对端应用：它在提交 38ea3a4（2026-06-14）随一批混杂改动引入，设计对端是一个 Electron 伴侣应用，但该应用不在本仓库、也未部署。普通角色请求在 Companion 连接存在时直接转发、跳过本地 LLM/OpenMate；2026-09-07 新增的独立提醒入口优先于此转发。OpenMate 走 HTTP 18760，与其无关。（2026-07-16；2026-09-07 更新）
 - 本 Client Release 含 `core/server/` 源码但不含 `config_server.py` 与 `start_server.exe`，服务端配置不在本目录修改。（2026-07-16）
   - 补充（2026-07-28）：**本目录内置的 `core/server/` 不能当作服务端行为的准确参照**，它是更新但没在跑的另一条分支（多 gpu_boost、`Task` 字段名为 `type`）；实际运行的是另一台机器上的 Linux 部署版（`Task` 字段名为 `source`，多 `runtime_status` 埋点，端口冲突抛异常而非等待回车，托盘惰性导入）。已比对确认：`core/protocol.py` 与实际部署逐字节一致，协议层可放心引用；识别、分段、音频缓冲与 session 生命周期的语义两边相同。需要精确核对服务端实现时，向用户索取当前部署的源码。
 
@@ -111,6 +121,8 @@
 - Tk 的 `<Destroy>` 事件在 Toplevel 的**任意子 widget** 被销毁时也会触发绑定到该 Toplevel 上的回调（`toast_manager._process_queue` 里 `toast_window.window.bind('<Destroy>', ...)`），并非只在 Toplevel 本身销毁时触发。Markdown 转换（`_switch_to_markdown` 销毁 text_area 换 HTMLLabel）会误触发它，导致已 finish 的窗口被误从 `active_windows` 移除——窗口还在显示，但 `update_toast`/`close_toast`/`close_llm_windows` 都遍历不到它（这是 2026-08-08「新窗口顶不掉旧窗口」的根因）。2026-08-08 已在回调里校验 `str(e.widget) == str(w.window)`（Tkinter widget 对象非单例，不能用 `is` 比较，必须比较路径字符串）。改 toast 相关代码时注意别再用裸 `<Destroy>` 绑定做清理。（2026-08-08）
 
 ## 决策记录
+
+- 一次性提醒采用隔离语义分析与普通请求串行衔接，接受预筛命中的普通请求额外一次调用；创建分析同时生成角色文案，到期零 LLM 调用。Client 保留持久化，OpenMate 已接受队列暂不持久化；明确不支持周期、修改/改期、批量操作。notts 前缀自带中文逗号，只有本地延迟角色窗口加角色名；OpenMate 只发送创建时显式 character，留空就跟随当前角色。完整约定汇总见 [REMINDERS.md](REMINDERS.md)。（2026-09-07）
 
 - Toast 顶部留白复用 `smart_duration` 做判别，而不是给 `ToastMessage` 加一个独立字段：`close_llm_windows` 早就拿 `pause_and_resume` 当「这是 LLM 角色白框」用了，`toast_constants.py` 的注释也写着「仅 LLM 角色白色对话框」——这条线是既成事实，再加一个平行字段等于同一个概念有两个开关，将来必然对不齐。代价是语义上「智能时长」和「顶部拖动区」被绑在了一起：真出现一个需要智能时长但不要拖动区的窗口时，得先把这个标志拆成两个。独立字段方案要穿过 `ToastMessage` → manager → 基类 → text/label 两个子类的完整签名和 docstring，约 10 个改点，换来的只是提前应付一个还不存在的窗口种类。（2026-09-05）
 - 普通 toast 的顶部留白取 15px 与底部对齐，而不是 0：0 并不能真的把空白去掉。单行普通 toast 的高度是 `行高 + 上下留白`，实测行高 36px（Tk scaling=2 下的 14pt 雅黑），顶部取 0 就是 51px，撞上 `MIN_WINDOW_HEIGHT`(60px) 兜底，省下的 9px 原样跑到文字下方——白改还更难看。要真取 0 就得把 `MIN_WINDOW_HEIGHT` 也降成实例属性，多改一处常量去换一个更贴顶的观感，不值。取 15 时算出 66px，兜底不生效，行为可预测。（2026-09-05）
@@ -163,6 +175,10 @@
 - 本地定制的变更记录写本文件，不写 docs/CHANGELOG.md：后者是上游随版本发布的文件，混入本地条目会在升级覆盖时冲突。（2026-07-16）
 
 ## 本地定制变更（相对上游 Release）
+
+- 2026-09-07：按实机反馈为提醒内部状态设计独立样式，新增 `reminder_status_font_size`；放宽专用窗口宽度、浅暖黄色配色和不透明圆角，保留底部位置/固定时长/禁止拖动。独立提醒提示词补自然口吻要求，不改变时间解析、确认文案、角色提示词或既有提醒。离线请求样式/文案透传与真实 Tk 布局测试已补充。
+
+- 2026-09-07：实现独立一次性提醒。新增 `core/client/reminder/`（模型、语义分析、原子存储、Win32 全屏检查、调度、输出），接入录音结束时间、具名角色路由、图片消费与连续对话收尾；内部通知使用 `ToastWindowReminder`，运行期积压本地合并、OpenMate 分批交付。新增七项 ClientConfig 配置和 `tools/test_reminders.py`，扩展真实 Tk 冒烟；验证脚本跳过凭证文件。暂未人工语音验收，已知崩溃边界和配置说明见 [REMINDERS.md](REMINDERS.md)。
 
 - 2026-09-05：角色 Toast 默认字号 16 → 18（`RoleConfig.toast_font_size` 的默认值与四个角色文件各自写死的值一起改，两处都改是因为角色文件里的显式值会盖过默认值）。纯观感调整，不影响任何布局计算——窗口高度按 `行数 × 行高 + height_padding` 算，行高本来就跟着字号走。
 

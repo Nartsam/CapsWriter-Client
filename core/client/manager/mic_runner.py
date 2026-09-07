@@ -66,6 +66,7 @@ class MicRunner:
 
         from ..output import ResultProcessor
         self.processor = ResultProcessor(self.app)
+        # 软件资源就绪后恢复提醒；不依赖 ASR 服务是否已连接。
+        await self.app.reminders.start()
         await self.processor.start()
             
-
