@@ -145,7 +145,7 @@ class ClientConfig:
                                                 # 最终角色通过 HTTP 自动获取，无需手工维护
     openmate_health_timeout = 0.5               # 探测 /health 的超时（秒），超时视为 OpenMate 不可用
 
-    # 一次性提醒：仅具名角色（含连续对话）可触发，待执行任务保存在 data/reminders.json。
+    # 一次性提醒：仅具名角色（含连续对话）可触发，待执行任务保存在 logs/reminders.json。
     reminder_enabled = True
     reminder_implicit_date_max_hours = 6        # 未说日期的时刻，仅取未来最近一次且距录音结束不超过此值
     reminder_min_lead_seconds = 15             # 解析完成时至少还剩多少秒

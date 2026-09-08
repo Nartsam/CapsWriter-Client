@@ -15,8 +15,14 @@ class ReminderStore:
         self.failed = False
 
     def load(self):
+        self.failed = False
         if not self.path.exists():
-            return
+            try:
+                self.replace([])
+            except Exception:
+                self.failed = True
+                raise
+            return 'created'
         try:
             if self.path.stat().st_size > 4 * 1024 * 1024:
                 raise ValueError('提醒文件超过大小限制')
@@ -43,10 +49,16 @@ class ReminderStore:
                 ids.add(item.id)
                 items.append(item)
             self.items = items
+            return 'loaded'
         except Exception:
-            # 不用空列表覆盖损坏或暂时不可读的用户数据，保留原文件供恢复。
-            self.failed = True
-            raise
+            # 启动时必须落到一个可继续使用的完整快照；无效内容按空队列重建。
+            self.items = []
+            try:
+                self.replace([])
+            except Exception:
+                self.failed = True
+                raise
+            return 'reset'
 
     def replace(self, items):
         if self.failed:

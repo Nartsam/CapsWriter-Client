@@ -24,7 +24,7 @@ def setting(name, default, low=0.01, high=1000000):
 class ReminderService:
     def __init__(self, app):
         self.app = app
-        self.store = ReminderStore(app.base_dir / 'data' / 'reminders.json')
+        self.store = ReminderStore(app.base_dir / 'logs' / 'reminders.json')
         self.task = None
         self.wakeup = None
         self.stopped = True
@@ -41,7 +41,11 @@ class ReminderService:
         self.stopped = False
         self.wakeup = asyncio.Event()
         try:
-            self.store.load()
+            load_result = self.store.load()
+            if load_result == 'created':
+                logger.info('未找到提醒存储文件，已创建空队列：logs/reminders.json')
+            elif load_result == 'reset':
+                logger.warning('提醒存储文件无效，已重建为空队列：logs/reminders.json')
             now = time.time()
             grace = setting('reminder_overdue_max_hours', 6) * 3600
             retained = []
@@ -55,9 +59,9 @@ class ReminderService:
             if len(retained) != len(self.store.items):
                 self.store.replace(retained)
         except Exception:
-            logger.warning('提醒存储加载失败，保留原文件并禁用本次提醒服务', exc_info=True)
+            logger.warning('提醒存储初始化失败，禁用本次提醒服务', exc_info=True)
             self.stopped = True
-            await output.show_status('提醒不可用：无法读取提醒存储文件，请检查 data/reminders.json。')
+            await output.show_status('提醒不可用：无法初始化提醒存储文件，请检查 logs/reminders.json。')
             return
         self.task = asyncio.create_task(self._run())
 

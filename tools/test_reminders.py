@@ -121,14 +121,24 @@ class TimeTests(unittest.TestCase):
 
 
 class StoreTests(unittest.TestCase):
-    def test_unrepresentable_timestamp_is_rejected(self):
+    def test_unrepresentable_timestamp_is_reset(self):
         with tempfile.TemporaryDirectory(dir=ROOT / 'tools') as directory:
             store = store_module.ReminderStore(Path(directory) / 'reminders.json')
             item = model.Reminder('bad', 1e100, '喝水', '该喝水了。', '助理')
             store.replace([item])
-            with self.assertRaises((ValueError, OverflowError, OSError)):
-                store.load()
-            self.assertTrue(store.failed)
+            self.assertEqual(store.load(), 'reset')
+            self.assertFalse(store.failed)
+            self.assertEqual(store.items, [])
+            self.assertEqual(json.loads(store.path.read_text(encoding='utf-8')),
+                             {'version': 1, 'items': []})
+
+    def test_missing_file_is_created_as_empty_snapshot(self):
+        with tempfile.TemporaryDirectory(dir=ROOT / 'tools') as directory:
+            store = store_module.ReminderStore(Path(directory) / 'nested' / 'reminders.json')
+            self.assertEqual(store.load(), 'created')
+            self.assertEqual(store.items, [])
+            self.assertEqual(json.loads(store.path.read_text(encoding='utf-8')),
+                             {'version': 1, 'items': []})
 
     def test_roundtrip_and_failed_atomic_replace(self):
         with tempfile.TemporaryDirectory(dir=ROOT / 'tools') as directory:
@@ -147,16 +157,15 @@ class StoreTests(unittest.TestCase):
             self.assertEqual(store.path.read_bytes(), saved)
             self.assertFalse(store.path.with_name('reminders.json.tmp').exists())
 
-    def test_corrupt_file_never_overwritten(self):
+    def test_corrupt_file_is_rebuilt_as_empty_snapshot(self):
         with tempfile.TemporaryDirectory(dir=ROOT / 'tools') as directory:
             store = store_module.ReminderStore(Path(directory) / 'reminders.json')
             with store.path.open('w', encoding='utf-8') as stream:
                 stream.write('{broken')
-            with self.assertRaises(ValueError):
-                store.load()
-            with self.assertRaises(OSError):
-                store.replace([])
-            self.assertEqual(store.path.read_text(), '{broken')
+            self.assertEqual(store.load(), 'reset')
+            self.assertFalse(store.failed)
+            self.assertEqual(json.loads(store.path.read_text(encoding='utf-8')),
+                             {'version': 1, 'items': []})
 
 
 class ServiceTests(unittest.IsolatedAsyncioTestCase):
@@ -178,6 +187,9 @@ class ServiceTests(unittest.IsolatedAsyncioTestCase):
         self.probe.start()
         self.remote = patch.object(Config, 'openmate_enabled', False)
         self.remote.start()
+
+    async def test_store_is_located_under_logs(self):
+        self.assertEqual(self.service.store.path, Path(self.temp.name) / 'logs' / 'reminders.json')
 
     async def asyncTearDown(self):
         if self.service.task:
