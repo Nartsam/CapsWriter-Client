@@ -14,6 +14,10 @@ from .model import (ReminderError, PARSE_ERROR, SUBJECT_ERROR, clean_text,
 from .store import ReminderStore
 
 
+# 展示容忍值：恰好晚 10 秒仍算准时，不影响到期调度或全屏暂停。
+DELAY_PREFIX_SECONDS = 10
+
+
 def setting(name, default, low=0.01, high=1000000):
     value = getattr(Config, name, default)
     if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
@@ -83,6 +87,7 @@ class ReminderService:
             await output.show_status(message)
             return message
         timeout = setting('reminder_request_timeout', 60, high=600)
+        stage = '准备请求'
         try:
             # 此快照只包含事项与时刻，既不提供角色回复，也不引用历史对话。
             snapshot = [{'id': item.id, 'subject': item.subject, 'role': item.role_name,
@@ -95,6 +100,7 @@ class ReminderService:
                 except Exception:
                     logger.info('提醒创建时无法获取 OpenMate 状态，使用无状态提醒')
             allowed = [state['id'] for state in states if isinstance(state, dict) and isinstance(state.get('id'), str)]
+            stage = '模型调用与 JSON 解析'
             result = await asyncio.wait_for(to_thread(analyzer.analyze, self.app.llm, role, content,
                                                       snapshot, states, anchor, timeout), timeout=timeout)
             if self.stopped or self.app.llm.monitor.should_stop():
@@ -102,15 +108,27 @@ class ReminderService:
             operation = result.get('operation')
             if operation == 'none' and set(result) == {'operation'}:
                 return None
+            stage = '本地字段校验与保存'
             message = self._apply(result, role.display_name, character, allowed, anchor, time.time())
         except ReminderError as error:
             message = str(error)
+            logger.info('提醒诊断：role=%s provider=%s model=%s stage=%s reason=%s',
+                        role.display_name, role.provider, role.model, stage, message)
+            if stage == '本地字段校验与保存':
+                logger.info('提醒返回摘要：fields=%s time=%r state=%r allowed=%r',
+                            list(result)[:20], str(result.get('time'))[:300],
+                            str(result.get('openmate_state'))[:100], str(allowed)[:300])
+        except asyncio.TimeoutError:
+            logger.info('提醒诊断：stage=%s timeout=%s', stage, timeout)
+            message = '提醒未设置：模型请求超时，请重试。'
         except OSError:
-            logger.warning('提醒存储写入失败', exc_info=True)
+            logger.info('提醒存储写入失败', exc_info=True)
             message = '提醒操作失败：无法保存提醒数据，请检查磁盘和文件权限。'
-        except Exception:
-            logger.warning('提醒语义解析失败', exc_info=True)
-            message = PARSE_ERROR
+        except Exception as error:
+            # 不记录 SDK 异常正文，避免回显请求头或完整响应；类型与状态码足以定位调用故障。
+            logger.info('提醒诊断：stage=%s type=%s status=%s',
+                        stage, type(error).__name__, getattr(error, 'status_code', None))
+            message = f'提醒未设置：{stage}发生异常（{type(error).__name__}），请查看日志。'
         logger.info(message)
         await output.show_status(message)
         return message
@@ -161,7 +179,7 @@ class ReminderService:
             }
             if set(data) == {'operation', 'reason'} and reason in messages:
                 return messages[reason]
-        raise ReminderError(PARSE_ERROR)
+        raise ReminderError('提醒未设置：模型返回的操作字段组合或拒绝原因不合法。')
 
     def _complete(self, ids):
         remaining = [item for item in self.store.items if item.id not in ids]
@@ -248,7 +266,7 @@ class ReminderService:
                         return set()
                     now = time.time()
                     for item, body in zip(remote, bodies):
-                        if item.id in self.deferred or now - item.due_at >= 1:
+                        if now - item.due_at > DELAY_PREFIX_SECONDS:
                             body['text'] = f'<notts:{elapsed_label(now - item.due_at)}，>' + item.delivery_text
                     if self.stopped:
                         return set()
@@ -287,8 +305,10 @@ class ReminderService:
             now = time.time()
             lines = []
             for item in local:
-                delayed = item.id in self.deferred or now - item.due_at >= 1 or len(local) > 1
-                prefix = f'{elapsed_label(now - item.due_at)}，「{item.role_name}」：' if delayed else ''
+                delayed = now - item.due_at > DELAY_PREFIX_SECONDS
+                prefix = f'{elapsed_label(now - item.due_at)}，' if delayed else ''
+                if delayed or len(local) > 1:
+                    prefix += f'「{item.role_name}」：'
                 lines.append(prefix + item.delivery_text)
             same_role = len({item.role_name for item in local}) == 1
             role = roles[local[0].id] if same_role else None

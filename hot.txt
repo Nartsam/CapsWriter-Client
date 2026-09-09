@@ -33,7 +33,7 @@ Codex | CodeX
 ComfyUI | Coffee UI | 康菲 UI | Confi UI | Kanfi UI
 SillyTavern | C.L.Tarvin | City Tavern | Silly Tarvin | Silly Tarpit | Silly Turin | Clytaven | Silly Parents | City Harvest | C 里塔文 | Sally's parents | Celtarin | Celitaren | City Garden | Silly Karen | Silly Carbon | C-Litavern
 雾切响子 | 勿切祥子 | 不切祥子 | 不切小子
-雾切妹妹 | 胡切妹妹 | 吴切妹妹
+雾切妹妹 | 胡切妹妹 | 吴切妹妹 | 顾倩妹妹
 新岛真 | 心导针 | 青岛真 | 新岛针 | 洗澡针
 真学姐 | 甄学姐 | 甄姐姐
 灯姐 | 邓姐 | 戴梦姐 | 邓颖洁 | 登姐 | 邓杰 | 都姐 | 灯节 | 冬节 | 登雪

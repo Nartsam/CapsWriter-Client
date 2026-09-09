@@ -3,6 +3,7 @@ import json
 import re
 from datetime import datetime
 
+from core.client import logger
 from .model import ReminderError, PARSE_ERROR
 
 
@@ -54,18 +55,26 @@ def decode_result(text):
         result = {}
         for key, value in pairs:
             if key in result:
-                raise ValueError('重复 JSON 字段')
+                raise ReminderError('提醒未设置：模型返回了重复的 JSON 字段。')
             result[key] = value
         return result
     try:
-        if not isinstance(text, str) or len(text) > 16000:
-            raise ValueError('无效响应')
+        if not isinstance(text, str) or not text.strip():
+            raise ReminderError('提醒未设置：模型没有返回正文。')
+        if len(text) > 16000:
+            raise ReminderError('提醒未设置：模型返回正文超过长度限制。')
         result = json.loads(text, object_pairs_hook=unique)
-        if not isinstance(result, dict) or result.get('operation') not in {'none', 'create', 'list', 'cancel', 'reject'}:
-            raise ValueError('无效操作')
+        if not isinstance(result, dict):
+            raise ReminderError('提醒未设置：模型返回的 JSON 不是对象。')
+        if not isinstance(result.get('operation'), str) or result['operation'] not in {'none', 'create', 'list', 'cancel', 'reject'}:
+            raise ReminderError('提醒未设置：operation（提醒操作）缺失或不支持。')
         return result
-    except (ValueError, TypeError) as error:
-        raise ReminderError(PARSE_ERROR) from error
+    except json.JSONDecodeError as error:
+        # INFO 只进入文件；仅保留错误位置附近的小段，避免记录整篇回复。
+        snippet = text[max(0, error.pos - 80):error.pos + 160]
+        logger.info('提醒 JSON 解析失败：length=%s line=%s column=%s reason=%s snippet=%r',
+                    len(text), error.lineno, error.colno, error.msg, snippet)
+        raise ReminderError('提醒未设置：模型返回的 JSON 格式不合法。') from error
 
 
 def analyze(handler, role, content, pending, states, anchor, timeout):
@@ -95,13 +104,17 @@ def analyze(handler, role, content, pending, states, anchor, timeout):
             **params, instructions=SYSTEM, input=messages[1:], stream=False,
             max_output_tokens=max(role.max_tokens, 2048), timeout=timeout)
         if getattr(response, 'status', '') != 'completed':
-            raise ReminderError(PARSE_ERROR)
+            logger.info('提醒 Responses 未完成：status=%s details=%s',
+                        getattr(response, 'status', None), str(getattr(response, 'incomplete_details', None))[:300])
+            raise ReminderError('提醒未设置：模型响应未正常完成（可能被截断）。')
         text = response.output_text
     else:
         response = client.with_options(max_retries=0).chat.completions.create(
             **params, messages=messages, stream=False, max_tokens=max(role.max_tokens, 2048),
             timeout=timeout, response_format={'type': 'json_object'})
         if not response.choices or response.choices[0].finish_reason != 'stop':
-            raise ReminderError(PARSE_ERROR)
+            logger.info('提醒 Chat 未完成：finish_reason=%s',
+                        response.choices[0].finish_reason if response.choices else 'no choices')
+            raise ReminderError('提醒未设置：模型响应未正常完成（可能被截断）。')
         text = response.choices[0].message.content
     return decode_result(text)

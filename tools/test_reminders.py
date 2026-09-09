@@ -256,6 +256,36 @@ class ServiceTests(unittest.IsolatedAsyncioTestCase):
         out.show_role.assert_not_awaited()
         self.assertEqual(self.service.store.items, [])
 
+    async def test_delivery_prefix_tolerance_ignores_deferral_history(self):
+        for remote in (False, True):
+            for paused in (False, True):
+                for seconds in (1, 9.9, 10, 10.1, 11):
+                    with self.subTest(remote=remote, paused=paused, seconds=seconds):
+                        item = self.due(seconds_ago=seconds)
+                        if paused:
+                            self.service.deferred.add(item.id)
+                        client = Mock()
+                        client.is_available.return_value = True
+                        client.post_reminder_batch.return_value = {'id': 'batch', 'accepted': 1}
+                        out.openmate_client.return_value = client
+                        with patch.object(Config, 'openmate_enabled', remote):
+                            await self.service.tick()
+                        text = (client.post_reminder_batch.call_args.args[0][0]['text'] if remote
+                                else out.show_role.call_args.args[0])
+                        if seconds <= 10:
+                            self.assertEqual(text, item.delivery_text)
+                        else:
+                            self.assertIn(model.elapsed_label(seconds), text)
+                        self.assertEqual(self.service.store.items, [])
+
+    async def test_local_merge_labels_roles_but_times_only_late_items(self):
+        self.due(seconds_ago=10)
+        self.due('活动', 11)
+        await self.service.tick()
+        lines = out.show_role.call_args.args[0].split('\n\n')
+        self.assertIn('「助理」：该喝水了。', lines)
+        self.assertIn('11秒前，「助理」：该喝水了。', lines)
+
     async def test_failed_local_window_retains_pending(self):
         self.due()
         out.show_role.return_value = False
@@ -321,7 +351,8 @@ class ServiceTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_analyzer_failure_and_none_paths(self):
         with patch.object(analyzer, 'analyze', side_effect=ValueError('bad response')):
-            self.assertEqual(await self.service.handle(self.role, '十分钟后叫我', stamp()), model.PARSE_ERROR)
+            self.assertIn('模型调用与 JSON 解析发生异常（ValueError）',
+                          await self.service.handle(self.role, '十分钟后叫我', stamp()))
         self.assertEqual(self.service.store.items, [])
         with patch.object(analyzer, 'analyze', return_value={'operation': 'none'}):
             self.assertIsNone(await self.service.handle(self.role, '解释这句话里的十分钟', stamp()))
@@ -355,6 +386,31 @@ class StatusStyleTests(unittest.IsolatedAsyncioTestCase):
 
 
 class AnalyzerRequestTests(unittest.TestCase):
+    def test_parse_errors_are_specific_and_snippets_are_bounded(self):
+        for text, reason in [('', '没有返回正文'), ('[]', '不是对象'),
+                             ('{"operation":[]}', 'operation'),
+                             ('{"operation":"none","operation":"list"}', '重复')]:
+            with self.subTest(text=text), self.assertRaisesRegex(model.ReminderError, reason):
+                analyzer.decode_result(text)
+        with patch.object(analyzer, 'logger') as log:
+            with self.assertRaisesRegex(model.ReminderError, 'JSON 格式'):
+                analyzer.decode_result('x' * 1000)
+            log.warning.assert_not_called()
+            self.assertLessEqual(len(log.info.call_args.args[-1]), 240)
+
+    def test_field_errors_identify_the_field(self):
+        for field, value in [('time', {'kind': 'relative', 'offset_seconds': '300'}),
+                             ('openmate_state', 'unknown'), ('subject', ''), ('delivery_text', '<tag>')]:
+            data = payload()
+            data[field] = value
+            with self.subTest(field=field), self.assertRaisesRegex(model.ReminderError,
+                    'offset_seconds' if field == 'time' else field):
+                model.create_reminder(data, '助理', '', [], stamp(), stamp())
+        data = payload()
+        del data['delivery_text']
+        with self.assertRaisesRegex(model.ReminderError, '缺少 delivery_text'):
+            model.create_reminder(data, '助理', '', [], stamp(), stamp())
+
     def test_natural_delivery_is_requested_and_never_mechanically_prefixed(self):
         self.assertIn('避免仅照抄 subject', analyzer.SYSTEM)
         self.assertIn('不要固定套用前缀', analyzer.SYSTEM)
