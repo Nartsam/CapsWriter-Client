@@ -11,8 +11,8 @@ LLM OpenMate 输出模式
    获取该角色的情绪状态列表（带缓存，状态来自 OpenMate 启动快照，改立绘需
    重启 OpenMate），注入 system prompt 末尾要求 LLM 输出情绪标签，
    标签用稳定状态 ID、别名仅作语义注解
-2. LLM 输出的 <state:情绪ID> 内联标签原样透传，由 OpenMate 解析立绘状态并从
-   显示/历史中剥离，CapsWriter 无需自行解析
+2. LLM 输出的 <state:情绪ID> 内联标签由 OpenMate 解析立绘状态并从
+   显示/历史中剥离；分段时将纯标签段并入下一段正文，避免产生空消息
 3. 分片经后台线程聚合后再 PATCH，避免逐 chunk 请求触发 OpenMate 的
    速率限制（600 次/60 秒），也避免 HTTP 阻塞 LLM 流读取
 4. 角色开启 enable_result_splitter 时改走 open 分段队列：回复按分隔符
@@ -63,6 +63,7 @@ def build_emotion_prompt(states: list, default_state: str = '') -> str:
         '你的回复会显示在一个支持情绪立绘的桌面看板上。'
         '请在回复的最开头输出一个情绪标签，格式为 <state:情绪ID>；'
         '若回复中情绪发生明显变化，可在变化处再插入新标签。\n'
+        '情绪标签必须紧贴它所修饰的正文，不要单独占一行，也不要在回复末尾单独补标签。\n'
         '可用的情绪ID如下：\n'
         + '\n'.join(lines) + '\n'
         '标签中只能使用上面列出的情绪ID，从中挑选最贴切的一个，不要自创或使用含义文字。\n'
@@ -352,8 +353,8 @@ class OpenMateSegmentSender:
     与 OpenMateStreamSender 接口一致（push/finish/abort/failed），按角色的
     enable_result_splitter 二选一。切分只是发送层钩子：本地对话历史与 md 日志
     仍保存未切分全文。第一段就绪即创建 open 队列开始展示（不等全文生成），
-    后续段落边生成边追加，生成结束随最后一段封口；段落 trim 后为空则丢弃；
-    全程未切出第二段时按 API 文档 §5.5 建议退化为一次性完整消息。
+    后续段落边生成边追加，生成结束随最后一段封口；空白段丢弃，纯状态标签
+    留给下一段正文，结束时丢弃未附着正文的标签；未发出完整段时退化为单条消息。
     """
 
     def __init__(self, client: OpenMateClient, character: str = '', delimiter: str = '\n\n'):
@@ -362,6 +363,7 @@ class OpenMateSegmentSender:
         self.delimiter = delimiter
         self._queue: queue.Queue = queue.Queue()
         self._buffer = ''
+        self._pending_state_tags = ''
         self._message_id = None
         self._posted = False    # 退化单条消息已发出（此时 _message_id 保持 None）
         # 队列创建的幂等 ID：网络重试时避免同一回复被重复展示
@@ -421,14 +423,27 @@ class OpenMateSegmentSender:
                 return
 
     def _cut_segments(self) -> list:
-        """从缓冲切出所有完整段落；trim 后为空的段落直接丢弃"""
+        """从缓冲切出带正文的完整段落，独立状态标签留给后续正文"""
         segments = []
         while self.delimiter in self._buffer:
             head, self._buffer = self._buffer.split(self.delimiter, 1)
-            head = head.strip()
+            head = self._prepare_segment(head)
             if head:
                 segments.append(head)
         return segments
+
+    def _prepare_segment(self, text: str) -> str:
+        text = text.strip()
+        if not text:
+            return ''
+        if not strip_state_tags(text).strip():
+            # OpenMate 会把标签变成状态事件；独立发送会留下正文为空的历史条目。
+            # 保留标签顺序并附到下一段，避免在过滤空段时把立绘状态一并丢掉。
+            self._pending_state_tags += ''.join(STATE_TAG_RE.findall(text))
+            return ''
+        text = self._pending_state_tags + text
+        self._pending_state_tags = ''
+        return text
 
     def _dispatch(self, segments: list):
         if self._failed or not segments:
@@ -446,10 +461,14 @@ class OpenMateSegmentSender:
 
     def _finalize(self, kind: str):
         if kind != 'complete' or self._failed:
+            self._buffer = ''
+            self._pending_state_tags = ''
             self._cancel_residual()
             return
-        last = self._buffer.strip()
+        last = self._prepare_segment(self._buffer)
         self._buffer = ''
+        # 尾部只有标签时已无正文可以附着，不为它额外创建消息或追加空段。
+        self._pending_state_tags = ''
         try:
             if self._message_id is None:
                 # 全程未切出段落：退化为一次性完整消息；完全无内容则无需请求

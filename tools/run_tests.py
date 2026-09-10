@@ -27,7 +27,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 SKIP_DIRS = {'__pycache__', '.git', 'internal', 'logs', 'assets'}
 
 SUITES = ['test_vision.py', 'test_state_tags.py', 'test_history_payload.py',
-          'test_backends.py', 'test_reminders.py']
+          'test_backends.py', 'test_reminders.py', 'test_openmate_segments.py']
 
 
 def syntax_check() -> int:
