@@ -25,10 +25,12 @@ import base64
 import ctypes
 import io
 import struct
+import time
 from ctypes import wintypes
 from typing import NamedTuple, Optional
 
 from . import logger
+from .notice import notify
 
 # ---- 剪贴板格式常量 ----
 CF_DIB = 8
@@ -38,10 +40,20 @@ CF_DIBV5 = 17
 # 保留更高分辨率没有收益，只会拖慢上传
 MAX_EDGE_PX = 1920
 
-# 编码成 PNG 后的字节上限，超过即丢弃（不做 JPEG 兜底：那会额外引入一次编码延迟）。
-# 截图类内容 PNG 压缩率极好——4K 全屏实测约 350KB，正常不会撞上限；
-# 照片类内容会经常超限用不了，这是刻意取舍
-MAX_PNG_BYTES = 1024 * 1024
+# 编码后的字节上限，PNG 与 JPEG 兜底共用这一个上限，超过即丢弃。
+# 原值 1MB 是按「截图类内容 PNG 压缩率极好」定的（4K 全屏实测约 350KB），但那只对
+# 界面类截图成立。照片、立绘、多图并排比对这类内容 PNG 几乎压不动：2000×1380 缩到
+# 1920 宽后稳定落在 1.3~1.9MB，2026-09-12 实机日志里连续 16 次挂载全被这条挡下
+MAX_IMAGE_BYTES = 3 * 1024 * 1024
+
+# PNG 超限时的 JPEG 兜底质量。兜底只走「缩放后 PNG 仍然超限」这一条罕见路径——
+# 没超限就原样发 PNG，不为它多付一次编码时间（这条链路对延迟敏感，见 vision_manager
+# 的线程说明）。85 对模型侧足够：单图最多 384 token，服务端本就会大幅降采样
+JPEG_FALLBACK_QUALITY = 85
+
+# 打开剪贴板的退避重试，语义与 core/client/clipboard 里那一组一致
+CLIPBOARD_OPEN_ATTEMPTS = 5
+CLIPBOARD_OPEN_RETRY_S = 0.02
 
 _user32 = ctypes.windll.user32
 _kernel32 = ctypes.windll.kernel32
@@ -62,11 +74,13 @@ _kernel32.GlobalSize.argtypes = [wintypes.HANDLE]
 class PendingImage(NamedTuple):
     """一张已就绪、等待随下一句话上传的图片"""
 
-    data_url: str      # data:image/png;base64,...
+    data_url: str      # data:image/png;base64,... 或 data:image/jpeg;base64,...
     width: int
     height: int
-    byte_size: int     # PNG 字节数（不含 base64 膨胀）
+    byte_size: int     # 编码后字节数（不含 base64 膨胀）
     source: str        # 命中的剪贴板格式名，仅用于日志
+    encoding: str = 'PNG'   # 实际编码格式（PNG / JPEG），仅用于日志
+    archive_path: str = ''  # 归档到 logs/vision/ 的文件路径，空串表示未归档
 
 
 def _read_clipboard_bytes(fmt: int) -> Optional[bytes]:
@@ -201,25 +215,75 @@ def _encode_png(image) -> bytes:
     return buffer.getvalue()
 
 
+def _encode_jpeg(image) -> bytes:
+    """编码成 JPEG 字节，供 PNG 超限时兜底
+
+    JPEG 没有 alpha 通道，带透明度的图必须先合成到白底再编码。不能直接
+    `convert('RGB')`：那只是把 alpha 通道丢掉、保留透明像素底下的 RGB 值，
+    而截图里那些值往往是黑的，结果是透明区域变成一片黑。
+    """
+    from PIL import Image
+
+    if image.mode in _ALPHA_MODES:
+        rgba = image.convert('RGBA')
+        background = Image.new('RGB', rgba.size, (255, 255, 255))
+        background.paste(rgba, mask=rgba.getchannel('A'))
+        image = background
+    elif image.mode != 'RGB':
+        image = image.convert('RGB')
+    buffer = io.BytesIO()
+    image.save(buffer, format='JPEG', quality=JPEG_FALLBACK_QUALITY, optimize=True)
+    return buffer.getvalue()
+
+
+def _open_clipboard_with_retry() -> bool:
+    """打开剪贴板，被别的进程占着时退避重试
+
+    Windows 同一时刻只允许一个窗口打开剪贴板，而本功能的典型用法恰好是「截完图立刻
+    按快捷键」——截图工具刚写完往往还占着它。占用是瞬时的，退避几十毫秒基本都能拿到；
+    不重试的表现就是「按了没反应，再按一次就好」。本函数跑在工作线程上，这点等待
+    不会碰到低级钩子的 300ms 上限（见模块顶部的线程说明）。
+    """
+    for attempt in range(CLIPBOARD_OPEN_ATTEMPTS):
+        if _user32.OpenClipboard(None):
+            return True
+        if attempt + 1 < CLIPBOARD_OPEN_ATTEMPTS:
+            logger.debug(f"[视觉] 剪贴板被占用，{CLIPBOARD_OPEN_RETRY_S * 1000:.0f}ms 后重试"
+                         f"（第 {attempt + 1} 次）")
+            time.sleep(CLIPBOARD_OPEN_RETRY_S)
+    return False
+
+
 def grab_clipboard_image() -> Optional[PendingImage]:
     """读取剪贴板当前内容里的图片
 
     Returns:
         就绪的 PendingImage；剪贴板里没有图片、解码失败或超出体积上限时返回 None
         （三种情况都不算错误，调用方一律按「没有图」处理）
+
+    每一条返回 None 的路径都自己往控制台打一行说明原因：按下快捷键后成功与失败
+    此前给用户的反馈完全一样——都是什么都没有（日志走 INFO，而控制台处理器固定在
+    WARNING），于是「图太大被丢了」在终端上看起来和「快捷键没生效」一模一样。
+    调用方只负责汇总，不再重复解释原因。
     """
-    if not _user32.OpenClipboard(None):
-        logger.debug("[视觉] 剪贴板被其他进程占用，本次放弃")
+    if not _open_clipboard_with_retry():
+        logger.info("[视觉] 剪贴板被其他进程占用，重试后仍打不开，未挂载")
+        notify('    [yellow]剪贴板被其他进程占用，未挂载图片[/yellow]'
+                      '（稍后再按一次即可）')
         return None
     try:
         image, source, raw_png = _grab_from_clipboard()
     except Exception as e:
         logger.warning(f"[视觉] 读取剪贴板图片失败: {e}", exc_info=True)
+        notify(f'    [red]读取剪贴板图片失败[/red]（{e}）')
         return None
     finally:
         _user32.CloseClipboard()
 
     if image is None:
+        # 剪贴板里没有图片是最常见的情况（复制的是文字、文件或什么都没有），不是错误
+        logger.info("[视觉] 剪贴板中没有可用图片，未挂载")
+        notify('    [yellow]剪贴板中没有图片，未挂载[/yellow]')
         return None
 
     try:
@@ -227,27 +291,53 @@ def grab_clipboard_image() -> Optional[PendingImage]:
         # 且尺寸已合格时直接复用原字节，省掉一次解码 + 编码（4K 图上这是最慢的一步）
         original_size = image.size
         if raw_png and max(original_size) <= MAX_EDGE_PX:
-            png = raw_png
+            data = raw_png
         else:
             if not raw_png:
                 image = _drop_dead_alpha(image)
             image = _shrink_if_needed(image)
-            png = _encode_png(image)
+            data = _encode_png(image)
     except Exception as e:
         logger.warning(f"[视觉] 图片编码失败: {e}", exc_info=True)
+        notify(f'    [red]图片编码失败[/red]（{e}）')
         return None
 
-    if len(png) > MAX_PNG_BYTES:
+    encoding, mime = 'PNG', 'image/png'
+
+    # 缩放后 PNG 仍然超限才转 JPEG。PNG 压不动照片/立绘这类内容，而同一张图的 JPEG
+    # 通常小一个数量级；没超限的那条路原样发 PNG，不付这次重编码的时间
+    if len(data) > MAX_IMAGE_BYTES:
+        png_bytes = len(data)
+        try:
+            jpeg = _encode_jpeg(image)
+        except Exception as e:
+            logger.warning(f"[视觉] JPEG 兜底编码失败: {e}", exc_info=True)
+            jpeg = None
+
+        if jpeg is None or len(jpeg) > MAX_IMAGE_BYTES:
+            jpeg_desc = f"JPEG {len(jpeg) / 1024:.0f}KB" if jpeg else "JPEG 编码失败"
+            logger.info(
+                f"[视觉] 图片过大已丢弃：PNG {png_bytes / 1024:.0f}KB、{jpeg_desc}，"
+                f"均超过 {MAX_IMAGE_BYTES / 1024:.0f}KB 上限（原始尺寸 {original_size}）"
+            )
+            notify(
+                f'    [yellow]图片过大，未挂载[/yellow]'
+                f'（PNG {png_bytes / 1024:.0f}KB、{jpeg_desc}，'
+                f'上限 {MAX_IMAGE_BYTES / 1024:.0f}KB）'
+            )
+            return None
+
         logger.info(
-            f"[视觉] 图片编码后 {len(png) / 1024:.0f}KB 超过 "
-            f"{MAX_PNG_BYTES / 1024:.0f}KB 上限，已丢弃（原始尺寸 {original_size}）"
+            f"[视觉] PNG {png_bytes / 1024:.0f}KB 超过上限，"
+            f"已改用 JPEG {len(jpeg) / 1024:.0f}KB（质量 {JPEG_FALLBACK_QUALITY}）"
         )
-        return None
+        data, encoding, mime = jpeg, 'JPEG', 'image/jpeg'
 
     return PendingImage(
-        data_url='data:image/png;base64,' + base64.b64encode(png).decode('ascii'),
+        data_url=f'data:{mime};base64,' + base64.b64encode(data).decode('ascii'),
         width=image.width,
         height=image.height,
-        byte_size=len(png),
+        byte_size=len(data),
         source=source,
+        encoding=encoding,
     )

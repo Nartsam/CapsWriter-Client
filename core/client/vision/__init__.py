@@ -7,21 +7,26 @@
 """
 
 from .. import logger
-from core.client.vision.clipboard_watcher import ClipboardWatcher
+from core.client.vision.clipboard_watcher import ClipboardWatcher, current_sequence
+from core.client.vision.notice import notify
 from core.client.vision.clipboard_image import (
     PendingImage,
     grab_clipboard_image,
     MAX_EDGE_PX,
-    MAX_PNG_BYTES,
+    MAX_IMAGE_BYTES,
+    JPEG_FALLBACK_QUALITY,
 )
 from core.client.vision.vision_manager import VisionManager
 
 __all__ = [
     'logger',
     'ClipboardWatcher',
+    'current_sequence',
+    'notify',
     'PendingImage',
     'grab_clipboard_image',
     'MAX_EDGE_PX',
-    'MAX_PNG_BYTES',
+    'MAX_IMAGE_BYTES',
+    'JPEG_FALLBACK_QUALITY',
     'VisionManager',
 ]

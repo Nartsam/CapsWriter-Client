@@ -15,6 +15,7 @@
 
 from __future__ import annotations
 
+import threading
 from concurrent.futures import ThreadPoolExecutor
 from typing import TYPE_CHECKING, Optional
 
@@ -22,7 +23,9 @@ from config_client import ClientConfig as Config
 
 from . import logger
 from .clipboard_image import grab_clipboard_image
-from .clipboard_watcher import ClipboardWatcher
+from .image_archive import mark_outcome, save_mounted
+from .clipboard_watcher import ClipboardWatcher, current_sequence
+from .notice import notify
 
 if TYPE_CHECKING:
     from core.client.app import CapsWriterClient
@@ -37,6 +40,13 @@ class VisionManager:
         self.enabled: bool = False
         self._executor: Optional[ThreadPoolExecutor] = None
         self._watcher = ClipboardWatcher()
+        # 已排队但还没开始执行的捕获。executor 只有一个工作线程，排着的那个跑起来时
+        # 会读**那一刻**的剪贴板，因此它必然涵盖此刻之后的任何一次按键——再排一个
+        # 只会重复解码、重复归档、重复刷一行终端，拿到的还是同一张图
+        self._capture_queued = False
+        self._capture_lock = threading.Lock()
+        # 上一次成功挂载时的剪贴板序号。连按快捷键时用它判断这次是不是纯重复
+        self._last_mounted_seq = 0
 
     # ------------------------------------------------------------------
     # 生命周期
@@ -125,11 +135,28 @@ class VisionManager:
         executor = self._executor
         if executor is None:
             return
+
+        with self._capture_lock:
+            if self._capture_queued:
+                # 已经有一个排着了，它跑起来时读到的就是最新的剪贴板内容
+                logger.debug('[视觉] 已有排队中的捕获，本次按键合并')
+                return
+            self._capture_queued = True
+
         try:
             executor.submit(self._capture)
         except RuntimeError:
             # 退出过程中 executor 已 shutdown
-            pass
+            with self._capture_lock:
+                self._capture_queued = False
+
+    @staticmethod
+    def _archive_keep() -> int:
+        """归档保留张数，<= 0 表示关闭归档"""
+        try:
+            return int(getattr(Config, 'vision_archive_keep', 0) or 0)
+        except (TypeError, ValueError):
+            return 0
 
     @staticmethod
     def _max_age() -> float:
@@ -155,15 +182,35 @@ class VisionManager:
         if age is None:
             logger.info("[视觉] 剪贴板自客户端启动以来未变动过，无法确认时效，"
                         "未挂载（复制一次即可）")
+            notify('    [yellow]剪贴板自客户端启动以来未变动过，未挂载[/yellow]'
+                          '（复制一次即可）')
             return False
         if age > max_age:
             logger.info(f"[视觉] 剪贴板内容是 {age:.0f}s 前写入的，"
                         f"超过 {max_age:.0f}s 时效上限，未挂载")
+            notify(f'    [yellow]剪贴板内容是 {age:.0f}s 前写入的，'
+                          f'超过 {max_age:.0f}s 时效上限，未挂载[/yellow]')
             return False
         return True
 
     def _capture(self) -> None:
         """工作线程：读剪贴板，成功则存入待挂槽位"""
+        # 一开始执行就放闸：此刻之后的按键读到的可能是更新的剪贴板内容，
+        # 必须让它能排进来，否则「先按快捷键、再截新图、再按一次」会漏掉新图
+        with self._capture_lock:
+            self._capture_queued = False
+
+        # 剪贴板没变过、且上次挂上的那张还在待挂槽里 → 这次按键是纯重复，直接返回。
+        # 合并闸门挡不住这种：人手速度的连按之间，上一个捕获早就跑完了（剪贴板没变时
+        # 时效检查 1ms 内就返回），队列根本来不及堆积。不拦的话连按 N 次就是 N 次解码、
+        # N 个归档文件、N 行终端输出，而拿到的是同一张图（2026-09-12 实机 9 连按刷了 9 行）。
+        # 图一旦被某次录音消耗掉，pending_image 变空，同一张图就能重新挂上
+        seq = current_sequence()
+        if (seq and seq == self._last_mounted_seq
+                and self.app.state.pending_image is not None):
+            logger.debug('[视觉] 剪贴板未变且图片仍在待挂状态，跳过重复挂载')
+            return
+
         if not self._is_fresh():
             return
         try:
@@ -173,14 +220,38 @@ class VisionManager:
             return
 
         if image is None:
-            # 剪贴板里没有图片是最常见的情况（复制的是文字、文件或什么都没有），
-            # 不是错误。用户会在下一次录音时从提示框没有变色看出来
-            logger.info("[视觉] 剪贴板中没有可用图片，未挂载")
+            # 具体原因（没有图 / 解码失败 / 体积超限）已由 grab_clipboard_image 自己
+            # 打到控制台和日志，这里只记一条中性的收尾，不要再猜原因——此前这里写死
+            # 「剪贴板中没有可用图片」，把体积超限也说成了没有图
+            logger.info("[视觉] 本次未挂载图片")
             return
 
+        # 归档在写入待挂槽之前：存盘可能失败，而 archive_path 要跟着这张图一路走到
+        # 结果处理那边去改名，不能先挂一个没有路径的版本进去
+        archive_path = save_mounted(self.app.base_dir, image, self._archive_keep())
+        if archive_path:
+            image = image._replace(archive_path=archive_path)
+
+        # 待挂槽只有一个位置，后挂的顶掉先挂的。必须说出来：不然连按两次会看到
+        # 两行「已挂载」，读起来像挂了两张，而实际上只有最后一张会被用
+        replaced = self.app.state.pending_image
         self.app.state.set_pending_image(image)
-        logger.info(
-            f"[视觉] 已挂载图片 {image.width}×{image.height}"
-            f"（{image.byte_size / 1024:.0f}KB，来源 {image.source}），"
-            f"将随下一句话上传"
+        if replaced is not None:
+            # 被顶掉的那张从没绑定到任何一次录音，所以没有 task_id
+            mark_outcome(getattr(replaced, 'archive_path', ''), '', used=False)
+
+        self._last_mounted_seq = seq
+
+        note = '，已顶掉上一张待挂图片' if replaced is not None else ''
+        detail = (f"{image.width}×{image.height}"
+                  f"（{image.byte_size / 1024:.0f}KB，{image.encoding}，来源 {image.source}）")
+        logger.info(f"[视觉] 已挂载图片 {detail}，将随下一句话上传{note}")
+        # dedupe=False：挂载成功是状态变更，必须每次都打。两张不同的图完全可能有
+        # 一样的尺寸、体积和来源，按文本去重会把第二次挂载吞掉
+        notify(
+            f'    [green]已挂载图片[/green] {detail}，将随下一句话上传'
+            f'{("[yellow]" + note + "[/yellow]") if note else ""}',
+            dedupe=False,
         )
+        if image.archive_path:
+            logger.info(f'[视觉] 图片已归档: {image.archive_path}')

@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING, Optional
 
 from config_client import ClientConfig as Config
 from core.client.state import console
+from core.client.vision.image_archive import mark_outcome
 from core.protocol import RecognitionMessage
 
 from core.client.output.text_output import TextOutput
@@ -183,7 +184,7 @@ class ResultProcessor:
             console.print(f'    连续对话：[yellow]角色「{snapshot.forced_role}」已失效，已退出[/yellow]')
         return role_config
 
-    def _report_image_usage(self, pending_image, llm_result) -> None:
+    def _report_image_usage(self, pending_image, llm_result, task_id: str = '') -> None:
         """报告本次录音绑定图片的去向
 
         「下一条」是严格的：这次录音一旦有效落地，图必然消失——用掉或丢掉，没有
@@ -192,8 +193,14 @@ class ResultProcessor:
         """
         if pending_image is None:
             return
-        if llm_result and llm_result.image_used:
-            logger.info(f"图片已随本句上传: {pending_image.width}×{pending_image.height}")
+
+        used = bool(llm_result and llm_result.image_used)
+        # 归档文件按去向改名并补上 task_id，事后能拿日志里的任务 ID 直接定位到那张图
+        archived = mark_outcome(pending_image.archive_path, task_id, used)
+
+        if used:
+            logger.info(f"图片已随本句上传: {pending_image.width}×{pending_image.height}"
+                        + (f"（{archived}）" if archived else ""))
             return
 
         if llm_result and getattr(llm_result, 'reminder_handled', False):
@@ -203,7 +210,8 @@ class ResultProcessor:
         else:
             reason = f'角色「{llm_result.role_name}」未开启视觉'
         console.print(f'    [yellow]已挂载的图片未使用，已丢弃[/yellow]（{reason}）')
-        logger.info(f"图片未使用已丢弃：{reason}")
+        logger.info(f"图片未使用已丢弃：{reason}"
+                    + (f"（{archived}）" if archived else ""))
 
     def _update_continuous_state(self, snapshot, llm_result) -> None:
         """
@@ -452,7 +460,7 @@ class ResultProcessor:
             )
 
         # 图片去向如实告知：不论用掉还是丢掉，这次录音之后它都不复存在
-        self._report_image_usage(pending_image, llm_result)
+        self._report_image_usage(pending_image, llm_result, message.task_id)
 
         # 连续对话状态迁移（进入判定放在最后：要等 role_name 确定）
         self._update_continuous_state(snapshot, llm_result)

@@ -51,6 +51,16 @@ def _sequence_number() -> int:
         return 0
 
 
+def current_sequence() -> int:
+    """当前剪贴板序号；0 表示读不到（本进程没有剪贴板访问权限）
+
+    序号只是**变更计数器**，不含时间信息，但「两次读到的值相同」足以断定剪贴板
+    内容没有被重写过——连按快捷键时用它判断这次是不是纯重复。调用不需要
+    OpenClipboard，零争用、单次 0.455µs。
+    """
+    return _sequence_number()
+
+
 class ClipboardWatcher:
     """记录剪贴板最近一次变更的时刻"""
 

@@ -478,11 +478,16 @@ class ProcessorTests(unittest.IsolatedAsyncioTestCase):
                          get_active_window_info=lambda: {'process_name': 'editor'},
                          show_processing_indicator=Mock(), hide_recording_indicator=Mock(),
                          update_recording_indicator_progress=Mock(), write_llm_md=Mock(),
-                         broadcast_output_udp=Mock(), _auto_enter=AsyncMock(), IMAGE_PLACEHOLDER='[图片]')
+                         broadcast_output_udp=Mock(), _auto_enter=AsyncMock(), IMAGE_PLACEHOLDER='[图片]',
+                         # 归档改名：真实实现要落盘，这里桩掉并返回空串（等价于未归档）
+                         mark_outcome=Mock(return_value=''))
         exec(compile(ast.Module(body=methods, type_ignores=[]), '<real-processor>', 'exec'), namespace)
         for result_text in ['提醒已设置', model.PARSE_ERROR]:
             with self.subTest(result=result_text):
-                image = types.SimpleNamespace(data_url='image', width=100, height=100)
+                # 字段要跟 PendingImage 对齐：少一个 archive_path，_report_image_usage
+                # 就会在真实调用里抛 AttributeError 而这里查不出来
+                image = types.SimpleNamespace(data_url='image', width=100, height=100,
+                                              archive_path='')
                 snapshot = types.SimpleNamespace(is_arming=True, is_exiting=False, sticky_role=None)
                 state = Mock()
                 state.is_task_cancelled.return_value = False

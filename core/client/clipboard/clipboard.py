@@ -10,8 +10,9 @@
 """
 import asyncio
 import platform
+import time
 from contextlib import contextmanager
-from typing import Optional
+from typing import Callable, Optional
 import pyclip
 from pynput import keyboard
 from . import logger
@@ -19,6 +20,42 @@ from . import logger
 
 # 支持的编码列表
 CLIPBOARD_ENCODINGS = ['utf-8', 'gbk', 'utf-16', 'latin1']
+
+# 剪贴板被占用时的退避重试。Windows 同一时刻只允许一个窗口打开剪贴板，被别的进程
+# （截图工具、剪贴板管理器、浏览器）占着时 OpenClipboard 直接返回 ERROR_ACCESS_DENIED(5)。
+# 这种占用是瞬时的，退避几十毫秒基本都能拿到
+CLIPBOARD_RETRY_ATTEMPTS = 5
+CLIPBOARD_RETRY_DELAY_S = 0.02
+
+
+def _is_clipboard_busy(exc: Exception) -> bool:
+    """异常是不是「剪贴板被别的进程占着」
+
+    **只有这一种才值得重试**：剪贴板里没有文本格式（典型是图片）同样会抛异常，但
+    那是稳定状态，重试只会白白拖慢每一次带图对话——`get_selected_text` 每个请求都要
+    走这条路，5 次 20ms 的退避会变成每句话固定多花 100ms。
+    """
+    winerror = getattr(exc, 'winerror', None)
+    if winerror is None:
+        args = getattr(exc, 'args', ())
+        winerror = args[0] if args and isinstance(args[0], int) else None
+    if winerror == 5:
+        return True
+    text = str(exc)
+    return 'OpenClipboard' in text and ('拒绝访问' in text or 'Access is denied' in text)
+
+
+def _retry_while_busy(action: Callable):
+    """执行剪贴板操作，仅在「被占用」时退避重试；其余异常立即抛出"""
+    for attempt in range(CLIPBOARD_RETRY_ATTEMPTS):
+        try:
+            return action()
+        except Exception as e:
+            if attempt + 1 >= CLIPBOARD_RETRY_ATTEMPTS or not _is_clipboard_busy(e):
+                raise
+            logger.debug(f"剪贴板被占用，{CLIPBOARD_RETRY_DELAY_S * 1000:.0f}ms 后重试"
+                         f"（第 {attempt + 1} 次）: {e}")
+            time.sleep(CLIPBOARD_RETRY_DELAY_S)
 
 
 def try_paste() -> Optional[str]:
@@ -33,7 +70,7 @@ def try_paste() -> Optional[str]:
     （典型是一张待用的截图）直接清掉。
     """
     try:
-        clipboard_data = pyclip.paste()
+        clipboard_data = _retry_while_busy(pyclip.paste)
     except Exception as e:
         # 剪贴板里是图片等非文本内容时 pyclip 必然抛异常，这是预期情况而非故障。
         # 走 WARNING 会直接刷到运行终端（logger.py 把控制台处理器固定在 WARNING 级），
@@ -79,11 +116,29 @@ def safe_copy(content: str) -> bool:
         return False
 
     try:
-        pyclip.copy(content)
+        _retry_while_busy(lambda: pyclip.copy(content))
         logger.debug(f"剪贴板写入成功，长度: {len(content)}")
         return True
     except Exception as e:
         logger.warning(f"剪贴板写入失败: {e}")
+        return False
+
+
+def restore_clipboard(content: str) -> bool:
+    """把先前读到的文本写回剪贴板，用于「读—改—写」的还原步骤
+
+    与 `safe_copy` 的两点区别：
+      ① 空字符串照样写回——还原的语义是恢复原状，而原状本来就可能是空文本；
+      ② 失败只记 INFO 不抛异常。还原失败不该让调用方丢掉**已经拿到的结果**：
+         `get_selected_text` 此前直接调 `pyclip.copy`，剪贴板被占用时异常一路冒到
+         外层 except，把已读到的选中文字一并丢掉，还往终端刷一条 WARNING
+         （2026-09-12 实机反馈的那条 `(5, 'OpenClipboard', '拒绝访问。')`）。
+    """
+    try:
+        _retry_while_busy(lambda: pyclip.copy(content))
+        return True
+    except Exception as e:
+        logger.info(f"剪贴板还原失败，原内容未能写回: {e}")
         return False
 
 

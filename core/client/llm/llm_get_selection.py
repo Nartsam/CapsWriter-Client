@@ -9,10 +9,9 @@ LLM 获取选中文字功能
 5. 判断内容是否变化，返回选中的文字
 """
 import time
-import pyclip
 import keyboard
 from . import logger
-from .llm_clipboard import safe_paste, try_paste
+from .llm_clipboard import restore_clipboard, safe_paste, try_paste
 
 
 # 全局变量：记录每个角色最后一次使用的选中文字
@@ -57,8 +56,12 @@ def get_selected_text(role_config, state) -> str:
         # 此时若用户没有选中任何文字，Ctrl+C 不会改变剪贴板，图片就能原样保住。
         # （若确实选中了文字，Ctrl+C 本身已经覆盖掉图片，那是模拟 Ctrl+C 取选区的
         # 固有代价，除非连图片格式一并备份还原，不值得）
+        #
+        # 必须走 restore_clipboard 而不是裸 pyclip.copy：后者在剪贴板被别的进程占着时
+        # 抛 ERROR_ACCESS_DENIED，异常一路冒到外层 except，把**已经读到的选中文字**
+        # 一并丢掉，还往终端刷一条 WARNING。还原是收尾动作，失败不该牵连主结果
         if original_clipboard is not None:
-            pyclip.copy(original_clipboard)
+            restore_clipboard(original_clipboard)
 
         # 如果内容没有变化，说明没有选中文字，返回空字符串。
         # 原内容读不到时按空串比较：那种情况下没选中文字读到的同样是空串

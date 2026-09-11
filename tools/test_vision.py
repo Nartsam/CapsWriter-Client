@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import importlib.util
 import os
+import pathlib
 import struct
 import sys
 import types
@@ -500,6 +501,495 @@ def test_is_fresh(vm_mod, watch_mod):
 
 
 # ====================================================================
+# 11. 编码兜底与体积上限
+# ====================================================================
+
+class _FakeImage:
+    """只提供 grab_clipboard_image 用得到的那几个属性，避免依赖 PIL"""
+
+    def __init__(self, size, mode='RGB'):
+        self.size = size
+        self.mode = mode
+
+    @property
+    def width(self):
+        return self.size[0]
+
+    @property
+    def height(self):
+        return self.size[1]
+
+
+def _run_grab(clip_mod, *, png_bytes, jpeg_bytes=None, jpeg_raises=False,
+              raw_png=None, size=(800, 600), source='CF_DIB'):
+    """在桩掉 PIL 相关helper 的前提下跑一次 grab_clipboard_image
+
+    Returns:
+        (PendingImage 或 None, {'png': 次数, 'jpeg': 次数})
+    """
+    calls = {'png': 0, 'jpeg': 0}
+    image = _FakeImage(size)
+
+    class _FakeUser32:
+        @staticmethod
+        def OpenClipboard(_):
+            return 1
+
+        @staticmethod
+        def CloseClipboard():
+            return 1
+
+    def fake_encode_png(_img):
+        calls['png'] += 1
+        return b'P' * png_bytes
+
+    def fake_encode_jpeg(_img):
+        calls['jpeg'] += 1
+        if jpeg_raises:
+            raise ValueError('编码失败')
+        return b'J' * jpeg_bytes
+
+    saved = {name: getattr(clip_mod, name) for name in
+             ('_user32', '_grab_from_clipboard', '_drop_dead_alpha',
+              '_shrink_if_needed', '_encode_png', '_encode_jpeg')}
+    try:
+        clip_mod._user32 = _FakeUser32
+        clip_mod._grab_from_clipboard = lambda: (image, source, raw_png)
+        clip_mod._drop_dead_alpha = lambda img: img
+        clip_mod._shrink_if_needed = lambda img: img
+        clip_mod._encode_png = fake_encode_png
+        clip_mod._encode_jpeg = fake_encode_jpeg
+        return clip_mod.grab_clipboard_image(), calls
+    finally:
+        for name, value in saved.items():
+            setattr(clip_mod, name, value)
+
+
+def test_encode_fallback(clip_mod):
+    print('\n[11] 编码兜底与体积上限')
+    limit = clip_mod.MAX_IMAGE_BYTES
+
+    # 上限本身是可调参数，断言一律用相对值构造，不钉死具体数字
+    # （同 2026-09-12 关于 DEEPSEEK_MODEL 的决策：钉住会日常变动的值只会制造无效失败）
+    under, over = limit - 1024, limit + 1024
+
+    # --- PNG 没超限：原样发，不付 JPEG 重编码的时间 ---
+    img, calls = _run_grab(clip_mod, png_bytes=under)
+    check('PNG 未超限时挂载成功', img is not None)
+    check('PNG 未超限时编码标记为 PNG', img and img.encoding == 'PNG')
+    check('PNG 未超限时 data_url 是 png MIME',
+          img and img.data_url.startswith('data:image/png;base64,'))
+    check('PNG 未超限时完全不调用 JPEG 编码器', calls['jpeg'] == 0, calls)
+    check('byte_size 记的是编码后字节数', img and img.byte_size == under)
+
+    # --- PNG 超限、JPEG 压得下：改用 JPEG ---
+    img, calls = _run_grab(clip_mod, png_bytes=over, jpeg_bytes=under)
+    check('PNG 超限时回落到 JPEG', img is not None and img.encoding == 'JPEG')
+    check('JPEG 兜底后 data_url 是 jpeg MIME',
+          img and img.data_url.startswith('data:image/jpeg;base64,'))
+    check('JPEG 兜底只编码一次', calls['jpeg'] == 1, calls)
+    check('JPEG 兜底后 byte_size 跟着换成 JPEG 的', img and img.byte_size == under)
+
+    # --- JPEG 也压不下：丢弃 ---
+    img, calls = _run_grab(clip_mod, png_bytes=over, jpeg_bytes=over)
+    check('JPEG 仍超限时丢弃', img is None)
+
+    # --- JPEG 编码本身抛异常：按丢弃处理，不得把异常抛给调用方 ---
+    img, calls = _run_grab(clip_mod, png_bytes=over, jpeg_bytes=1, jpeg_raises=True)
+    check('JPEG 编码异常时返回 None 而不是崩溃', img is None)
+    check('JPEG 编码异常时确实尝试过一次', calls['jpeg'] == 1, calls)
+
+    # --- 剪贴板原生 PNG 且尺寸合格：复用原字节，一次编码都不做 ---
+    raw = b'R' * under
+    img, calls = _run_grab(clip_mod, png_bytes=99, raw_png=raw,
+                           size=(clip_mod.MAX_EDGE_PX, 10), source='PNG')
+    check('原生 PNG 尺寸合格时不重新编码', calls['png'] == 0 and calls['jpeg'] == 0, calls)
+    check('原生 PNG 复用的是原字节', img and img.byte_size == len(raw))
+
+    # --- 原生 PNG 但超限：同样要走兜底，不能因为复用路径就绕过体积检查 ---
+    img, calls = _run_grab(clip_mod, png_bytes=99, jpeg_bytes=under,
+                           raw_png=b'R' * over,
+                           size=(clip_mod.MAX_EDGE_PX, 10), source='PNG')
+    check('原生 PNG 超限时同样回落到 JPEG',
+          img is not None and img.encoding == 'JPEG', img)
+
+    # --- 尺寸取的是最终图片的尺寸 ---
+    img, _ = _run_grab(clip_mod, png_bytes=under, size=(321, 123))
+    check('宽高取自最终图片', img and (img.width, img.height) == (321, 123))
+
+    # --- 旧构造方式仍然成立：encoding 有默认值 ---
+    legacy = clip_mod.PendingImage('data:image/png;base64,x', 1, 2, 3, 'PNG')
+    check('PendingImage.encoding 有默认值，旧位置参数构造不受影响',
+          legacy.encoding == 'PNG')
+
+
+# ====================================================================
+# 12. 剪贴板被占用时的退避重试
+# ====================================================================
+
+class _Win32Busy(Exception):
+    """复刻 pywin32 抛出的形态：args = (5, 'OpenClipboard', '拒绝访问。')"""
+
+    def __init__(self):
+        super().__init__(5, 'OpenClipboard', '拒绝访问。')
+        self.winerror = 5
+
+
+def test_clipboard_retry(clipboard_mod, sel_mod, pyclip_stub, kb_stub):
+    print('\n[12] 剪贴板被占用时的退避重试')
+    busy = _Win32Busy()
+    no_text = Exception('Clipboard contents have no standard formats available.')
+
+    # --- 只认「被占用」，不认「没有文本格式」---
+    check('识别 pywin32 的 ERROR_ACCESS_DENIED', clipboard_mod._is_clipboard_busy(busy))
+    check('识别只有 winerror 属性的变体',
+          clipboard_mod._is_clipboard_busy(
+              type('E', (Exception,), {'winerror': 5})()))
+    check('不把「没有文本格式」当成被占用',
+          not clipboard_mod._is_clipboard_busy(no_text))
+    check('不把普通异常当成被占用',
+          not clipboard_mod._is_clipboard_busy(ValueError('别的错')))
+
+    # --- 被占用时重试，最终成功 ---
+    calls = {'n': 0}
+
+    def flaky():
+        calls['n'] += 1
+        if calls['n'] < 3:
+            raise busy
+        return 'ok'
+
+    check('被占用时重试到成功', clipboard_mod._retry_while_busy(flaky) == 'ok')
+    check('重试次数符合预期', calls['n'] == 3, calls)
+
+    # --- 剪贴板里是图片：必须只试一次，不能白等 5 轮退避 ---
+    calls = {'n': 0}
+
+    def always_no_text():
+        calls['n'] += 1
+        raise no_text
+
+    try:
+        clipboard_mod._retry_while_busy(always_no_text)
+    except Exception:
+        pass
+    check('非占用类异常立即抛出，不重试（带图对话每句都会走这条路）',
+          calls['n'] == 1, calls)
+
+    # --- 一直被占用：耗尽次数后抛出，不静默吞掉 ---
+    calls = {'n': 0}
+
+    def always_busy():
+        calls['n'] += 1
+        raise busy
+
+    raised = False
+    try:
+        clipboard_mod._retry_while_busy(always_busy)
+    except Exception:
+        raised = True
+    check('一直被占用时耗尽次数后抛出', raised)
+    check('重试上限生效', calls['n'] == clipboard_mod.CLIPBOARD_RETRY_ATTEMPTS, calls)
+
+    # --- restore_clipboard 失败只返回 False，不抛 ---
+    original_copy = pyclip_stub.copy
+    try:
+        def copy_busy(_v):
+            raise busy
+        pyclip_stub.copy = copy_busy
+        check('restore_clipboard 失败返回 False 而不是抛异常',
+              clipboard_mod.restore_clipboard('原内容') is False)
+    finally:
+        pyclip_stub.copy = original_copy
+
+    check('restore_clipboard 正常时返回 True',
+          clipboard_mod.restore_clipboard('原内容') is True)
+    check('空字符串也照样写回（还原的语义是恢复原状）',
+          pyclip_stub.copies and pyclip_stub.copies[-1] == '原内容')
+
+    # --- 核心回归：还原失败不得连累已经读到的选中文字 ---
+    class Role:
+        enable_read_selection = True
+        name = '测试角色'
+        enable_history = False
+        selection_max_length = 1000
+
+    class State:
+        last_output_text = ''
+
+    pyclip_stub.copies.clear()
+    pyclip_stub.set_sequence(['原内容'.encode('utf-8'),
+                              '选中的文字'.encode('utf-8')])
+    original_copy = pyclip_stub.copy
+    try:
+        def copy_busy(_v):
+            raise busy
+        pyclip_stub.copy = copy_busy
+        got = sel_mod.get_selected_text(Role, State)
+    finally:
+        pyclip_stub.copy = original_copy
+    check('还原失败时仍返回已读到的选中文字（此前会被整个丢掉）',
+          got == '选中的文字', repr(got))
+
+
+# ====================================================================
+# 13. 图片归档（落盘 / 改名 / 清理）
+# ====================================================================
+
+def test_image_archive(archive_mod, clip_mod):
+    print('\n[13] 图片归档')
+    import base64, shutil, tempfile
+
+    base = tempfile.mkdtemp(prefix="capswriter-archive-test-")
+    try:
+        payload = b"fake-png-bytes"
+        url = "data:image/png;base64," + base64.b64encode(payload).decode("ascii")
+        img = clip_mod.PendingImage(url, 988, 1297, len(payload), "CF_DIBV5")
+
+        # --- 基本落盘 ---
+        path = archive_mod.save_mounted(base, img, keep=10)
+        check('归档返回了路径', bool(path), path)
+        saved = pathlib.Path(path)
+        check('文件真的写出来了', saved.exists())
+        check('写出的是原始字节', saved.read_bytes() == payload)
+        check('落在 logs/vision 下', saved.parent.name == 'vision'
+              and saved.parent.parent.name == 'logs', str(saved))
+        check('来源写成定长代号', '_DV5_' in saved.name, saved.name)
+        check('格式原名不进文件名（长度不一会让后面的列错开）',
+              'CF_DIBV5' not in saved.name, saved.name)
+        check('尺寸不进文件名', '988x1297' not in saved.name, saved.name)
+        check('去向未定时标 pend', saved.name.endswith('_pend.png'), saved.name)
+        check('时间戳是固定 12 位且排在最前面（按名排序即时间序）',
+              saved.name[:12].isdigit() and saved.name[12] == '_', saved.name)
+
+        # --- 关闭归档 ---
+        check('keep<=0 时不归档', archive_mod.save_mounted(base, img, keep=0) == '')
+
+        # --- JPEG 用 .jpg 后缀 ---
+        jpg_img = img._replace(encoding='JPEG')
+        jpg_path = archive_mod.save_mounted(base, jpg_img, keep=10)
+        check('JPEG 存成 .jpg', jpg_path.endswith('.jpg'), jpg_path)
+
+        # --- 同一秒内连按两次不覆盖 ---
+        again = archive_mod.save_mounted(base, img, keep=10)
+        check('同秒撞名时不覆盖旧文件', again != path and pathlib.Path(again).exists(),
+              again)
+
+        # --- 按去向改名 ---
+        task = '97def774-ae18-11f1-b3ea-581cf893a9d2'
+        used_path = archive_mod.mark_outcome(path, task, used=True)
+        used_name = pathlib.Path(used_path).name
+        check('改名后带 task_id', task in used_name, used_name)
+        check('改名后标 used', '_used_' in used_name, used_name)
+        check('pend 标记已去掉', '_pend' not in used_name, used_name)
+        check('去向标记都是 4 个字符（列目录时对齐）',
+              len('pend') == len('used') == len('drop') == 4)
+        check('原文件已不在', not saved.exists())
+        check('新文件内容不变', pathlib.Path(used_path).read_bytes() == payload)
+
+        dropped = archive_mod.mark_outcome(again, task, used=False)
+        check('未用掉的标 drop', '_drop_' in pathlib.Path(dropped).name, dropped)
+        check('同秒序号后缀也能正确剥掉',
+              '_pend' not in pathlib.Path(dropped).name, dropped)
+        # 被新图顶掉的那张从没绑定过录音，没有 task_id
+        orphan = archive_mod.save_mounted(base, img, keep=10)
+        orphan_out = pathlib.Path(archive_mod.mark_outcome(orphan, '', used=False)).name
+        check('task_id 为空时不留下多余的下划线',
+              orphan_out.endswith('_drop.png'), orphan_out)
+
+        # --- 边界：空路径、文件已不存在，都不得抛 ---
+        check('空路径原样返回', archive_mod.mark_outcome('', task, True) == '')
+        missing = str(pathlib.Path(base) / 'logs' / 'vision' / '不存在_pend.png')
+        check('文件不存在时原样返回', archive_mod.mark_outcome(missing, task, True) == missing)
+
+        # --- 来源代号定长（放在清理之前、改名断言之后：这里会新建文件，
+        #     提前做会把刚被改名腾出来的文件名又占回去）---
+        codes = list(archive_mod._SOURCE_CODES.values()) + [archive_mod.SOURCE_CODE_UNKNOWN]
+        check('来源代号全部等长', len(set(len(c) for c in codes)) == 1, codes)
+        check('三种剪贴板格式都有代号',
+              set(archive_mod._SOURCE_CODES) == {'PNG', 'CF_DIBV5', 'CF_DIB'},
+              archive_mod._SOURCE_CODES)
+        unknown = archive_mod.save_mounted(
+            base, img._replace(source='某种没见过的格式'), keep=10)
+        check('未知来源回退成等长的 UNK',
+              f'_{archive_mod.SOURCE_CODE_UNKNOWN}_' in pathlib.Path(unknown).name,
+              unknown)
+        # 去向列的起始位置必须与来源无关
+        offsets = set()
+        for src in ['PNG', 'CF_DIBV5', 'CF_DIB']:
+            name = pathlib.Path(
+                archive_mod.save_mounted(base, img._replace(source=src), keep=20)).name
+            offsets.add(name.index('_pend'))
+        check('三种来源下去向列都落在同一列', len(offsets) == 1, offsets)
+
+        # --- 清理：只留最近 N 张 ---
+        directory = pathlib.Path(base) / 'logs' / 'vision'
+        for f in directory.iterdir():
+            f.unlink()
+        made = []
+        for i in range(8):
+            f = directory / ('26091%d030000_DV5_pend.png' % i)
+            f.write_bytes(payload)
+            os.utime(f, (1000 + i, 1000 + i))
+            made.append(f)
+        archive_mod._prune(directory, keep=3)
+        left = sorted(p.name for p in directory.iterdir())
+        check('清理后只剩 keep 张', len(left) == 3, left)
+        check('删的是最旧的，留下最新的',
+              left == sorted(p.name for p in made[-3:]), left)
+
+        # --- 清理只动本模块自己的文件 ---
+        stranger = directory / '用户自己放的图.png'
+        stranger.write_bytes(b'x')
+        os.utime(stranger, (1, 1))   # 故意做成最旧的
+        archive_mod._prune(directory, keep=1)
+        check('不符合命名格式的文件不会被删掉', stranger.exists())
+    finally:
+        shutil.rmtree(base, ignore_errors=True)
+
+
+# ====================================================================
+# 14. 连按快捷键的合并闸门
+# ====================================================================
+
+def test_capture_coalescing(vm_mod):
+    print('\n[14] 连按快捷键的合并闸门')
+    import threading
+
+    class FakeExecutor:
+        def __init__(self):
+            self.submitted = []
+
+        def submit(self, fn):
+            self.submitted.append(fn)
+
+    vm = vm_mod.VisionManager.__new__(vm_mod.VisionManager)
+    vm._executor = FakeExecutor()
+    vm._capture_queued = False
+    vm._capture_lock = threading.Lock()
+    vm._last_mounted_seq = 0
+    vm.app = types.SimpleNamespace(state=types.SimpleNamespace(pending_image=None))
+
+    # --- 第一次按键排一个捕获 ---
+    vm._on_hotkey()
+    check('第一次按键提交一次捕获', len(vm._executor.submitted) == 1,
+          len(vm._executor.submitted))
+
+    # --- 排队期间再按多少次都只算一次 ---
+    for _ in range(5):
+        vm._on_hotkey()
+    check('排队未执行时连按不重复提交', len(vm._executor.submitted) == 1,
+          len(vm._executor.submitted))
+
+    # --- 捕获一开始执行就放闸：之后的按键必须能排进来 ---
+    # 用 _is_fresh 返回 False 让 _capture 在放闸后立刻返回，不去碰真实剪贴板
+    vm._is_fresh = lambda: False
+    vm._capture()
+    check('捕获开始执行后闸门已放开', vm._capture_queued is False)
+    vm._on_hotkey()
+    check('放闸后的按键会重新排一个捕获', len(vm._executor.submitted) == 2,
+          len(vm._executor.submitted))
+
+    # --- executor 已关闭（退出过程中）不得把闸门永久卡住 ---
+    class DeadExecutor:
+        def submit(self, fn):
+            raise RuntimeError('cannot schedule new futures after shutdown')
+
+    vm._executor = DeadExecutor()
+    vm._capture_queued = False
+    vm._on_hotkey()
+    check('提交失败时闸门被复位，不会卡死后续按键', vm._capture_queued is False)
+
+    vm._executor = None
+    vm._on_hotkey()   # 不应抛异常
+    check('executor 为 None 时直接返回', True)
+
+
+# ====================================================================
+# 15. 重复按键不重复挂载 / 提示去重
+# ====================================================================
+
+def test_repeat_press(vm_mod, notice_mod):
+    print('\n[15] 重复按键不重复挂载 / 提示去重')
+    import threading
+
+    original_seq = vm_mod.current_sequence
+    try:
+        vm = vm_mod.VisionManager.__new__(vm_mod.VisionManager)
+        vm._capture_queued = False
+        vm._capture_lock = threading.Lock()
+        vm.app = types.SimpleNamespace(state=types.SimpleNamespace(pending_image=None))
+        reached = {"n": 0}
+        vm._is_fresh = lambda: reached.__setitem__("n", reached["n"] + 1) or False
+
+        vm_mod.current_sequence = lambda: 12345
+
+        # --- 剪贴板没变 + 图还挂着 → 整个跳过，连时效检查都不走 ---
+        vm._last_mounted_seq = 12345
+        vm.app.state.pending_image = object()
+        vm._capture()
+        check('剪贴板未变且图仍在待挂时整个跳过', reached['n'] == 0, reached)
+
+        # --- 图已被某次录音消耗掉 → 同一张图要能重新挂上 ---
+        vm.app.state.pending_image = None
+        vm._capture()
+        check('图被消耗后同一张图能重新挂载', reached['n'] == 1, reached)
+
+        # --- 剪贴板变了 → 照常走 ---
+        vm.app.state.pending_image = object()
+        vm_mod.current_sequence = lambda: 99999
+        vm._capture()
+        check('剪贴板变了就照常捕获', reached['n'] == 2, reached)
+
+        # --- 序号读不到（无剪贴板访问权限）→ 不能因此永久跳过 ---
+        vm_mod.current_sequence = lambda: 0
+        vm._last_mounted_seq = 0
+        vm._capture()
+        check('序号读不到时不跳过（退回旧行为）', reached['n'] == 3, reached)
+    finally:
+        vm_mod.current_sequence = original_seq
+
+    # --- 提示去重：连续相同只打一次，换一条又能打 ---
+    printed = []
+    original_console = notice_mod.console
+    try:
+        notice_mod.console = types.SimpleNamespace(print=lambda m: printed.append(m))
+        notice_mod.reset()
+        notice_mod.notify('同一句话')
+        notice_mod.notify('同一句话')
+        notice_mod.notify('同一句话')
+        check('连续相同的提示只打一次', printed == ['同一句话'], printed)
+        notice_mod.notify('换了一句')
+        check('内容变了就照常打', len(printed) == 2, printed)
+        notice_mod.notify('同一句话')
+        check('不是紧邻重复则不跳过', len(printed) == 3, printed)
+        notice_mod.reset()
+        notice_mod.notify('同一句话')
+        check('reset 后同一句话能重新打', len(printed) == 4, printed)
+
+        # --- dedupe=False：状态真的变了就必须打，哪怕逐字相同 ---
+        # 两张不同的图完全可能渲染出一样的一行（同尺寸、同整数 KB、同来源），
+        # 吞掉第二条就等于让用户以为新图没挂上
+        printed.clear()
+        notice_mod.reset()
+        notice_mod.notify('已挂载图片 401×169', dedupe=False)
+        notice_mod.notify('已挂载图片 401×169', dedupe=False)
+        check('挂载成功这类消息逐字相同也照常打两次', len(printed) == 2, printed)
+
+        # --- 不去重的消息也要刷新「上一条」，否则会误吞更早的同款消息 ---
+        printed.clear()
+        notice_mod.reset()
+        notice_mod.notify('失败提示')                      # 打印
+        notice_mod.notify('挂载成功', dedupe=False)        # 打印，并把上一条刷成它
+        notice_mod.notify('失败提示')                      # 与上一条不同，应当打印
+        check('不去重的消息会刷新「上一条」，更早的同款不被误吞',
+              len(printed) == 3, printed)
+    finally:
+        notice_mod.console = original_console
+        notice_mod.reset()
+
+
+# ====================================================================
 # 10. 剪贴板还原不得清掉图片
 # ====================================================================
 
@@ -597,6 +1087,8 @@ def main():
     proc_mod = load('core.client.llm.llm_processor', 'core/client/llm/llm_processor.py')
 
     state_mod = load('core.client.state', 'core/client/state.py')
+    notice_mod = load('core.client.vision.notice', 'core/client/vision/notice.py')
+    sys.modules['core.client.vision'].notice = notice_mod
     clip_mod = load('core.client.vision.clipboard_image', 'core/client/vision/clipboard_image.py')
 
     test_estimate_tokens(consts)
@@ -611,9 +1103,16 @@ def main():
                      'core/client/vision/clipboard_watcher.py')
     sys.modules['core.client.vision'].clipboard_watcher = watch_mod
     sys.modules['core.client.vision'].clipboard_image = clip_mod
+    archive_mod = load('core.client.vision.image_archive',
+                       'core/client/vision/image_archive.py')
+    sys.modules['core.client.vision'].image_archive = archive_mod
     vm_mod = load('core.client.vision.vision_manager', 'core/client/vision/vision_manager.py')
     test_watcher(watch_mod)
     test_is_fresh(vm_mod, watch_mod)
+    test_encode_fallback(clip_mod)
+    test_image_archive(archive_mod, clip_mod)
+    test_capture_coalescing(vm_mod)
+    test_repeat_press(vm_mod, notice_mod)
 
     # pyclip / pynput 桩
     class PyclipStub(types.ModuleType):
@@ -671,7 +1170,7 @@ def main():
     sys.modules['core.client.clipboard'] = pkg_clip
     clipboard_mod = load('core.client.clipboard.clipboard',
                          'core/client/clipboard/clipboard.py')
-    for n in ('safe_paste', 'try_paste', 'safe_copy', 'paste_text',
+    for n in ('safe_paste', 'try_paste', 'safe_copy', 'restore_clipboard', 'paste_text',
               'save_and_restore_clipboard', 'copy_to_clipboard', 'CLIPBOARD_ENCODINGS'):
         setattr(pkg_clip, n, getattr(clipboard_mod, n))
     llm_clip = load('core.client.llm.llm_clipboard', 'core/client/llm/llm_clipboard.py')
@@ -679,6 +1178,7 @@ def main():
     sel_mod = load('core.client.llm.llm_get_selection',
                    'core/client/llm/llm_get_selection.py')
     test_clipboard_restore(clipboard_mod, sel_mod, pyclip_stub, kb_stub)
+    test_clipboard_retry(clipboard_mod, sel_mod, pyclip_stub, kb_stub)
 
     print('\n' + '=' * 60)
     print('通过 %d 项，失败 %d 项' % (len(PASS), len(FAIL)))
