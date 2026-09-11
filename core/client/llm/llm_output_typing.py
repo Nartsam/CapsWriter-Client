@@ -59,6 +59,8 @@ async def _process_paste(handler, role_config, content, matched_hotwords, used_t
     )
     polished_text = strip_state_tags(polished_text)
     if handler.monitor.should_stop():
+        logger.info(f"[{role_config.display_name or '默认'}] 输出被用户中断，"
+                    f"已生成 {len(polished_text)} 字但不粘贴")
         return ("", 0, 0.0)
 
     final_text = TextOutput.strip_punc(polished_text or content)
@@ -120,6 +122,8 @@ async def _process_streaming(handler, role_config, content, matched_hotwords, us
 
     # 阻塞，直到正常结束，或用户按下 ESC
     if handler.monitor.should_stop():
+        logger.info(f"[{role_config.display_name or '默认'}] 打字输出被用户中断，"
+                    f"已敲出 {len(''.join(chunks))} 字")
         final_text = TextOutput.strip_punc(''.join(chunks) or content)
         return (final_text, 0, 0.0)
 

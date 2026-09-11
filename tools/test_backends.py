@@ -111,7 +111,12 @@ check(ds['provider'] == 'deepseek', 'deepseek provider: %r' % ds['provider'])
 check(ds['api_url'] == 'https://api.deepseek.com',
       'deepseek api_url 必须不带 /v1（Responses API 官方示例），实为 %r' % ds['api_url'])
 check(ds['api_key'] == DEEPSEEK_SENTINEL, 'deepseek api_key 没有原样传下去')
-check(ds['model'] == 'deepseek-v4-flash-vision-exp', 'deepseek model: %r' % ds['model'])
+# 与 cpa 侧对称，跟着变量走而不是钉死名字：DeepSeek 会把旧模型名路由到新模型，
+# 名字早已不代表能力，钉住它既证明不了「还能看图」，又会在约定 23② 鼓励的日常
+# 换模型操作里必然失败。模型是否真支持视觉只有 probe_llm_live.py 能验。
+# 这里保留的是接线性质：PROFILES 必须把 DEEPSEEK_MODEL 传出来，不许另写死一个
+# （角色循环里的 cfg.model == want['model'] 是 resolve 跟 resolve 比，守不到）
+check(ds['model'] == backends.DEEPSEEK_MODEL, 'deepseek model 没有跟随 DEEPSEEK_MODEL')
 check(ds['request_timeout'] == 60, 'deepseek request_timeout: %r' % ds['request_timeout'])
 
 cpa = backends.resolve('cpa')

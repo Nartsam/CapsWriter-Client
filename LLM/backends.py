@@ -28,7 +28,7 @@ CPA_URL = 'http://192.168.5.8:8317/v1'
 
 # ==================== DeepSeek 直连 ====================
 
-DEEPSEEK_MODEL = 'deepseek-v4-flash-vision-exp'
+DEEPSEEK_MODEL = 'deepseek-flash'
 
 # 联网搜索走 Responses API，官方示例的 base_url 不带 /v1，而 APIConfig 的 provider
 # 默认值是 .../v1，故此处显式指定（见 PROJECT_INDEX 约定 15①）

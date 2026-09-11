@@ -187,6 +187,23 @@ class LLMHandler:
         """
         # 获取中断检查函数
         should_stop_check = lambda: self.monitor.should_stop()
+
+        # 中断键的起效闸门（见 StopMonitor.on_stop_pressed）：在这里统一包一层，
+        # 三条流式路径与粘贴模式就都覆盖到了，不必往 llm_processor 里塞监控对象。
+        # callback 即便原本是 None 也要传包装后的，否则粘贴模式（不给回调）永远
+        # 武装不起来，ESC 对它就成了摆设
+        monitor = self.monitor
+
+        def marking_callback(chunk: str):
+            monitor.mark_output_started()
+            if callback:
+                callback(chunk)
+
+        def marking_status(status: str):
+            # 工具状态占位（如「正在联网搜索」）同样是用户看得见的东西
+            monitor.mark_output_started()
+            status_callback(status)
+
         # 获取处理后的角色名称（空字符串 -> '默认'）
         role_name = role_config.display_name or RoleConfig.DEFAULT_ROLE_NAME
         logger.debug(f"开始 LLM 核心处理 [角色: {role_name}] [内容长度: {len(content)}]")
@@ -211,10 +228,10 @@ class LLMHandler:
         result_text, token_count, gen_time = self.processor.process(
             role_config=role_config,
             messages=messages,
-            callback=callback,
+            callback=marking_callback,
             should_stop_check=should_stop_check,
             context_manager=context_manager,
-            status_callback=status_callback,
+            status_callback=marking_status if status_callback else None,
             used_tools=used_tools
         )
 
@@ -244,90 +261,93 @@ class LLMHandler:
         from .llm_output_toast import handle_toast_mode
         from core.client.output.text_output import TextOutput
 
-        start_time = time.time()
-        # 重置中断标志
-        self.monitor.reset()
+        try:
+            start_time = time.time()
+            # 进入请求作用域：中断键的两层闸门由此开始计时，finally 保证成对关闭
+            self.monitor.begin_request()
 
-        # 1. 角色检测。连续对话中不做检测：此时「我在跟这个角色说话」已经明确，
-        #    再让角色名保留劫持能力，说「翻译一下这句话」就会被劫走
-        if forced_role is not None:
-            role_config, content = forced_role, text
-        else:
-            role_config, content = self.detect_role(text)
+            # 1. 角色检测。连续对话中不做检测：此时「我在跟这个角色说话」已经明确，
+            #    再让角色名保留劫持能力，说「翻译一下这句话」就会被劫走
+            if forced_role is not None:
+                role_config, content = forced_role, text
+            else:
+                role_config, content = self.detect_role(text)
 
-        # 2. 如果不匹配任何需要处理的角色
-        if not role_config:
+            # 2. 如果不匹配任何需要处理的角色
+            if not role_config:
 
-            # 打字输出
-            await output_text(text, paste)
+                # 打字输出
+                await output_text(text, paste)
             
-            # 更新全局状态并 UDP 广播
-            self.app.state.set_output_text(text)
-            broadcast_output_udp(text)
+                # 更新全局状态并 UDP 广播
+                self.app.state.set_output_text(text)
+                broadcast_output_udp(text)
 
-            return LLMResult(result=text, role_name=None, processed=False, 
-                                token_count=0, polish_time=0, input_text=text)
+                return LLMResult(result=text, role_name=None, processed=False, 
+                                    token_count=0, polish_time=0, input_text=text)
 
 
-        # 只有录音入口提供 anchor，文件转录和默认角色不会创建提醒。
-        # 拦截在 Companion、选区读取和图片上传之前；none 才恢复原来的角色请求。
-        reminders = getattr(self.app, 'reminders', None)
-        if (reminders is not None and reminder_anchor is not None
-                and role_config.display_name
-                and role_config.display_name != RoleConfig.DEFAULT_ROLE_NAME):
-            message = await reminders.handle(role_config, content, reminder_anchor)
-            if message is not None:
+            # 只有录音入口提供 anchor，文件转录和默认角色不会创建提醒。
+            # 拦截在 Companion、选区读取和图片上传之前；none 才恢复原来的角色请求。
+            reminders = getattr(self.app, 'reminders', None)
+            if (reminders is not None and reminder_anchor is not None
+                    and role_config.display_name
+                    and role_config.display_name != RoleConfig.DEFAULT_ROLE_NAME):
+                message = await reminders.handle(role_config, content, reminder_anchor)
+                if message is not None:
+                    return LLMResult(
+                        result=message, role_name=role_config.display_name, processed=True,
+                        token_count=0, polish_time=time.time() - start_time, input_text=content,
+                        reminder_handled=True)
+
+            # 3. Companion 转发：连接 Electron 时，跳过本地 LLM，将清洗后的文本转发
+            if self.app.companion.has_connections:
+                role_name = role_config.display_name or RoleConfig.DEFAULT_ROLE_NAME
+                await self.app.companion.emit_user_message(content, role_name)
+                logger.info(f"已转发至 Companion: [{role_name}] {content[:50]}")
                 return LLMResult(
-                    result=message, role_name=role_config.display_name, processed=True,
-                    token_count=0, polish_time=time.time() - start_time, input_text=content,
-                    reminder_handled=True)
+                    result=content, role_name=role_name, processed=True,
+                    token_count=0, polish_time=0, input_text=content)
 
-        # 3. Companion 转发：连接 Electron 时，跳过本地 LLM，将清洗后的文本转发
-        if self.app.companion.has_connections:
-            role_name = role_config.display_name or RoleConfig.DEFAULT_ROLE_NAME
-            await self.app.companion.emit_user_message(content, role_name)
-            logger.info(f"已转发至 Companion: [{role_name}] {content[:50]}")
+            # 4. 根据输出模式分发处理
+            # used_tools 由各输出模式一路透传到流解析层，在那里追加实际触发的工具 ID。
+            # 不用返回值携带：三个输出模式里有十来处提前 return 的降级分支，扩成四元组
+            # 漏改一处就是运行时崩溃；也不用 handler 上的实例属性，避免跨请求残留
+            used_tools = []
+            # 角色不支持视觉就不带图。不校验 model 是否真是视觉模型——那是角色文件
+            # 作者的责任，写错了服务端会返 400 并由约定 18 的诊断日志打到终端
+            image_for_request = image_data if role_config.enable_vision else None
+            if image_data and not image_for_request:
+                logger.info(f"角色「{role_config.display_name or RoleConfig.DEFAULT_ROLE_NAME}」"
+                            f"未开启 enable_vision，本次图片不上传")
+            image_used = bool(image_for_request)
+            if role_config.output_mode == 'toast':
+                result, token_count, gen_time = await handle_toast_mode(
+                    self, text, role_config, matched_hotwords, content, used_tools, image_for_request)
+            else: # typing
+                result, token_count, gen_time = await handle_typing_mode(
+                    self, text, paste, matched_hotwords, role_config, content, used_tools,
+                    image_for_request)
+
+            # 5. 后置处理
+            # 更新全局状态（即便是中断了，也记录已经输出的部分）
+            if result:
+                self.app.state.set_output_text(result)
+                broadcast_output_udp(result)
+
             return LLMResult(
-                result=content, role_name=role_name, processed=True,
-                token_count=0, polish_time=0, input_text=content)
-
-        # 4. 根据输出模式分发处理
-        # used_tools 由各输出模式一路透传到流解析层，在那里追加实际触发的工具 ID。
-        # 不用返回值携带：三个输出模式里有十来处提前 return 的降级分支，扩成四元组
-        # 漏改一处就是运行时崩溃；也不用 handler 上的实例属性，避免跨请求残留
-        used_tools = []
-        # 角色不支持视觉就不带图。不校验 model 是否真是视觉模型——那是角色文件
-        # 作者的责任，写错了服务端会返 400 并由约定 18 的诊断日志打到终端
-        image_for_request = image_data if role_config.enable_vision else None
-        if image_data and not image_for_request:
-            logger.info(f"角色「{role_config.display_name or RoleConfig.DEFAULT_ROLE_NAME}」"
-                        f"未开启 enable_vision，本次图片不上传")
-        image_used = bool(image_for_request)
-        if role_config.output_mode == 'toast':
-            result, token_count, gen_time = await handle_toast_mode(
-                self, text, role_config, matched_hotwords, content, used_tools, image_for_request)
-        else: # typing
-            result, token_count, gen_time = await handle_typing_mode(
-                self, text, paste, matched_hotwords, role_config, content, used_tools,
-                image_for_request)
-
-        # 5. 后置处理
-        # 更新全局状态（即便是中断了，也记录已经输出的部分）
-        if result:
-            self.app.state.set_output_text(result)
-            broadcast_output_udp(result)
-
-        return LLMResult(
-            result=result,
-            role_name=role_config.display_name or RoleConfig.DEFAULT_ROLE_NAME,
-            processed=True,
-            token_count=token_count,
-            polish_time=time.time() - start_time,
-            input_text=content,
-            generation_time=gen_time,
-            used_tools=used_tools,
-            image_used=image_used
-        )
+                result=result,
+                role_name=role_config.display_name or RoleConfig.DEFAULT_ROLE_NAME,
+                processed=True,
+                token_count=token_count,
+                polish_time=time.time() - start_time,
+                input_text=content,
+                generation_time=gen_time,
+                used_tools=used_tools,
+                image_used=image_used
+            )
+        finally:
+            self.monitor.end_request()
 
 
 # ======================================================================

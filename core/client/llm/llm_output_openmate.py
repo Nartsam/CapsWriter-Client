@@ -585,7 +585,16 @@ async def _handle_openmate_mode(handler, client, role_config, content, matched_h
         )
 
         if handler.monitor.should_stop():
-            # 用户中断：取消流（OpenMate 不写历史），与本地关闭 Toast 行为一致
+            # 用户中断：取消流（OpenMate 不写历史），与本地关闭 Toast 行为一致。
+            # 这条分支此前一行日志都不打，而 llm_processor 的空回复告警又被中断
+            # 抑制，于是「OpenMate 一片空白」在事后完全无从追查（2026-09-12 故障）
+            role_label = role_config.display_name or '默认'
+            if sender.delivered:
+                logger.info(f"[{role_label}] 输出被用户中断，已发往 OpenMate 的内容被取消"
+                            f"（正文 {len(polished_text)} 字）")
+            else:
+                logger.info(f"[{role_label}] 输出被用户中断，尚无任何内容发往 OpenMate"
+                            f"（正文 {len(polished_text)} 字）")
             await to_thread(sender.abort)
             if not sender.delivered:
                 # 未发出任何内容，typing 不会被消息自动熄灭，显式关闭

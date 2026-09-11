@@ -4,13 +4,14 @@ LLM Toast 输出模式
 流式显示在浮动窗口中，完成后停留 3 秒
 """
 import asyncio
-import logging
 
 from core.client.output.text_output import TextOutput
 from core.tools.asyncio_to_thread import to_thread
 from .llm_state_tags import StateTagFilter, strip_state_tags
-
-logger = logging.getLogger(__name__)
+# 本模块此前用 logging.getLogger(__name__)，那是 'core.client.llm.llm_output_toast'
+# 层级，与项目日志器 'client' 不在同一棵树上，写出去的记录根本进不了 logs/ 下的
+# 文件——「Toast 窗口创建失败」这类关键错误因此一直是隐形的。改为复用包内日志器
+from . import logger
 
 LLM_TOAST_FONT_FAMILY = "Microsoft YaHei UI"
 LLM_TOAST_FONT_SIZE = 16  # 兜底常量
@@ -123,6 +124,9 @@ async def handle_toast_mode(handler, text: str, role_config=None, matched_hotwor
         # 拿它冒充模型输出会让控制台、md 记录、UDP 广播三处都误报成一次成功回复，
         # 把静默失败伪装得连事后都查不出来（typing 模式的降级是真打字出去了，不同）
         if handler.monitor.should_stop():
+            # 中断分支同样要留痕：llm_processor 的空回复告警被中断抑制了
+            logger.info(f"[{role_config.display_name or '默认'}] 输出被用户中断，"
+                        f"弹窗已关闭（已展示 {len(''.join(chunks))} 字）")
             toast_manager.close_toast(msg_id)
             return (''.join(chunks), token_count, gen_time)
         else:

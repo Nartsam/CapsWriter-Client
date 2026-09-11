@@ -103,6 +103,9 @@ class ReminderService:
             stage = '模型调用与 JSON 解析'
             result = await asyncio.wait_for(to_thread(analyzer.analyze, self.app.llm, role, content,
                                                       snapshot, states, anchor, timeout), timeout=timeout)
+            # 提醒分析是非流式调用，不会触发 StopMonitor 的起效闸门（见其
+            # on_stop_pressed），因此 should_stop() 在这里实际上恒为假；留着它是
+            # 为了将来分析改成流式时语义自动正确，取消仍以 self.stopped 为准
             if self.stopped or self.app.llm.monitor.should_stop():
                 raise ReminderError('提醒未设置：本次提醒任务已取消。')
             operation = result.get('operation')

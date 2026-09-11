@@ -8,7 +8,7 @@ name = '雾切响子|雾切妹妹'                         # 角色名称（留�
 enabled = True                           # 是否启用此角色
 
 # ==================== API 配置 ====================
-backend = 'deepseek'                                # 后端：'deepseek'（直连）或 'cpa'（局域网网关）。模型 / 地址 / 超时见 LLM/backends.py
+backend = 'cpa'                                # 后端：'deepseek'（直连）或 'cpa'（局域网网关）。模型 / 地址 / 超时见 LLM/backends.py
 backend_config = resolve(backend)
 provider = backend_config['provider']               # API 提供商
 api_url = backend_config['api_url']                 # API 地址

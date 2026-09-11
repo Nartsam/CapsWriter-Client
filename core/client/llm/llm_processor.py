@@ -369,6 +369,8 @@ class LLMProcessor:
 
         if not full_response.strip() and not stopped:
             logger.warning("Ollama 没有返回任何正文（开启 think 时内容可能全在思考字段里）")
+        elif stopped:
+            logger.info(f"Ollama 流被用户中断：正文 {len(full_response)} 字")
 
         return full_response.strip(), total_tokens, generation_time
 
@@ -424,6 +426,9 @@ class LLMProcessor:
         summary = f"结束原因 {finish_reason or '未知'}，{usage_summary}，正文 {len(full_response)} 字"
         if not full_response.strip() and not stopped:
             logger.warning(f"模型没有返回任何正文（{summary}）")
+        elif stopped:
+            # 同 Responses 路径：中断抑制了空回复告警，这里补终局快照
+            logger.info(f"Chat Completions 流被用户中断：{summary}")
         elif finish_reason == 'length':
             logger.warning(f"回复达到 max_tokens 被截断（{summary}）")
         else:
@@ -588,6 +593,10 @@ class LLMProcessor:
                    f"事件 [{self._format_event_counts(event_counts)}]")
         if not full_response.strip() and not stopped:
             logger.warning(f"模型没有返回任何正文（{summary}）")
+        elif stopped:
+            # 中断会把上面那条空回复告警一并抑制掉，这里必须自己留下终局快照，
+            # 否则「（空回复，详见日志）」在日志里对不上任何一条记录
+            logger.info(f"Responses 流被用户中断：{summary}")
         else:
             logger.debug(f"Responses 流结束：{summary}")
 

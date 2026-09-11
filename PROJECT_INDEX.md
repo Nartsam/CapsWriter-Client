@@ -150,7 +150,7 @@ CapsWriter-Offline 是一个 Windows 离线语音输入工具（GitHub: HaujetZh
 | `llm_output_toast.py` | toast 模式输出（弹窗显示，支持 Markdown 渲染，并按角色配置传入字体、颜色、透明度、圆角等样式）。窗口走智能时长（`smart_duration=True`）：时长随字数对数计算、悬停不顺延且到期后移开即关、拖拽后永不自动关闭；创建新窗口前顶掉所有旧的 LLM 白色对话框（见约定 17） |
 | `llm_output_openmate.py` | OpenMate 桌面看板输出。toast 角色在探测到 OpenMate 以 external 模式运行（`GET /health`）时改由其展示：未配置目标角色时按 `GET /v1/presentation` 解析当前生效角色（每次都查），自动获取该角色情绪状态列表（`GET /v1/characters/{id}/states`，带缓存）并注入 `<state:情绪ID>` 标签指令、后台线程聚合分片发送（流/队列固定到已注入状态的角色）、ESC 中断映射为取消、OpenMate 中途失效时剥离标签回退本地 Toast。角色开启 `enable_result_splitter` 时走 open 分段队列（`POST /v1/messages` + `PATCH` 追加）：回复按 `result_split_delimiter` 切成多条消息逐条展示，边生成边追加；否则走流式正文。接管确认后本地「正在处理结果」悬浮提示移交为 OpenMate 的 typing 指示（`PUT /v1/presentation/typing`，开启失败则保留本地提示）。API 文档见 OpenMate/docs/api/external-http-api.md |
 | `llm_state_tags.py` | **状态标签的识别与剥离**（`STATE_TAG_RE` / `strip_state_tags` / `StateTagFilter`）。标签是**展示层**指令：对话历史存原文，本地 Toast、打字、md、UDP 在展示前才剥（见约定 10）。流式分片会把 `<state:微笑>` 切成 `<sta` + `te:微笑>`，逐片正则拦不住，故提供 `StateTagFilter`：只暂存可能还会补成标签的那截尾巴，其余立即放行 |
-| `llm_stop_monitor.py` | **StopMonitor**。监听 ESC 键中断 LLM 输出 |
+| `llm_stop_monitor.py` | **StopMonitor**。监听 ESC 键中断 LLM 输出。中断键是全局热键，故设两层闸门：`begin_request`/`end_request` 圈出请求作用域，`mark_output_started` 在首个正文分片（或首条工具状态占位）到达时才让按键生效（见约定 25） |
 | `llm_watcher.py` | 监视 LLM/ 目录变化，自动重载角色 |
 | `llm_get_selection.py` | 通过 Ctrl+C 获取选中文字 |
 
@@ -489,6 +489,18 @@ Electron 应用连接到 ws://127.0.0.1:6019
 
 24. **一次性提醒是独立任务**：仅具名角色/连续具名角色且录音入口有结束时间基准时参与，拦截位置早于 Companion。宽松预筛仅作减流，LLM 一次返回操作、时间语义、事项与角色文案，本地强校验时间与存储；`none` 才串行恢复普通角色流程，失败直接内部通知。提醒不读选区/历史/图片，不调用工具/搜索，不记角色历史/md，不更新角色输出状态或 UDP；原始听写归档保留，连续对话照常进入/刷新，本句图片成功失败都消费且注明「提醒任务不使用图片」。处理完成后仅普通任务安排自动回车，避免提醒向前台注入按键。内部状态独立底部固定超时窗口；到期文案复用普通角色窗口或 OpenMate 批次。Client 将待执行事件原子持久化到 `logs/reminders.json`，文件缺失或无效时自动重建空快照；OpenMate 接受后的队列暂不持久化。完整行为与崩溃边界见 [docs/REMINDERS.md](docs/REMINDERS.md)。
 
+25. **中断键有两层闸门，且中断必须留痕**：`llm_stop_key`（默认 esc）是 pynput 全局热键，在**任何**前台程序里按下都会打到 `StopMonitor.on_stop_pressed`，所以不能见按就停。
+
+    ① **作用域闸门**：`process_and_output` 用 try/finally 包住整段，进入时 `begin_request()`、离开时 `end_request()`（后者顺带清停止标志，不让已置位的标志跨出请求边界）。作用域外的按键直接忽略，连日志都压在 DEBUG——那种按键占绝大多数。
+
+    ② **起效闸门**：请求在跑、但**一个正文字符都还没产出**时按下不作中断，只记一条 INFO。武装点统一在 `LLMHandler.process` 包装 `callback`/`status_callback`，首个正文分片或首条工具状态占位触发 `mark_output_started()`，三条流式路径与粘贴模式（回调为 None 时也要传包装后的那个，否则永远武装不起来）全部覆盖。**判据是「用户屏幕上有没有东西」**：本地 Toast 还没弹、OpenMate 还没收到任何分片时，这一下不可能是冲着「停下正在显示的回复」来的。代价是彻底卡住、零输出的请求不能再用按键提前掐掉，只能等 `request_timeout`（两套后端均 60s）——那种状态下按键本来也没有任何反馈。
+
+    ③ **中断必须在日志里自证**。此前一次「零输出中断」会让三处诊断同时失效：`on_stop_pressed` 只打 DEBUG；`llm_processor` 三条流的空回复告警都带 `not stopped` 条件而被抑制（见约定 18）；三条输出路径的中断分支一行不打。结果是控制台只剩「（空回复，详见日志）」而日志里什么都没有，OpenMate 一片空白且无从追查（2026-09-12 实际故障）。现在 `stopped` 分支各自补 INFO 终局快照，输出侧补「已展示/已发出 N 字」，且区分「尚无任何内容发往 OpenMate」。**新增流式路径或输出模式时，空正文告警与中断留痕两条都要补**。
+
+    ④ **诊断一律走 INFO，不许升 WARNING**：`logger.py` 把控制台处理器固定在 WARNING，升级就等于往运行终端刷字。中断是正常操作，不该在命令窗口留下任何输出。
+
+    ⑤ 连带修正：`llm_output_toast.py` 原先用 `logging.getLogger(__name__)`，那是 `core.client.llm.*` 层级，与项目日志器 `client` 不在同一棵树上，写出去的记录根本进不了 `logs/`——「Toast 窗口创建失败」这类错误一直是隐形的，已改为 `from . import logger`。提醒服务里的 `monitor.should_stop()` 因②实际恒为假（分析是非流式的），取消以 `self.stopped` 为准，该处已加注释。离线回归见 `tools/test_stop_gate.py`。
+
 ## 开发环境与验证
 
 提醒解析诊断：Toast 显示具体失败项，INFO 文件日志记录调用阶段、响应状态和有界字段/JSON 片段，终端不额外打印诊断。详见 `docs/REMINDERS.md`。
@@ -532,6 +544,7 @@ Electron 应用连接到 ws://127.0.0.1:6019
 | 换 CPA 网关用哪个模型 / 改网关地址 | `LLM/backends.py` 的 `CPA_MODEL` / `CPA_URL`（改一处，所有走 cpa 的角色一起变） |
 | 新增一套后端 | `LLM/backends.py` 的 `PROFILES`，密钥加进 `LLM/secrets.py`（未被 git 跟踪） |
 | 修改 LLM 处理逻辑 | `llm/llm_handler.py`, `llm/llm_processor.py` |
+| 修改中断键的生效条件 | `config_client.py` (`llm_stop_key`)、`llm/llm_stop_monitor.py`（两层闸门）、`llm/llm_handler.py`（`process` 的回调包装是唯一武装点、`process_and_output` 的 try/finally 是唯一作用域），验证跑 `tools/test_stop_gate.py`（见约定 25） |
 | 开关角色联网搜索 | 角色文件的 `enable_web_search`/`enable_datetime`/`request_timeout`/`api_url`；实现在 `llm/llm_processor.py` 的 `_build_responses_params` 与 `_process_responses_stream` |
 | 修改热词匹配 | `hotword/hot_phoneme.py` |
 | 修改 UI 悬浮提示 | `core/client/ui/recording_indicator.py` |
