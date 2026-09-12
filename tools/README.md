@@ -30,6 +30,7 @@ python tools/run_tests.py
 | `test_backends.py` | LLM 后端切换（约定 23）：两套 profile 取值、未知名字回退、`backends.py` 必须排在角色文件之前（热切换的前提）、四个角色在 `backend='deepseek'` 下与改造前逐字相同 |
 | `test_toast_padding.py` | Toast 顶部留白分岔（约定 17）：LLM 白框 40px 拖动区 / 普通 toast 15px、画布坐标与窗口高度、`MIN_WINDOW_HEIGHT` 兜底未触发、判别器与 `close_llm_windows` 同源。**真构造 Tk 窗口、会闪窗**，不进流水线，见下 |
 | `probe_llm_live.py` | **真发请求、消耗额度**，单独跑。见下 |
+| `probe_role_segments.py` | **真发请求、消耗额度**。用当前两套后端检查雾切响子或新岛真的分条和语气；默认仅测当前提示词，`--baseline` 可读归档提示词复现对照。生产发送器只在内存中收集消息，不向 OpenMate 投递；方法与最终结果见 `docs/ROLE_SEGMENT_FIX_2026-09-13.md` |
 
 ## 为什么 test_toast_padding.py 不进流水线
 

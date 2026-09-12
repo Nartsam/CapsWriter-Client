@@ -5,7 +5,7 @@ from LLM.backends import resolve
 
 # ==================== 基本信息 ====================
 name = '翻译'                           # 角色名称（留空表示默认）
-enabled = True                           # 是否启用此角色
+enabled = False                           # 是否启用此角色
 
 # ==================== API 配置 ====================
 backend = 'deepseek'                                # 后端：'deepseek'（直连）或 'cpa'（局域网网关）。模型 / 地址 / 超时见 LLM/backends.py
