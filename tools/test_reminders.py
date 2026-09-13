@@ -120,6 +120,26 @@ class TimeTests(unittest.TestCase):
         self.assertFalse(fullscreen.is_fullscreen((1920, 0, 2800, 600), (1920, 0, 3840, 1080)))
 
 
+class PrefilterTests(unittest.TestCase):
+    def test_plain_numbers_do_not_trigger_analysis(self):
+        for text in ['请简单介绍一下你自己。', '雾切妹妹，请简单介绍一下你自己。',
+                     '解释一下这段代码', '随便输出一段200字左右的文本', '给我三个例子',
+                     '1加2等于几', '数字5是什么意思', '一', '半', '你好']:
+            with self.subTest(text=text):
+                self.assertFalse(analyzer.may_be_reminder(text))
+
+    def test_reminder_words_and_time_expressions_are_independent(self):
+        for text in ['5分钟后提醒我一下', '五分钟后提醒我一下', '10分钟后记得让我站起来',
+                     '5分钟后起来活动', '五分钟后起来活动', '半小时后喝水', '半个小时后喝水',
+                     '一个半小时后喝水', '5 分钟后喝水', '30秒后喝水', '一刻钟后喝水',
+                     '两点半喝水', '9:30喝水', '９：３０喝水', '9月14号喝水', '9/14喝水',
+                     '2026-09-14喝水', '待会儿叫我', '下班后喝水', '明早喝水',
+                     '提醒我喝水', '记得让我起来', '查看待执行提醒', '取消喝水提醒',
+                     '每天叫我起来', '把提醒改到晚点', '两三个小时后喝水']:
+            with self.subTest(text=text):
+                self.assertTrue(analyzer.may_be_reminder(text))
+
+
 class StoreTests(unittest.TestCase):
     def test_unrepresentable_timestamp_is_reset(self):
         with tempfile.TemporaryDirectory(dir=ROOT / 'tools') as directory:
@@ -357,6 +377,15 @@ class ServiceTests(unittest.IsolatedAsyncioTestCase):
         with patch.object(analyzer, 'analyze', return_value={'operation': 'none'}):
             self.assertIsNone(await self.service.handle(self.role, '解释这句话里的十分钟', stamp()))
 
+    async def test_five_minute_reminder_reaches_analysis_and_storage(self):
+        with patch.object(analyzer, 'analyze', return_value=payload(300)) as analyze:
+            message = await self.service.handle(self.role, '5分钟后提醒我一下', stamp())
+        analyze.assert_called_once()
+        self.assertEqual(analyze.call_args.args[2], '5分钟后提醒我一下')
+        self.assertIn('提醒已设置', message)
+        self.assertEqual(len(self.service.store.items), 1)
+        self.assertEqual(self.service.store.items[0].due_at, stamp() + 300)
+
     async def test_analysis_cancellation_no_commit(self):
         self.app.llm.monitor.should_stop = lambda: True
         with patch.object(analyzer, 'analyze', return_value=payload()):
@@ -572,6 +601,29 @@ class RoutingTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(result.image_used)
         self.assertEqual(self.toast.handle_toast_mode.call_args.args[-1], 'image')
         self.namespace['broadcast_output_udp'].assert_called_once_with('普通回答')
+
+    async def test_plain_numbers_reach_role_without_reminder_analysis(self):
+        # 使用真实提醒入口，防止仅测试正则却漏掉路由仍调用分析或吞掉普通回复。
+        with tempfile.TemporaryDirectory(dir=ROOT / 'tools') as directory:
+            self.app.base_dir = Path(directory)
+            self.app.llm = self.handler
+            self.app.reminders = service_module.ReminderService(self.app)
+            self.app.reminders.stopped = False
+            with patch.object(analyzer, 'analyze', side_effect=RuntimeError('backend unavailable')) as analyze, \
+                    patch.object(out, 'show_status', new_callable=AsyncMock) as status:
+                for content in ['请简单介绍一下你自己。', '随便输出一段200字左右的文本']:
+                    with self.subTest(content=content):
+                        self.handler.detect_role.return_value = (self.role, content)
+                        self.toast.handle_toast_mode.reset_mock()
+                        result = await self.process(self.handler, '助理，' + content,
+                                                    reminder_anchor=stamp(), image_data='image')
+                        self.assertFalse(result.reminder_handled)
+                        self.assertEqual(result.result, '普通回答')
+                        self.assertTrue(result.image_used)
+                        self.toast.handle_toast_mode.assert_awaited_once()
+                analyze.assert_not_called()
+                status.assert_not_awaited()
+            self.assertEqual(self.app.reminders.store.items, [])
 
     async def test_forced_named_role_is_eligible(self):
         result = await self.process(self.handler, '十分钟后叫我', forced_role=self.role, reminder_anchor=stamp())
