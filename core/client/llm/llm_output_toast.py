@@ -22,11 +22,12 @@ LLM_TOAST_CORNER_RADIUS = 12
 
 
 async def handle_toast_mode(handler, text: str, role_config=None, matched_hotwords=None, content=None,
-                            used_tools=None, image_data=None) -> tuple:
+                            used_tools=None, image_data=None, selection=None) -> tuple:
     """Toast 浮动窗口模式
 
     used_tools: 出参列表，本次请求触发的服务端工具 ID 会追加进来
     image_data: 随本句上传的图片（base64 data URL），需一路转发到 handler.process
+    selection: 本次请求已读取的选区快照，需一路转发到 handler.process
     """
     from core.ui.toast import ToastMessageManager, ToastMessage
     # 兼容性检测
@@ -40,7 +41,7 @@ async def handle_toast_mode(handler, text: str, role_config=None, matched_hotwor
     # OpenMate 接入：探测到 OpenMate 以 external 模式运行时，改由其展示，不弹本地 Toast
     from .llm_output_openmate import try_openmate_mode
     openmate_result = await try_openmate_mode(
-        handler, role_config, content, matched_hotwords, used_tools, image_data)
+        handler, role_config, content, matched_hotwords, used_tools, image_data, selection)
     if openmate_result is not None:
         # OpenMate 接管展示：同样顶掉旧的本地 LLM 白色对话框。若不同时顶，之前被拖拽过
         # （永不自动关闭）的本地窗口会在用户一直走 OpenMate 路径时永久残留——本地既不弹
@@ -111,7 +112,7 @@ async def handle_toast_mode(handler, text: str, role_config=None, matched_hotwor
         # 流式调用 LLM
         polished_text, token_count, gen_time = await to_thread(
             handler.process, role_config, content, matched_hotwords, stream_toast_chunk,
-            show_toast_status, used_tools, image_data
+            show_toast_status, used_tools, image_data, selection
         )
 
         tail = tag_filter.finish()

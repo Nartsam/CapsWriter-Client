@@ -38,7 +38,7 @@ class RoleConfig:
     enable_thinking: bool = False                 # 是否启用思考（仅 Ollama 支持）
     enable_history: bool = False                  # 是否保留对话历史
     enable_hotwords: bool = False                 # 是否读取潜在热词列表
-    enable_read_selection: bool = False           # 是否读取鼠标所选文字（通过 Ctrl+C）
+    enable_read_selection: bool = False           # 是否读取鼠标所选文字（默认 UI Automation）
     selection_max_length: int = 1000              # 选中文字最大长度
     enable_web_search: bool = False               # 联网搜索：改走 Responses API 并挂载服务端内置
                                                   # web_search 工具，由模型自行决定是否检索

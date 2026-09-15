@@ -27,6 +27,9 @@ python tools/run_tests.py
 | `test_state_tags.py` | `StateTagFilter`。重点是**穷举分片切割位置**——标签被切在任意一处都必须被完整吃掉 |
 | `test_openmate_segments.py` | OpenMate 分段发送：纯标签段随下一段正文发送、尾部标签丢弃、跨分片一致性、首段及时交付、取消与失败回退；真实发送线程和请求构造，HTTP 在内存中收集 |
 | `test_history_payload.py` | 对话历史的上行载荷：不带 `timestamp`、不交出活引用、assistant 保留状态标签、旧图降级 |
+| `test_selection.py` | 选区捕获（约定 26）：默认不发键/不碰剪贴板、回退条件、焦点与超时、Scintilla 范围/编码/标量消息边界、历史去重预览、typing/toast/openmate 单次快照转发、终端输出顺序；所有输入与外部接口均为桩 |
+| `test_selection_native.py` | 原生 Windows 冒烟：自有隐藏 Edit 真实 UIA 读取，加自有 Scintilla 协议窗口验证只读 Win32 消息链路；后者不是真实 Scintilla 库。覆盖 Unicode、长度上限、空光标和剪贴板序号不变；仅替换焦点定位，无键盘输入或剪贴板写入。需 Windows 会话，不进流水线，不能替代 Notepad4 / Windows Terminal/TUI 验收 |
+| `probe_selection.py` | 只读诊断真实前台 UIA 父链、控件类型、进程号与选区长度；不打印选区正文，不发送输入或读写剪贴板。`--wait 10` 留出手动选择时间，`--depth 16` 可复现旧上限，`--all-patterns` 检查各祖先的选区长度（该模式最后的 status 不代表捕获结果）；`--samples 23 --interval 2` 可连续观察焦点/选区变化，控件 Name 仅按编辑器/终端标签分类，不输出原文。需要用户桌面访问，沙箱隔离桌面可能返回 HWND=0 |
 | `test_backends.py` | LLM 后端切换（约定 23）：两套 profile 取值、未知名字回退、`backends.py` 必须排在角色文件之前（热切换的前提）、四个角色在 `backend='deepseek'` 下与改造前逐字相同 |
 | `test_toast_padding.py` | Toast 顶部留白分岔（约定 17）：LLM 白框 40px 拖动区 / 普通 toast 15px、画布坐标与窗口高度、`MIN_WINDOW_HEIGHT` 兜底未触发、判别器与 `close_llm_windows` 同源。**真构造 Tk 窗口、会闪窗**，不进流水线，见下 |
 | `probe_llm_live.py` | **真发请求、消耗额度**，单独跑。见下 |
@@ -43,6 +46,11 @@ python tools/test_toast_padding.py
 ```
 
 改完 `core/ui/toast_*.py` 手动跑一次。它不联网、不花额度。
+
+## 原生选区冒烟
+
+修改原生选区模块后另跑 `python tools/test_selection_native.py`；它使用隐藏的
+Win32 控件，不需要 Tk 或第三方依赖，也不夺取用户窗口焦点。
 
 ## 为什么需要 probe_llm_live.py
 

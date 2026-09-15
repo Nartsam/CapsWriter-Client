@@ -87,6 +87,11 @@ class ClientConfig:
     llm_enabled = True          # 是否启用 LLM 润色功能，需要配置 LLM/ 目录下的角色文件
     llm_stop_key = 'esc'        # 中断 LLM 输出的快捷键
 
+    # 选区默认通过 UIA 获取，Scintilla 编辑器另有只读查询；不发送按键、不修改剪贴板。
+    # 开启后，仅在接口不支持、报错或超时时回退到模拟 Ctrl+C；明确没有选区时不回退。
+    # Ctrl+C 可能中断终端/TUI 中的任务，默认关闭。此设置对所有角色统一生效。
+    selection_fallback_to_ctrl_c = False
+
     # 截图快捷键：按下后把剪贴板当前内容里的图片读进内存暂存，随**下一句话**上传给
     # LLM 角色。用系统截图工具（Win+Shift+S 等）或任何能把图片放进剪贴板的方式先截图，
     # 再按此键；剪贴板里不是图片就什么也不做。

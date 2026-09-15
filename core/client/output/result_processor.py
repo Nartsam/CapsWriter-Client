@@ -27,6 +27,7 @@ from core.client.audio.file_manager import AudioFileManager
 from core.client.llm.llm_write_md import write_llm_md
 from core.client.llm.llm_constants import ToolNames, IMAGE_PLACEHOLDER
 from core.client.llm.llm_role_config import RoleConfig
+from core.client.llm.llm_get_selection import format_selection_preview
 # 悬浮录音提示：用于显示等待、进度、错误和处理完成后的隐藏。
 from core.client.ui import (
     hide_recording_indicator,
@@ -358,24 +359,29 @@ class ResultProcessor:
         hotword_label = f'  热词时延: {hotword_elapsed:.2f}s' if Config.hot else ''
         console.print(f'    转录时延：{delay:.2f}s{hotword_label}')
 
-        # 先显示原始识别结果
         original_text_stripped = TextOutput.strip_punc(original_text)
-        console.print(f'    识别结果：[green]{original_text_stripped}')
-
-        # 如果发生了热词替换，显示替换后的结果
-        if original_text_stripped != text:
-            console.print(f'    热词替换：[cyan]{text}')
-            logger.debug(f"热词替换后: {text[:50]}{'...' if len(text) > 50 else ''}")
-
-        # 热词匹配情况
         matched_hotwords = correction_result.matchs
         potential_hotwords = correction_result.similars
+        recognition_printed = False
 
-        # 1. 显示完全匹配/已替换的热词
-        if matched_hotwords and Config.hot:
-            # 提取热词文本 (现为 (原词, 热词, 分数))
-            replaced_info = [f"{origin}->[green4]{hw}[/]" for origin, hw, score in matched_hotwords]
-            console.print(f'    完全匹配：{", ".join(replaced_info)}')
+        def print_recognition(selection=None):
+            # 角色确认并读取选区后才打印，保证预览在识别结果之前，且两者属于同一次
+            # 读取。无角色、提醒、Companion 与异常路径同样要打印一次识别结果。
+            nonlocal recognition_printed
+            if recognition_printed:
+                return
+            recognition_printed = True
+            preview = format_selection_preview(selection) if selection is not None else ''
+            if preview:
+                console.print(preview, markup=False, highlight=False,
+                              no_wrap=True, overflow='ellipsis')
+            console.print(f'    识别结果：[green]{original_text_stripped}')
+            if original_text_stripped != text:
+                console.print(f'    热词替换：[cyan]{text}')
+                logger.debug(f"热词替换后: {text[:50]}{'...' if len(text) > 50 else ''}")
+            if matched_hotwords and Config.hot:
+                replaced_info = [f"{origin}->[green4]{hw}[/]" for origin, hw, score in matched_hotwords]
+                console.print(f'    完全匹配：{", ".join(replaced_info)}')
 
         # 2. 潜在热词记录到 log
         if potential_hotwords and Config.hot:
@@ -405,15 +411,20 @@ class ResultProcessor:
         # LLM 处理和输出
         llm_result = None
         if Config.llm_enabled:
-            llm_result = await self.app.llm.process_and_output(
-                text,
-                paste=paste,
-                matched_hotwords=potential_hotwords,  # 传递上下文热词给 LLM
-                forced_role=forced_role,
-                image_data=pending_image.data_url if pending_image else None,
-                reminder_anchor=message.time_start + message.duration
-            )
+            try:
+                llm_result = await self.app.llm.process_and_output(
+                    text,
+                    paste=paste,
+                    matched_hotwords=potential_hotwords,  # 传递上下文热词给 LLM
+                    forced_role=forced_role,
+                    image_data=pending_image.data_url if pending_image else None,
+                    reminder_anchor=message.time_start + message.duration,
+                    on_selection=print_recognition
+                )
+            finally:
+                print_recognition()
         else:
+            print_recognition()
             await self.output.output(text, paste=paste)
             self.state.set_output_text(text)
             broadcast_output_udp(text)

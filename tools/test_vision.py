@@ -1175,6 +1175,13 @@ def main():
         setattr(pkg_clip, n, getattr(clipboard_mod, n))
     llm_clip = load('core.client.llm.llm_clipboard', 'core/client/llm/llm_clipboard.py')
     sys.modules['core.client.llm'].llm_clipboard = llm_clip
+    # 这两组测试专门验证旧复制方法的剪贴板保护，显式开启兼容回退并隔离 UIA。
+    selection_native = types.ModuleType('core.tools.windows_selection')
+    selection_native.get_input_target = lambda: (123, 456)
+    selection_native.read_selection = lambda limit: types.SimpleNamespace(
+        status='unsupported', text='', target=(123, 456), detail='test provider')
+    sys.modules[selection_native.__name__] = selection_native
+    sys.modules['config_client'].ClientConfig.selection_fallback_to_ctrl_c = True
     sel_mod = load('core.client.llm.llm_get_selection',
                    'core/client/llm/llm_get_selection.py')
     test_clipboard_restore(clipboard_mod, sel_mod, pyclip_stub, kb_stub)

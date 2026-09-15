@@ -30,7 +30,7 @@ max_context_length: int = 4096               # 最大上下文长度（token 数
 enable_thinking: bool = False                # 是否启用思考（仅 Ollama 支持）
 enable_history: bool = False                 # 是否保留对话历史
 enable_hotwords: bool = False                # 是否读取潜在热词列表
-enable_read_selection: bool = False          # 是否读取鼠标所选文字（通过 Ctrl+C）
+enable_read_selection: bool = False          # 是否读取鼠标所选文字（默认 UI Automation）
 selection_max_length: int = 1000             # 选中文字最大长度
 
 # 输出配置

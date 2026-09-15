@@ -17,11 +17,12 @@ from . import logger
 
 
 async def handle_typing_mode(handler, text: str, paste: bool = None, matched_hotwords=None, role_config=None,
-                             content=None, used_tools=None, image_data=None) -> tuple:
+                             content=None, used_tools=None, image_data=None, selection=None) -> tuple:
     """打字输出模式
 
     used_tools: 出参列表，本次请求触发的服务端工具 ID 会追加进来
     image_data: 随本句上传的图片（base64 data URL），需一路转发到 handler.process
+    selection: 本次请求已读取的选区快照，需一路转发到 handler.process
     """
     from .llm_error_handler import handle_llm_error
     # 如果没传，则现场检测一次（兼容性）
@@ -39,10 +40,10 @@ async def handle_typing_mode(handler, text: str, paste: bool = None, matched_hot
     try:
         if paste:
             return await _process_paste(
-                handler, role_config, content, matched_hotwords, used_tools, image_data)
+                handler, role_config, content, matched_hotwords, used_tools, image_data, selection)
         else:
             return await _process_streaming(
-                handler, role_config, content, matched_hotwords, used_tools, image_data)
+                handler, role_config, content, matched_hotwords, used_tools, image_data, selection)
 
     except Exception as e:
         result_text, _ = handle_llm_error(e, content, role_config.name if role_config else "LLM")
@@ -52,10 +53,11 @@ async def handle_typing_mode(handler, text: str, paste: bool = None, matched_hot
 
 
 async def _process_paste(handler, role_config, content, matched_hotwords, used_tools=None,
-                         image_data=None) -> tuple:
+                         image_data=None, selection=None) -> tuple:
     """处理粘贴模式：获取全文后一次性粘贴"""
     polished_text, token_count, gen_time = await to_thread(
-        handler.process, role_config, content, matched_hotwords, None, None, used_tools, image_data
+        handler.process, role_config, content, matched_hotwords, None, None, used_tools, image_data,
+        selection
     )
     polished_text = strip_state_tags(polished_text)
     if handler.monitor.should_stop():
@@ -69,7 +71,7 @@ async def _process_paste(handler, role_config, content, matched_hotwords, used_t
 
 
 async def _process_streaming(handler, role_config, content, matched_hotwords, used_tools=None,
-                             image_data=None) -> tuple:
+                             image_data=None, selection=None) -> tuple:
     """处理流式打字模式：边生成边模拟按键打字"""
     chunks = []
     pending_buffer = ""
@@ -113,7 +115,7 @@ async def _process_streaming(handler, role_config, content, matched_hotwords, us
     # 执行流式处理
     polished_text, token_count, gen_time = await to_thread(
         handler.process, role_config, content, matched_hotwords, stream_write_chunk, None,
-        used_tools, image_data
+        used_tools, image_data, selection
     )
 
     # 冲掉过滤器暂存的尾巴。用户按了 ESC 就不补——中断之后还往文档里敲字最难受

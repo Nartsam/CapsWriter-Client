@@ -23,7 +23,7 @@ max_context_length = 128*1024               # 最大上下文长度（token 数�
 enable_hotwords = False                 # 是否启用热词
 enable_thinking = False                 # 是否启用思考（仅 Ollama）
 enable_history = False                  # 是否保留对话历史
-enable_read_selection = True            # 是否启用获取选中文字（通过 Ctrl+C）
+enable_read_selection = True            # 是否启用获取选中文字（默认 UI Automation）
 selection_max_length = 2048             # 选中文字最大长度
 request_timeout = backend_config['request_timeout'] # 单次请求超时。两套后端都远超 provider 默认的 2s：DeepSeek 检索期数秒无输出，CPA 中位 3~7s、带图约 20s
 

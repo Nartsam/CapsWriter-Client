@@ -5,6 +5,10 @@
 
 ## 待验证
 
+- [ ] Notepad4 / Scintilla 只读选区（2026-09-15 续二）：重启 Client 后选中中文、emoji、多行和矩形/多选区向助理提问，确认预览及原文均正确，长文本按角色限制截断；无选区不读全文、不操作剪贴板。已在两个真实 Notepad4 窗口确认新接口可返回空选区（当时只有光标），非空选区尚待实机验收；56 项离线回归与自有 Win32 消息桩冒烟已通过。
+
+- [ ] UIA 选区读取与终端预览（2026-09-15）：重启 Client 后，在 Windows Terminal 中运行 TUI，分别用终端原生选区、TUI 内部高亮和无选区提问，确认默认配置不会中断任务；可读取时「选中文本」位于「识别结果」之前，多行/长文本只显示一行，重复选区有历史去重说明。UIA 不兼容时仍正常提问；切换窗口不得带入其他窗口内容。Ctrl+C 回退仅在用户主动开启后于无运行任务的测试窗口验收，验完恢复 False。隐藏 Edit 的真实 UIA 测试已通过；普通沙箱无法取得前台窗口，后续放行的只读探针已能访问桌面并发现 VS Code 父链深度问题（见续条），真实应用的有选区场景仍待验收。
+
 - [ ] 提醒预筛收紧（2026-09-14）：重启 Client 后说「雾切妹妹，请简单介绍一下你自己」与「请输出200字」，确认直接普通回复；「5分钟后提醒我一下」仍进入提醒分析，能否创建仍取决于事项完整性、模型结果与时间校验。
 
 - [ ] 两名角色简单回复合并与语气保持（2026-09-13）：已修改雾切响子、新岛真提示词，两后端最终候选自我介绍共 12 次均为一条；夸奖、质疑、隐私、共情、受惊与害羞场景已做真实请求对照。角色热重载后仍需观察已有历史下的表现和 OpenMate 实际展示；新岛真测试时未注入情绪指令（本机状态接口不可达、无可核对快照）。普通简单回复目标一到两条，提示词以一条为主；新岛真受惊/害羞连发保留。详见 [ROLE_SEGMENT_FIX_2026-09-13.md](ROLE_SEGMENT_FIX_2026-09-13.md)。
@@ -24,6 +28,8 @@
   离线回归 `tools/test_vision.py` 已扩到 109 项（新增 17 项覆盖兜底决策、MIME 切换、原生 PNG 复用路径、编码异常不崩、`PendingImage.encoding` 默认值）。
 
 ## 已验证（实机）
+
+- [x] **VS Code 普通编辑区 UIA 选区读取**（2026-09-15）：用户自行开启 `editor.accessibilitySupport` 后确认可以获取选区；23:07:10.995 日志为 `selected，22 字（UIA）`。此前 13 次保持选区的采样均为空，与屏幕阅读器优化未生效时不提供 DOM 文字/选区的机制吻合。CapsWriter 未修改外部设置或安装组件；此结果不代表 VS Code 终端或所有 TUI 已通过。部分网页此前也已由用户确认可读。
 
 > 2026-09-04 一次性验收通过了一大批，此后新功能验完即挪到这里。原先逐条的验收清单是写给「还没跑过」时期的测试脚本，已完成使命，这里只留「哪个功能、何时实现、验过什么」；实现细节见「本地定制变更」对应日期条目。
 
@@ -59,6 +65,14 @@
 - [x] **情绪标签只在第一轮出现**（根因实测确认并已修复，2026-09-04）：`llm_processor._stream_request` 存历史前调 `strip_state_tags`，历史里的 assistant 消息永远不带 `<state:…>`，模型从第 2 轮起照抄自己上一条的形态、不再输出标签（few-shot 漂移，**自身示例比 system 指令更有说服力**）。探针实测（真实 API、真实 system_prompt + 18 个状态的情绪指令、三轮「讲个小故事」）：历史**剥标签** → 微笑/无/无，历史**保留标签** → 微笑/失落/微笑（且语义正确），完美复现实机现象。已按「剥离从记忆层移到展示层」修复（约定 22）：新增 `llm/llm_state_tags.py`，历史存原文，Toast/打字两条路径在展示前剥离，流式用 `StateTagFilter`（分片会把 `<state:微笑>` 切成 `<sta` + `te:微笑>`，逐片正则拦不住；打字模式漏一个就是真的敲进用户文档）。修复后用生产代码真发请求复验：三轮标签为 微笑/失落/微笑。另：雾切响子的状态表里没有「开心/悲伤」，最贴近的是 微笑/失落，这一点不是 bug。
 
 ## 已知状态
+
+- **VS Code 普通编辑区的 UIA 选区依赖屏幕阅读器优化，用户开启后已验证**（2026-09-15 续三）：用户两次配合复现；22:55:53 日志为 `empty，0 字（UIA）`，调用约 15ms。22:58:15～22:58:39 连续 13 次只读采样确认焦点为 `native-edit-context`、FrameworkId=Chrome、Name 匹配编辑器标签；焦点 TextPattern 和第 21 层 Document 祖先的选区长度均为 0。排除了超时、焦点仍在聊天框及只检查第一个 TextPattern 导致遗漏父级这几种解释。官方 [SimpleScreenReaderContent](https://github.com/microsoft/vscode/blob/main/src/vs/editor/browser/controller/editContext/native/screenReaderContentSimple.ts) / [RichScreenReaderContent](https://github.com/microsoft/vscode/blob/main/src/vs/editor/browser/controller/editContext/native/screenReaderContentRich.ts) 与本机打包代码一致：屏幕阅读器优化启用时同步 DOM 文字/选区，否则清空该节点文本。`empty` 只说明 UIA 返回空值，不能据此断言用户没有选中。用户随后自行开启 `editor.accessibilitySupport`，确认读取成功，23:07:10 日志为 UIA 读取 22 字；`editor.renderRichScreenReaderContent` 仅选择内容形式，不控制优化是否启用。客户端不修改外部环境，关闭优化时的兼容限制仍存在。探针新增连续采样与控件分类，所有数据只记录类型/长度，不记录选区正文。
+
+- **UIA 不能覆盖所有程序，已补充 Notepad4 的 Scintilla 查询，VS Code 集成终端仍有限制**（2026-09-15 续二）：用户确认部分网页已可读取，但 VS Code 终端、Notepad4 不行。Notepad4 的两个现有 Scintilla 控件可用标量消息查询范围/编码；现已接入 UIA unsupported 后的专用只读路径，不使用按键、剪贴板或远程内存写入。VS Code 终端的选区由 xterm.js 内部 SelectionModel 管理，普通鼠标选区不会自动变成 DOM Range；屏幕阅读器模式也不保证同步它。可靠接入需 VS Code 侧接口，目前未实现，不再尝试靠放宽 UIA 父链或读全文来代替。参考：[Scintilla 文档](https://www.scintilla.org/ScintillaDoc.html#SCI_GETCHARAT)、[xterm 选区](https://github.com/xtermjs/xterm.js/blob/master/src/browser/services/SelectionService.ts)、[可访问性层](https://github.com/xtermjs/xterm.js/blob/master/src/browser/AccessibilityManager.ts)、[VS Code 内部复制实现](https://github.com/microsoft/vscode/blob/main/src/vs/workbench/contrib/terminal/browser/xterm/xtermTerminal.ts)。
+
+- **UIA 的 16 层父链上限导致 VS Code 读取被提前拒绝，已修正为 128 层**（2026-09-15 续）：用户重启后报告 Codex 对话区与文本编辑区均失败，21:58:57 / 21:59:10 日志为「焦点父链超出读取范围」。只读用户桌面探针实测 VS Code 一个 Edit 焦点到顶层窗口为 30 层、完整调用约 31ms；查询父链时尚未读取 TextPattern，原生 Edit 测试只有一层，因此之前没有覆盖此兼容性缺陷。新增固定 30 层回归，保留窗口边界、密码和超时保护。另一次「焦点控件不支持 TextPattern」尚不能按日志归因；探针也观察到前台切至 RayLink 时确实没有 TextPattern。真实有选区的编辑器与 Codex 对话区仍需配合验证，不能仅凭深度修正宣称两者已通过。
+
+- **旧选区捕获确实会发送 Ctrl+C，可能中断终端中的 TUI 任务；默认路径已替换**（2026-09-15）：旧代码在判断是否选中前无条件模拟 Ctrl+C，桩验证确认无选区也发键；Windows Terminal 在没有原生选区时可把复制快捷键交给内部程序，TUI 自己的高亮不保证是终端原生选区。与用户现象吻合，未复现其每次现场。现默认 UIA 只读，失败继续提问；保留的 Ctrl+C 兼容回退默认关闭。官方说明：[Terminal 复制动作](https://learn.microsoft.com/en-us/windows/terminal/customize-settings/actions#copy)、[终端选区](https://learn.microsoft.com/en-us/windows/terminal/selection)。2026-09-04 关于选区覆盖剪贴板图片的记录，现在只适用于显式启用的旧回退路径。
 
 - **「介绍一下」误入提醒分析已修复预筛**（2026-09-14）：06:59:56 的输入命中旧规则里的单个「一」，07:00:07 提醒分析收到 HTTP 500，按既有失败处理终止普通回复；日志没有足够信息区分 CPA 网关与上游故障，07:02 同句重试成功。现在仅提醒词或带单位/格式的时间线索通过，保留中文/阿拉伯数字、半小时及含糊时间供语义分析；角色提示词与失败处理不变。回归覆盖普通数字绕过真实提醒入口，以及「5分钟后提醒我一下」进入分析和模拟结果落盘；此前分段探针未覆盖录音入口的提醒预筛。
 
@@ -139,6 +153,10 @@
 
 ## 决策记录
 
+- 2026-09-15（便携性）：用户明确要求保持便携性，不能修改任何外部环境；新增代码、依赖、配置与诊断工具均留在 Client 目录。排除安装 VS Code 扩展、修改其设置/启动参数或安装全局组件的路线。VS Code 普通编辑区的失败继续在此边界内单独诊断，不将终端 xterm 的限制直接套用于编辑器。
+
+- 2026-09-15：用户确认 UIA 作为默认选区读取方式；旧 Ctrl+C 保留为客户端全局 `selection_fallback_to_ctrl_c=False`，不按角色拆分。明确空选区不回退，仅不支持/报错/超时可按开关回退。成功捕获就显示一行预览（在识别结果前），换行和超长原文仅在展示层合并/截断；历史去重仍显示预览并标注本轮未重复附加。未采用终端专用复制快捷键、剪贴板旧内容或整窗文本替代选区。
+
 - 2026-09-13：两名角色的过度分段通过提示词调整；用户接受简单问题一到两条，并要求尽量保留角色语气。采用较稳定的普通简单回复一条规则，解除 50 字拆条要求，同一条内保留短句、停顿和措辞；新岛真受惊、害羞时允许继续连发。未改温度、后端、分隔符、发送器或对话历史。真实请求验证有限，不承诺语气零变化，完整记录见分段修复报告。
 
 - 2026-09-12：`test_backends.py` 里钉 DeepSeek 模型名的那条断言已删（改为跟随 `DEEPSEEK_MODEL`，与 cpa 侧对称）。DeepSeek 会把旧模型名路由到当前模型，名字不再代表能力：钉住它证明不了「还能看图」，却会在约定 23② 鼓励的日常换模型操作里必然失败，久而久之整个文件的失败都会被无视。模型是否真支持视觉由 `probe_llm_live.py` 实发请求验，不归离线测试管。**不要再把名字钉回去。**
@@ -206,6 +224,14 @@
 - 本地定制的变更记录写本文件，不写 docs/CHANGELOG.md：后者是上游随版本发布的文件，混入本地条目会在升级覆盖时冲突。（2026-07-16）
 
 ## 本地定制变更（相对上游 Release）
+
+- 2026-09-15（续三）：补充 UIA 连续采样与控件分类诊断，记录便携性硬约束及 VS Code 编辑区的辅助功能依赖。用户自行开启 `editor.accessibilitySupport` 后实机确认选区可读，客户端未修改 VS Code 环境。提交前验证：326 个 Python 文件语法通过，未定义名字检查无新增问题；选区 56 项及原生 UIA/Scintilla 消息桩冒烟通过，其余离线测试仅保留已记录的 `test_backends.py`「翻译 被意外禁用」既有失败。
+
+- 2026-09-15（续二）：`windows_selection.py` 新增 `_read_compatible/_read_scintilla/_scintilla_text`，仅 UIA unsupported 时针对原前台 Scintilla 子焦点查询选区；按代码页增量解码选区内字节，限制消息时间/总时间/字节数并复核范围。`llm_get_selection.py` 的 INFO 诊断增加空选区、成功状态与长度，终端仍只显示成功预览。56 项离线选区回归通过；原生测试扩为真实 UIA Edit 与自有 Scintilla 协议窗口，覆盖 Unicode/限长/空选区/无输入和剪贴板不变，后者不是真实 Scintilla 库。真实 Notepad4 的查询链路（仅替换焦点定位）已确认返回空选区，未验证非空选区。完整离线检查仍仅有既有的翻译角色启用断言失败。VS Code 终端的专用接入未实现。
+
+- 2026-09-15（续）：UIA 父链上限 16→128，修复 VS Code 深层布局提前失败；新增 `tools/probe_selection.py` 用于真实桌面只读诊断，默认不输出选区正文。选区离线回归增至 42 项，原生 Edit 冒烟仍通过；真实 VS Code 有选区场景待验证。角色配置、全局 Ctrl+C 回退开关和输出格式本轮未改。
+
+- 2026-09-15：新增 `core/tools/windows_selection.py`，标准库 ctypes 调用原生 UIA，在独立 MTA 线程限时读取焦点及祖先的选区，无新依赖。`llm_get_selection.py` 保留显式 Ctrl+C 回退，区分附加文本与预览；正常 LLM 入口只捕获一次，经三种输出模式传入请求，并回调 ResultProcessor 打印「选中文本」。全局配置默认 False，角色启用/长度限制不变。`tools/test_selection.py` 41 项通过（回退条件、窗口变化、超时/迟到结果、去重、三种输出转发与控制台顺序）；真实隐藏 Edit 冒烟通过（选区/限长/空光标，剪贴板序号不变）。离线流水线仅有已记录的 `test_backends.py` 翻译角色启用断言失败；Windows Terminal/TUI 待用户桌面实机验收。
 
 - 2026-09-13：雾切响子与新岛真减少普通简单回复分段。分别修改五处、四处提示词消息组织表述，保留其他角色设定、风格规则与示例，最终提醒明确合并时保留短句、省略号、语气词；新岛真的结巴、嘴硬和受惊/害羞连发单独保留。`tools/probe_role_segments.py` 支持两角色、归档基线和语气场景对照；最终候选逐字应用到角色文件，非提示词配置 AST 不变。两后端有效真实请求、全部候选与语气核验见 [ROLE_SEGMENT_FIX_2026-09-13.md](ROLE_SEGMENT_FIX_2026-09-13.md)。
 

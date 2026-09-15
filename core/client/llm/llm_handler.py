@@ -19,7 +19,8 @@ from .llm_client_pool import ClientPool
 from .llm_message_builder import MessageBuilder
 from .llm_role_detector import RoleDetector
 from .llm_processor import LLMProcessor
-from .llm_get_selection import get_selected_text, record_selection_usage
+from .llm_get_selection import capture_selection, record_selection_usage, clear_selection_usage
+from core.tools.asyncio_to_thread import to_thread
 from . import logger
 from .llm_stop_monitor import StopMonitor
 from core.client.udp.udp_broadcaster import broadcast_output_udp
@@ -136,6 +137,7 @@ class LLMHandler:
         for role_name, manager in self.context_managers.items():
             manager.clear()
             count += 1
+        clear_selection_usage()
         logger.info(f"已清除 {count} 个角色的对话历史记录")
 
     def detect_role(self, text: str) -> Tuple[Optional[RoleConfig], str]:
@@ -169,7 +171,8 @@ class LLMHandler:
         return role_config
 
     def process(self, role_config: RoleConfig, content: str, matched_hotwords=None, callback=None,
-                status_callback=None, used_tools=None, image_data=None) -> Tuple[str, int, float]:
+                status_callback=None, used_tools=None, image_data=None,
+                selection=None) -> Tuple[str, int, float]:
         """执行实际的 LLM 模型调用（内部方法）
 
         Args:
@@ -181,6 +184,7 @@ class LLMHandler:
             used_tools: 出参列表，本次请求触发的服务端工具 ID 会追加进来
             image_data: 随本句上传的图片（base64 data URL）。与 used_tools 一样，
                 新增输出模式时必须记得转发，漏了不报错、只是图片静默丢失
+            selection: 本次请求已读取的选区；None 仅供直接调用时现场读取
 
         Returns:
             (处理后的文本, 输出token数, 生成时间秒)
@@ -214,7 +218,9 @@ class LLMHandler:
             logger.debug(f"角色 '{role_name}' 启用历史，当前历史条数: {len(context_manager.history)}")
         
         # 获取选中文字（如果启用）
-        selection_text = get_selected_text(role_config, self.app.state)
+        if selection is None:
+            selection = capture_selection(role_config, self.app.state)
+        selection_text = selection.text
         
         # 构建消息
         messages = self.message_builder.build_messages(
@@ -243,7 +249,8 @@ class LLMHandler:
     async def process_and_output(self, text: str, paste: bool = None, matched_hotwords=None,
                                  forced_role: Optional[RoleConfig] = None,
                                  image_data: Optional[str] = None,
-                                 reminder_anchor: Optional[float] = None) -> Optional[LLMResult]:
+                                 reminder_anchor: Optional[float] = None,
+                                 on_selection=None) -> Optional[LLMResult]:
         """
         统一入口：处理输入文本并根据配置执行输出（打字或弹屏）
 
@@ -255,6 +262,7 @@ class LLMHandler:
             image_data: 本次录音绑定的图片（base64 data URL）。只有角色
                 enable_vision=True 时才真的带上，否则静默丢弃（见约定 21）
             reminder_anchor: 录音结束时间戳；仅实时录音入口提供，用作提醒时间基准
+            on_selection: 选区就绪后通知控制台打印预览与识别结果；跳过读取时传 None
         """
         import time
         from .llm_output_typing import handle_typing_mode, output_text
@@ -276,6 +284,9 @@ class LLMHandler:
             # 2. 如果不匹配任何需要处理的角色
             if not role_config:
 
+                if on_selection:
+                    on_selection(None)
+
                 # 打字输出
                 await output_text(text, paste)
             
@@ -295,6 +306,8 @@ class LLMHandler:
                     and role_config.display_name != RoleConfig.DEFAULT_ROLE_NAME):
                 message = await reminders.handle(role_config, content, reminder_anchor)
                 if message is not None:
+                    if on_selection:
+                        on_selection(None)
                     return LLMResult(
                         result=message, role_name=role_config.display_name, processed=True,
                         token_count=0, polish_time=time.time() - start_time, input_text=content,
@@ -302,12 +315,20 @@ class LLMHandler:
 
             # 3. Companion 转发：连接 Electron 时，跳过本地 LLM，将清洗后的文本转发
             if self.app.companion.has_connections:
+                if on_selection:
+                    on_selection(None)
                 role_name = role_config.display_name or RoleConfig.DEFAULT_ROLE_NAME
                 await self.app.companion.emit_user_message(content, role_name)
                 logger.info(f"已转发至 Companion: [{role_name}] {content[:50]}")
                 return LLMResult(
                     result=content, role_name=role_name, processed=True,
                     token_count=0, polish_time=0, input_text=content)
+
+            # 选区只采集一次，并且早于 Toast/OpenMate 展示；预览与模型使用同一份快照。
+            # 提醒与 Companion 不消费选区，故必须在这两个入口之后读取。
+            selection = await to_thread(capture_selection, role_config, self.app.state)
+            if on_selection:
+                on_selection(selection)
 
             # 4. 根据输出模式分发处理
             # used_tools 由各输出模式一路透传到流解析层，在那里追加实际触发的工具 ID。
@@ -323,11 +344,12 @@ class LLMHandler:
             image_used = bool(image_for_request)
             if role_config.output_mode == 'toast':
                 result, token_count, gen_time = await handle_toast_mode(
-                    self, text, role_config, matched_hotwords, content, used_tools, image_for_request)
+                    self, text, role_config, matched_hotwords, content, used_tools, image_for_request,
+                    selection)
             else: # typing
                 result, token_count, gen_time = await handle_typing_mode(
                     self, text, paste, matched_hotwords, role_config, content, used_tools,
-                    image_for_request)
+                    image_for_request, selection)
 
             # 5. 后置处理
             # 更新全局状态（即便是中断了，也记录已经输出的部分）

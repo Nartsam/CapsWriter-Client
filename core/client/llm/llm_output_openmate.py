@@ -518,12 +518,13 @@ def _set_typing_safe(client: OpenMateClient, active: bool) -> bool:
 
 
 async def try_openmate_mode(handler, role_config, content, matched_hotwords, used_tools=None,
-                            image_data=None) -> tuple:
+                            image_data=None, selection=None) -> tuple:
     """尝试 OpenMate 展示路径
 
     Args:
         used_tools: 出参列表，本次请求触发的服务端工具 ID 会追加进来
         image_data: 随本句上传的图片（base64 data URL）
+        selection: 本次请求已读取的选区快照，需一路转发到 handler.process
 
     Returns:
         (result, token_count, gen_time) 元组；OpenMate 未启用或不可用时返回 None，
@@ -540,11 +541,11 @@ async def try_openmate_mode(handler, role_config, content, matched_hotwords, use
 
     logger.info('OpenMate 可用，LLM 输出将转交 OpenMate 展示')
     return await _handle_openmate_mode(handler, client, role_config, content, matched_hotwords,
-                                       used_tools, image_data)
+                                       used_tools, image_data, selection)
 
 
 async def _handle_openmate_mode(handler, client, role_config, content, matched_hotwords,
-                                used_tools=None, image_data=None) -> tuple:
+                                used_tools=None, image_data=None, selection=None) -> tuple:
     import dataclasses
     from config_client import ClientConfig as Config
     from .llm_role_config import RoleConfig
@@ -581,7 +582,7 @@ async def _handle_openmate_mode(handler, client, role_config, content, matched_h
     try:
         polished_text, token_count, gen_time = await to_thread(
             handler.process, llm_config, content, matched_hotwords, sender.push, None, used_tools,
-            image_data
+            image_data, selection
         )
 
         if handler.monitor.should_stop():

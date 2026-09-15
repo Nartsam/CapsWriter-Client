@@ -1,105 +1,107 @@
-"""
-LLM 获取选中文字功能
-
-功能：
-1. 获取当前剪贴板内容（用于还原）
-2. 模拟 Ctrl+C 复制选中的文字
-3. 读取新的剪贴板内容
-4. 还原原来的剪贴板内容
-5. 判断内容是否变化，返回选中的文字
-"""
+"""获取当前选区，并区分「读取成功」与「本轮需要附加到模型」。"""
 import time
+from dataclasses import dataclass
+
 import keyboard
+from config_client import ClientConfig as Config
+from core.tools.windows_selection import read_selection, get_input_target
 from . import logger
 from .llm_clipboard import restore_clipboard, safe_paste, try_paste
 
 
-# 全局变量：记录每个角色最后一次使用的选中文字
+# 按角色保留原有的相邻轮次去重规则；清除对话历史时也要清掉此记录。
 _last_selection_by_role = {}
 
 
-def get_selected_text(role_config, state) -> str:
-    """
-    获取用户当前选中的文字（通过模拟 Ctrl+C）
+@dataclass
+class SelectionContext:
+    text: str = ''              # 本轮实际附加的文字
+    preview: str = ''           # 成功读取的文字，包含被去重的选区
+    note: str = ''
 
-    Args:
-        role_config: 角色配置 RoleConfig 对象
 
-    Returns:
-        选中的文字，如果不应该使用则返回空字符串
-    """
-    global _last_selection_by_role
+def format_selection_preview(selection: SelectionContext) -> str:
+    """只用于终端说明；清理换行、控制字符，原文仍按角色长度限制发送。"""
+    preview = ' '.join(''.join(
+        c if c.isprintable() or c.isspace() else ' ' for c in selection.preview
+    ).split())
+    if not preview:
+        return ''
+    if len(preview) > 50:
+        preview = preview[:50] + '...'
+    suffix = f'（{selection.note}）' if selection.note else ''
+    return f'    选中文本：{preview}{suffix}'
 
-    # 检查是否启用获取选中文字
-    if not role_config.enable_read_selection:
-        return ""
 
-    role_name = role_config.name
-
+def _read_by_copy(target) -> str:
+    """仅由显式启用的兼容回退调用；保留旧的剪贴板保护与还原行为。"""
+    # UIA 失败后前台可能已经改变。不能把原窗口的回退操作发给另一个窗口。
+    if not target or not target[0] or get_input_target() != target:
+        return ''
+    original_clipboard = try_paste()
+    if get_input_target() != target:
+        return ''
+    keyboard.press_and_release('ctrl+c')
     try:
-        # 保存当前剪贴板内容。必须用 try_paste：safe_paste 把「读不到」也折叠成
-        # 空字符串，而下面要把它写回剪贴板——剪贴板里是图片时（视觉输入功能一开，
-        # 这就成了常态）读取必然失败，拿那个空串写回去会先 EmptyClipboard，
-        # 把用户待用的截图直接清掉
-        original_clipboard = try_paste()
-
-        # 模拟 Ctrl+C 复制选中的文字
-        keyboard.press_and_release('ctrl+c')
-
-        # 等待复制操作完成
         time.sleep(0.1)
-
-        # 读取新的剪贴板内容
         selected_text = safe_paste()
-
-        # 还原原来的剪贴板内容。原内容读不到（非文本）时一律不动剪贴板：
-        # 此时若用户没有选中任何文字，Ctrl+C 不会改变剪贴板，图片就能原样保住。
-        # （若确实选中了文字，Ctrl+C 本身已经覆盖掉图片，那是模拟 Ctrl+C 取选区的
-        # 固有代价，除非连图片格式一并备份还原，不值得）
-        #
-        # 必须走 restore_clipboard 而不是裸 pyclip.copy：后者在剪贴板被别的进程占着时
-        # 抛 ERROR_ACCESS_DENIED，异常一路冒到外层 except，把**已经读到的选中文字**
-        # 一并丢掉，还往终端刷一条 WARNING。还原是收尾动作，失败不该牵连主结果
+    finally:
+        # 非文本内容读不到时不拿空串还原，避免清掉图片。还原失败也不能丢掉
+        # 已经读到的选区；restore_clipboard 自己处理占用重试并只记 INFO。
         if original_clipboard is not None:
             restore_clipboard(original_clipboard)
+    # 旧方法只能通过剪贴板变化判断是否复制成功；相同文本的局限保留在此路径。
+    if selected_text == (original_clipboard or ''):
+        return ''
+    return selected_text
 
-        # 如果内容没有变化，说明没有选中文字，返回空字符串。
-        # 原内容读不到时按空串比较：那种情况下没选中文字读到的同样是空串
-        if selected_text == (original_clipboard or "") or selected_text == state.last_output_text:
-            return ""
 
-        # 检查长度限制
-        max_length = getattr(role_config, 'selection_max_length', 1000)
-        if len(selected_text) > max_length:
-            selected_text = selected_text[:max_length]
-
-        # 如果开启了历史记录，检查选中文字是否与上一次使用的相同
-        if role_config.enable_history:
-            last_selection = _last_selection_by_role.get(role_name, "")
-            if selected_text == last_selection:
-                # 选中文字没有变化，且上一次已经使用过，不再加入上下文
-                return ""
-
-        # 检查是否只包含空白字符（空格、制表符、换行等）
+def capture_selection(role_config, state) -> SelectionContext:
+    """默认只读 UIA；明确无选区时，即使开启兼容回退也不发送按键。"""
+    if not role_config.enable_read_selection:
+        return SelectionContext()
+    try:
+        max_length = max(0, int(getattr(role_config, 'selection_max_length', 1000)))
+        if not max_length:
+            return SelectionContext()
+        result = read_selection(max_length)
+        selected_text = result.text
+        # 空选区与接口不支持的处理不同；两者都留长度/状态，便于定位控件兼容性。
+        logger.info(f'选区读取结果：{result.status}，{len(selected_text)} 字'
+                    f'（{result.detail or "UIA"}）')
+        if result.status in ('unsupported', 'error', 'timeout'):
+            if getattr(Config, 'selection_fallback_to_ctrl_c', False):
+                logger.info('选区读取：已启用兼容回退，尝试 Ctrl+C')
+                selected_text = _read_by_copy(result.target)
         if not selected_text.strip():
-            return ""
+            return SelectionContext()
 
-        return selected_text
-
+        selection = SelectionContext(preview=selected_text[:max_length])
+        if selected_text == state.last_output_text:
+            selection.note = '与上次输出相同，本轮未附加'
+        elif (role_config.enable_history
+              and selection.preview == _last_selection_by_role.get(role_config.name, '')):
+            selection.note = '已在历史，本轮未重复附加'
+        else:
+            selection.text = selection.preview
+        return selection
     except Exception as e:
-        logger.warning(f"获取选中文字失败: {e}")
-        return ""
+        # 选区是可选上下文，读取失败不影响语音提问，也不在终端刷诊断。
+        logger.info(f'获取选中文字失败: {e}')
+        return SelectionContext()
+
+
+def get_selected_text(role_config, state) -> str:
+    """兼容直接调用的入口，仅返回本轮需要附加的选区。"""
+    return capture_selection(role_config, state).text
 
 
 def record_selection_usage(role_config, selection_text: str):
-    """
-    记录角色使用的选中文字（用于下一轮判断是否重复）
+    """记录本轮使用的选区，维持相邻轮次的历史去重行为。"""
+    _last_selection_by_role[role_config.name] = selection_text
 
-    Args:
-        role_config: 角色配置 RoleConfig 对象
-        selection_text: 使用的选中文字（空字符串表示没有使用）
-    """
-    global _last_selection_by_role
-    role_name = role_config.name
-    _last_selection_by_role[role_name] = selection_text
+
+def clear_selection_usage():
+    """历史清空后，同一段文字必须能够重新附加。"""
+    _last_selection_by_role.clear()
 

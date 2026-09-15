@@ -559,6 +559,8 @@ class RoutingTests(unittest.IsolatedAsyncioTestCase):
                       and node.name == 'process_and_output')
         namespace = dict(dataclass=dataclass, field=field, Optional=Optional, List=List, RoleConfig=RoleConfig,
                          logger=logging.getLogger('reminder-test'), broadcast_output_udp=Mock(),
+                         capture_selection=Mock(return_value=types.SimpleNamespace(text='', preview='', note='')),
+                         to_thread=AsyncMock(side_effect=lambda func, *args: func(*args)),
                          __name__='core.client.llm.llm_handler_test', __package__='core.client.llm')
         exec(compile(ast.Module(body=[result_class, method], type_ignores=[]), '<real-routing>', 'exec'), namespace)
         self.namespace = namespace
@@ -599,7 +601,7 @@ class RoutingTests(unittest.IsolatedAsyncioTestCase):
         result = await self.process(self.handler, '解释十分钟', reminder_anchor=stamp(), image_data='image')
         self.assertFalse(result.reminder_handled)
         self.assertTrue(result.image_used)
-        self.assertEqual(self.toast.handle_toast_mode.call_args.args[-1], 'image')
+        self.assertEqual(self.toast.handle_toast_mode.call_args.args[-2], 'image')
         self.namespace['broadcast_output_udp'].assert_called_once_with('普通回答')
 
     async def test_plain_numbers_reach_role_without_reminder_analysis(self):
