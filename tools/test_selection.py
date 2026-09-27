@@ -36,7 +36,7 @@ for name in ('core', 'core.tools', 'core.client', 'core.client.llm',
     sys.modules[name] = module
 
 config_module = types.ModuleType('config_client')
-config_module.ClientConfig = types.SimpleNamespace(selection_fallback_to_ctrl_c=False,
+config_module.ClientConfig = types.SimpleNamespace(selection_mode='uia',
                                                   restore_clip=True, trash_punc='。')
 sys.modules['config_client'] = config_module
 keyboard = types.ModuleType('keyboard')
@@ -62,7 +62,7 @@ class SelectionTests(unittest.TestCase):
         self.role = RoleConfig(name='助理', enable_read_selection=True, enable_history=True)
         self.state = types.SimpleNamespace(last_output_text='')
         selection.clear_selection_usage()
-        config_module.ClientConfig.selection_fallback_to_ctrl_c = False
+        config_module.ClientConfig.selection_mode = 'uia'
         keyboard.press_and_release.reset_mock()
         for mock in (clipboard.try_paste, clipboard.safe_paste, clipboard.restore_clipboard):
             mock.reset_mock()
@@ -98,27 +98,74 @@ class SelectionTests(unittest.TestCase):
         keyboard.press_and_release.assert_not_called()
         clipboard.try_paste.assert_not_called()
 
-    def test_explicit_fallback_only_for_failures(self):
-        config_module.ClientConfig.selection_fallback_to_ctrl_c = True
-        for status in ('unsupported', 'error', 'timeout'):
+    def test_fallback_copies_when_reader_returns_no_text(self):
+        config_module.ClientConfig.selection_mode = 'uia_then_ctrl_c'
+        for status in ('unsupported', 'error', 'timeout', 'empty'):
             with self.subTest(status=status):
                 keyboard.press_and_release.reset_mock()
                 self.assertEqual(self.capture(status, '').text, '新选区')
                 keyboard.press_and_release.assert_called_once_with('ctrl+c')
                 clipboard.restore_clipboard.assert_called_with('旧剪贴板')
 
-    def test_empty_and_blocked_do_not_fallback_even_when_enabled(self):
-        config_module.ClientConfig.selection_fallback_to_ctrl_c = True
-        for status in ('empty', 'changed', 'blocked'):
+    def test_changed_and_blocked_do_not_fallback_even_when_enabled(self):
+        config_module.ClientConfig.selection_mode = 'uia_then_ctrl_c'
+        for status in ('changed', 'blocked'):
             self.assertEqual(self.capture(status, '').text, '')
         keyboard.press_and_release.assert_not_called()
         clipboard.try_paste.assert_not_called()
 
     def test_role_switch_still_disables_all_selection_access(self):
         self.role.enable_read_selection = False
-        config_module.ClientConfig.selection_fallback_to_ctrl_c = True
         with patch.object(selection, 'read_selection') as read:
-            self.assertEqual(selection.capture_selection(self.role, self.state).preview, '')
+            for mode in ('uia', 'uia_then_ctrl_c', 'ctrl_c'):
+                config_module.ClientConfig.selection_mode = mode
+                self.assertEqual(selection.capture_selection(self.role, self.state).preview, '')
+            read.assert_not_called()
+        keyboard.press_and_release.assert_not_called()
+
+    def test_fallback_keeps_successful_read_without_copying(self):
+        config_module.ClientConfig.selection_mode = 'uia_then_ctrl_c'
+        self.assertEqual(self.capture().text, '选中文字')
+        keyboard.press_and_release.assert_not_called()
+        clipboard.try_paste.assert_not_called()
+
+    def test_fallback_copies_for_whitespace_result(self):
+        config_module.ClientConfig.selection_mode = 'uia_then_ctrl_c'
+        self.assertEqual(self.capture('empty', ' \r\n\t').text, '新选区')
+        keyboard.press_and_release.assert_called_once_with('ctrl+c')
+
+    def test_direct_copy_bypasses_reader_and_keeps_limit_preview_and_dedup(self):
+        config_module.ClientConfig.selection_mode = 'ctrl_c'
+        self.role.selection_max_length = 2
+        with patch.object(selection, 'read_selection') as read:
+            first = selection.capture_selection(self.role, self.state)
+            self.assertEqual(first.text, '新选')
+            self.assertEqual(first.preview, first.text)
+            keyboard.press_and_release.assert_called_once_with('ctrl+c')
+            clipboard.restore_clipboard.assert_called_once_with('旧剪贴板')
+            selection.record_selection_usage(self.role, first.text)
+            repeated = selection.capture_selection(self.role, self.state)
+            self.assertEqual(repeated.text, '')
+            self.assertEqual(repeated.preview, first.preview)
+            self.assertEqual(repeated.note, '已在历史，本轮未重复附加')
+            read.assert_not_called()
+
+    def test_direct_copy_skips_when_target_changes_before_copy(self):
+        config_module.ClientConfig.selection_mode = 'ctrl_c'
+        with patch.object(selection, 'read_selection') as read, \
+                patch.object(selection, 'get_input_target', side_effect=[TARGET, (999, 456)]):
+            self.assertEqual(selection.capture_selection(self.role, self.state).text, '')
+            read.assert_not_called()
+        keyboard.press_and_release.assert_not_called()
+        clipboard.try_paste.assert_not_called()
+
+    def test_nonpositive_limit_skips_all_modes(self):
+        with patch.object(selection, 'read_selection') as read:
+            for mode in ('uia', 'uia_then_ctrl_c', 'ctrl_c'):
+                config_module.ClientConfig.selection_mode = mode
+                for limit in (0, -1):
+                    self.role.selection_max_length = limit
+                    self.assertEqual(selection.capture_selection(self.role, self.state).text, '')
             read.assert_not_called()
         keyboard.press_and_release.assert_not_called()
 
@@ -199,13 +246,15 @@ class SelectionTests(unittest.TestCase):
             self.assertEqual(selection.capture_selection(self.role, self.state).text, '')
         keyboard.press_and_release.assert_not_called()
 
-    def test_global_setting_defaults_to_false_in_real_config(self):
-        tree = ast.parse((ROOT / 'config_client.py').read_text(encoding='utf-8'))
-        cls = next(node for node in tree.body if isinstance(node, ast.ClassDef) and node.name == 'ClientConfig')
-        setting = next(node for node in cls.body if isinstance(node, ast.Assign)
-                       and any(isinstance(t, ast.Name) and t.id == 'selection_fallback_to_ctrl_c'
-                               for t in node.targets))
-        self.assertIs(ast.literal_eval(setting.value), False)
+    def test_missing_mode_uses_readonly_path(self):
+        del config_module.ClientConfig.selection_mode
+        try:
+            self.assertEqual(self.capture('empty', '').text, '')
+            self.assertEqual(self.capture().text, '选中文字')
+            keyboard.press_and_release.assert_not_called()
+            clipboard.try_paste.assert_not_called()
+        finally:
+            config_module.ClientConfig.selection_mode = 'uia'
 
 
 class NativeWorkerTests(unittest.TestCase):

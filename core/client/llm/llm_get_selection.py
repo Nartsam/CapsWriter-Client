@@ -34,8 +34,8 @@ def format_selection_preview(selection: SelectionContext) -> str:
 
 
 def _read_by_copy(target) -> str:
-    """仅由显式启用的兼容回退调用；保留旧的剪贴板保护与还原行为。"""
-    # UIA 失败后前台可能已经改变。不能把原窗口的回退操作发给另一个窗口。
+    """供回退与直接复制模式共用，保留旧的剪贴板保护与还原行为。"""
+    # 保存目标后前台可能已经改变。不能把原窗口的复制操作发给另一个窗口。
     if not target or not target[0] or get_input_target() != target:
         return ''
     original_clipboard = try_paste()
@@ -57,21 +57,27 @@ def _read_by_copy(target) -> str:
 
 
 def capture_selection(role_config, state) -> SelectionContext:
-    """默认只读 UIA；明确无选区时，即使开启兼容回退也不发送按键。"""
+    """按全局模式获取选区，再统一处理长度限制、历史去重与预览。"""
     if not role_config.enable_read_selection:
         return SelectionContext()
     try:
         max_length = max(0, int(getattr(role_config, 'selection_max_length', 1000)))
         if not max_length:
             return SelectionContext()
-        result = read_selection(max_length)
-        selected_text = result.text
-        # 空选区与接口不支持的处理不同；两者都留长度/状态，便于定位控件兼容性。
-        logger.info(f'选区读取结果：{result.status}，{len(selected_text)} 字'
-                    f'（{result.detail or "UIA"}）')
-        if result.status in ('unsupported', 'error', 'timeout'):
-            if getattr(Config, 'selection_fallback_to_ctrl_c', False):
-                logger.info('选区读取：已启用兼容回退，尝试 Ctrl+C')
+        mode = getattr(Config, 'selection_mode', 'uia')
+        if mode == 'ctrl_c':
+            logger.info('选区读取：直接使用 Ctrl+C')
+            selected_text = _read_by_copy(get_input_target())
+        else:
+            result = read_selection(max_length)
+            selected_text = result.text
+            logger.info(f'选区读取结果：{result.status}，{len(selected_text)} 字'
+                        f'（{result.detail or "UIA"}）')
+            # 部分控件未暴露真实选区时也会返回 empty，不能据此禁止用户选择的回退。
+            # 密码与焦点变化是独立的跳过条件，不参与复制尝试。
+            if (mode == 'uia_then_ctrl_c' and not selected_text.strip()
+                    and result.status not in ('blocked', 'changed')):
+                logger.info('选区读取：只读接口未取到文字，尝试 Ctrl+C')
                 selected_text = _read_by_copy(result.target)
         if not selected_text.strip():
             return SelectionContext()

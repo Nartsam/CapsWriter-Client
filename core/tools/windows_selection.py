@@ -340,7 +340,7 @@ def _read_scintilla(target, limit):
 
 def _read_compatible(target, limit):
     result = _read_native(target, limit)
-    # 密码/焦点改变/明确空选区均已作出结论；只在 UIA 不支持时补充专用只读接口。
+    # 只在 UIA 不支持时补充控件专用查询；空结果是否触发 Ctrl+C 由上层模式决定。
     if result.status == 'unsupported':
         compatible = _read_scintilla(target, limit)
         if compatible is not None:

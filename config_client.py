@@ -87,10 +87,13 @@ class ClientConfig:
     llm_enabled = True          # 是否启用 LLM 润色功能，需要配置 LLM/ 目录下的角色文件
     llm_stop_key = 'esc'        # 中断 LLM 输出的快捷键
 
-    # 选区默认通过 UIA 获取，Scintilla 编辑器另有只读查询；不发送按键、不修改剪贴板。
-    # 开启后，仅在接口不支持、报错或超时时回退到模拟 Ctrl+C；明确没有选区时不回退。
-    # Ctrl+C 可能中断终端/TUI 中的任务，默认关闭。此设置对所有角色统一生效。
-    selection_fallback_to_ctrl_c = False
+    # 选区获取方式，对所有角色统一生效：
+    # 'uia'：只用 UIA / Scintilla 只读接口，不发送按键、不修改剪贴板。
+    # 'uia_then_ctrl_c'：只读接口没取到文字（含空选区）就尝试 Ctrl+C；密码控件、焦点变化时跳过。
+    # 'ctrl_c'：直接使用旧复制方法，完全跳过 UIA / Scintilla 查询。
+    # 后两种方式均可能向终端/TUI 发送 Ctrl+C 并中断任务。
+    # VSCode 中可能需要打开 Editor: Accessibility Support（屏幕阅读器优化）选项才能获取文本: @id:editor.accessibilitySupport
+    selection_mode = 'uia_then_ctrl_c'
 
     # 截图快捷键：按下后把剪贴板当前内容里的图片读进内存暂存，随**下一句话**上传给
     # LLM 角色。用系统截图工具（Win+Shift+S 等）或任何能把图片放进剪贴板的方式先截图，

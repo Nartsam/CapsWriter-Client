@@ -154,7 +154,7 @@ CapsWriter-Offline 是一个 Windows 离线语音输入工具（GitHub: HaujetZh
 | `llm_state_tags.py` | **状态标签的识别与剥离**（`STATE_TAG_RE` / `strip_state_tags` / `StateTagFilter`）。标签是**展示层**指令：对话历史存原文，本地 Toast、打字、md、UDP 在展示前才剥（见约定 10）。流式分片会把 `<state:微笑>` 切成 `<sta` + `te:微笑>`，逐片正则拦不住，故提供 `StateTagFilter`：只暂存可能还会补成标签的那截尾巴，其余立即放行 |
 | `llm_stop_monitor.py` | **StopMonitor**。监听 ESC 键中断 LLM 输出。中断键是全局热键，故设两层闸门：`begin_request`/`end_request` 圈出请求作用域，`mark_output_started` 在首个正文分片（或首条工具状态占位）到达时才让按键生效（见约定 25） |
 | `llm_watcher.py` | 监视 LLM/ 目录变化，自动重载角色 |
-| `llm_get_selection.py` | `capture_selection` 默认经 UIA 只读获取选区；仅在全局配置允许且接口失败时回退 Ctrl+C。`SelectionContext` 分开保存本轮附加文字与终端预览，保留按角色的相邻轮次去重（见约定 26） |
+| `llm_get_selection.py` | `capture_selection` 按全局 `selection_mode` 选择只读获取、只读后回退 Ctrl+C 或直接 Ctrl+C。`SelectionContext` 分开保存本轮附加文字与终端预览，保留按角色的相邻轮次去重（见约定 26） |
 
 **角色文件格式**（`LLM/*.py`）：每个文件定义一组变量（name、provider、model、system_prompt 等），由 RoleLoader 自动加载。当前内置角色文件为 `default.py`、`翻译.py`、`助理.py`。四个 toast 角色（助理、雾切响子、新岛真、翻译）的 API 段不再写死，改为 `backend = 'deepseek' | 'cpa'` 一行加 `resolve()` 取值，见约定 23。翻译角色开启选中文字读取：有选中文字时将其视为原文、语音输入仅作为目标语言或风格要求；无选中文字时语音输入本身为原文。未指定目标语言时，中文译为英文，其他语言译为简体中文。助理角色面向简单日常与知识问答，默认用一至三句纯文本直接作答，不输出寒暄、问题复述、无关扩展或 Markdown 等特殊格式。助理、雾切响子、新岛真三个角色开启联网搜索与当前时间注入（见约定 15），提示词均规定只有时效性问题才检索、闲聊与稳定知识不检索，且检索结果不得改变各自的输出格式（纯文本、无网址与引用编号）。
 
@@ -474,7 +474,7 @@ Electron 应用连接到 ws://127.0.0.1:6019
 
     ⑨ **图片必须足够新**（`vision_clipboard_max_age`，默认 60s，0 表示不检查）。防的是「很久以前截的图还躺在剪贴板里，按快捷键时被误当成刚截的那张附上去」——**淡紫边框只说明「这次带了图」，说明不了「带的是哪张」**，唯独这种误配它看不出来。Windows 剪贴板不带时间戳（`GetClipboardSequenceNumber` 只是变更计数器，`GetClipboardOwner` 只给 HWND，Win+V 的历史时间戳又漏掉 `CF_DIB` 那类来源且要 WinRT），只能自己轮询序号记录变更时刻。三个要点：**检查时必须再同步补读一次序号**，否则「截完图 0.2s 就按快捷键」会因轮询没跟上而把新图误杀；误差方向是单向的（只会把稍旧的当成刚变的），所以轮询周期必须显著小于阈值（5s 对 60s）；**客户端启动后剪贴板一直没变过时，时刻是「未知」，按过期处理**——规则是「必须是近 N 秒内写入的」，证不出来就不算，代价是重启客户端后要重新复制一次。序号读不到（无剪贴板访问权限）时**退回不检查**而不是拒绝挂载，避免把整个功能连坐禁掉。
 
-    ⑩ **选区默认走 UIA，不访问剪贴板；显式开启的 Ctrl+C 回退与粘贴输出仍会写剪贴板**。`selection_fallback_to_ctrl_c=False`（见约定 26）时，读取选区不会影响待挂图片。旧回退路径保留 `try_paste()` 保护：原内容不是文本时不拿空串写回还原；但 Ctrl+C 复制成功本身仍会覆盖图片，文本剪贴板也可能因占用而还原失败。粘贴模式 `paste_text` 同样必须写剪贴板，改动这一带时仍需考虑视觉输入。
+    ⑩ **只读选区模式不访问剪贴板，回退/直接 Ctrl+C 与粘贴输出仍会写剪贴板**。`selection_mode='uia'`（见约定 26）时，读取选区不会影响待挂图片。两种复制模式共用旧的 `try_paste()` 保护：原内容不是文本时不拿空串写回还原；但 Ctrl+C 复制成功本身仍会覆盖图片，文本剪贴板也可能因占用而还原失败。粘贴模式 `paste_text` 同样必须写剪贴板，改动这一带时仍需考虑视觉输入。
 
     ⑪ **挂载的每一种结果都必须在控制台留一行，成功与失败不能长得一样**。视觉链路全程只用 `logger.info`，而 `logger.py` 把控制台处理器固定在 WARNING（约定 25④），于是按下快捷键之后成功和失败给用户的反馈**完全一致——都是什么都没有**；唯一的区别要等到下一次录音看有没有淡紫描边，那时话都快说完了。2026-09-12 实机因此误判了三次：连续 16 次挂载被体积上限挡下，终端一片安静，现象看起来像「快捷键失灵」，还顺带被归因到刚开启的连续对话上；而更早挂上的一张 185×83 小图在待挂槽里躺了 80 秒（两次 ESC 打断把它退回、两次重新挂载又都超限），最后被当成「刚复制的那张」发了上去。**失败原因由 `grab_clipboard_image` 自己 `console.print`**（没有图 / 解码失败 / 体积超限 / 剪贴板被占用各一条），`VisionManager` 只负责成功那行和时效两条，**调用方不再猜原因**——此前 `vision_manager` 把所有 None 一律写成「剪贴板中没有可用图片」，体积超限也被说成没有图，日志因此同样查不出真相。新增失败分支时必须一并补控制台输出。
 
@@ -514,9 +514,9 @@ Electron 应用连接到 ws://127.0.0.1:6019
 
     ⑤ 连带修正：`llm_output_toast.py` 原先用 `logging.getLogger(__name__)`，那是 `core.client.llm.*` 层级，与项目日志器 `client` 不在同一棵树上，写出去的记录根本进不了 `logs/`——「Toast 窗口创建失败」这类错误一直是隐形的，已改为 `from . import logger`。提醒服务里的 `monitor.should_stop()` 因②实际恒为假（分析是非流式的），取消以 `self.stopped` 为准，该处已加注释。离线回归见 `tools/test_stop_gate.py`。
 
-26. **选区默认只读获取，Ctrl+C 回退由客户端全局配置控制**：角色仍用 `enable_read_selection`/`selection_max_length` 决定是否读取及附加长度；`ClientConfig.selection_fallback_to_ctrl_c=False` 对所有角色统一生效。
+26. **选区获取由客户端全局三模式配置控制**：角色仍用 `enable_read_selection`/`selection_max_length` 决定是否读取及附加长度；`ClientConfig.selection_mode` 对所有角色统一生效，替代旧的 `selection_fallback_to_ctrl_c`。`'uia'` 为只读获取，`'uia_then_ctrl_c'` 为只读未取得文字后回退，`'ctrl_c'` 为直接复制。当前本地配置由原来的 True 迁移为 `'uia_then_ctrl_c'`；配置项缺失时按 `'uia'` 处理。
 
-    ① 默认使用只读接口，不模拟输入、不读写剪贴板：优先 Windows UI Automation 的 `TextPattern.GetSelection/GetText`；UIA 不支持时可走⑥的 Scintilla 专用查询。明确的空选区（含只有光标）不触发回退；只读路径最终为 `unsupported/error/timeout` 且全局开关为 True 时允许旧 Ctrl+C。已知密码控件、密码属性读取失败、元素失效或前台/焦点变化时跳过；回退发键前再次核对原输入窗口。启用回退仍可能中断终端任务，保留此风险提示于配置注释。每次读取在 INFO 记录状态、长度和接口，不记录选区正文，不往终端额外刷诊断。
+    ① `'uia'` 使用只读接口，不模拟输入、不读写剪贴板：优先 Windows UI Automation 的 `TextPattern.GetSelection/GetText`；UIA 不支持时可走⑥的 Scintilla 专用查询。`'uia_then_ctrl_c'` 复用这条只读链路，未取得非空白文字时回退 Ctrl+C，包含 `empty/unsupported/error/timeout`；UIA 空值不能证明用户没有选区。只读链路已检测到密码控件、密码属性读取失败、元素失效或前台/焦点变化（`blocked/changed`）时跳过回退。`'ctrl_c'` 完全不查询 UIA/Scintilla，直接执行旧复制流程，也不使用 UIA 的密码检测。两种复制模式发键前均核对原输入窗口，共用剪贴板还原、相同剪贴板内容判定与后续长度/历史去重/预览处理。回退或直接复制均可能中断终端任务，配置注释须保留说明；日志只记录状态、长度与接口/所选模式，不记录选区正文，不往终端额外刷诊断。
 
     ② `windows_selection.py` 不新增第三方依赖，使用 Windows 8+ 的 CUIAutomation8/IUIAutomation2。COM 只存在于独立无窗口 MTA 线程，检查焦点到原前台窗口的父链（上限 128 层；VS Code/Electron 实测可达 30 层，不能用原来的 16 层上限），不遍历整个窗口寻找其他面板的选区。连接/单次事务超时 300ms，调用方总等待 1s；最多一个读取线程在途，迟到结果丢弃，后续请求不会不断增生线程。工作线程退出时释放所有接口和 BSTR；系统调用若永久不返回，选区功能会持续报超时，需重启客户端恢复，不强杀持有 COM 的线程。
 
@@ -524,7 +524,7 @@ Electron 应用连接到 ws://127.0.0.1:6019
 
     ④ 成功捕获时在「识别结果」之前打印一行「选中文本」。显示层合并换行/空白、清理控制字符，最多 50 字加省略号，并按终端宽度截断（Rich 禁用 markup/highlight，不换行）。模型仍接收按角色长度限制截取的原文。重复选区按既有历史规则不再附加时，仍显示预览并标注「已在历史，本轮未重复附加」；与上次输出相同时说明未附加。清除历史同时清除选区去重记录。
 
-    ⑤ Windows Terminal 原生选区可由 UIA 提供，TUI 内部高亮是否暴露取决于应用；接口无法读到时默认不附加，仍正常提问。不要把终端中看得见的高亮一概视为原生选区，也不要为兼容性自动改发 Ctrl+Shift+C 或其他快捷键。回归见 `tools/test_selection.py`；原生 Edit 控件冒烟见 `tools/test_selection_native.py`，Windows Terminal/TUI 仍需实机验收。
+    ⑤ Windows Terminal 原生选区可由 UIA 提供，TUI 内部高亮是否暴露取决于应用；`'uia'` 模式读不到时不附加，仍正常提问。另两种模式明确允许发送 Ctrl+C，不能保证终端任务不被中断。不要把终端中看得见的高亮一概视为原生选区，也不要为兼容性自动改发 Ctrl+Shift+C 或其他快捷键。回归见 `tools/test_selection.py`；原生 Edit 控件冒烟见 `tools/test_selection_native.py`，Windows Terminal/TUI 仍需实机验收。
 
     ⑥ **Scintilla 编辑器（含 Notepad4）**：UIA 返回 `unsupported` 后，仅对原前台窗口内、Win32 类名恰为 `Scintilla` 的键盘焦点控件查询 `SCI_GETSELECTIONS/GETSELECTIONNSTART/GETSELECTIONNEND` 与 `SCI_GETCHARAT`。消息参数/返回值全是整数：禁止把本进程的缓冲区指针直接传给另一进程的 `SCI_GETSELTEXT`，也不向外部进程分配/写入内存。只读取选区范围内的字节，按控件代码页增量解码，中文/emoji 不截断字节；多选区按文档顺序拼接换行。最多 64 段、16KiB，单消息最多 100ms、专用查询总计 500ms，仍受整个读取的 1s 等待上限控制；前后复核选区位置、文档长度、编码和前台焦点。空选区不读正文；不支持的其他控件绝不接收这些消息。
 
@@ -577,7 +577,7 @@ Electron 应用连接到 ws://127.0.0.1:6019
 | 换 CPA 网关用哪个模型 / 改网关地址 | `LLM/backends.py` 的 `CPA_MODEL` / `CPA_URL`（改一处，所有走 cpa 的角色一起变） |
 | 新增一套后端 | `LLM/backends.py` 的 `PROFILES`，密钥加进 `LLM/secrets.py`（未被 git 跟踪） |
 | 修改 LLM 处理逻辑 | `llm/llm_handler.py`, `llm/llm_processor.py` |
-| 修改选区捕获、兼容回退或终端预览 | `config_client.py` (`selection_fallback_to_ctrl_c`)、`core/tools/windows_selection.py`、`llm/llm_get_selection.py`、`llm/llm_handler.py`、`llm/llm_output_*.py`、`output/result_processor.py`；验证 `tools/test_selection.py` 与 `tools/test_selection_native.py`（约定 26） |
+| 修改选区捕获、兼容回退或终端预览 | `config_client.py` (`selection_mode`)、`core/tools/windows_selection.py`、`llm/llm_get_selection.py`、`llm/llm_handler.py`、`llm/llm_output_*.py`、`output/result_processor.py`；验证 `tools/test_selection.py` 与 `tools/test_selection_native.py`（约定 26） |
 | 修改中断键的生效条件 | `config_client.py` (`llm_stop_key`)、`llm/llm_stop_monitor.py`（两层闸门）、`llm/llm_handler.py`（`process` 的回调包装是唯一武装点、`process_and_output` 的 try/finally 是唯一作用域），验证跑 `tools/test_stop_gate.py`（见约定 25） |
 | 开关角色联网搜索 | 角色文件的 `enable_web_search`/`enable_datetime`/`request_timeout`/`api_url`；实现在 `llm/llm_processor.py` 的 `_build_responses_params` 与 `_process_responses_stream` |
 | 修改热词匹配 | `hotword/hot_phoneme.py` |

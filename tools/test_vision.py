@@ -1181,7 +1181,7 @@ def main():
     selection_native.read_selection = lambda limit: types.SimpleNamespace(
         status='unsupported', text='', target=(123, 456), detail='test provider')
     sys.modules[selection_native.__name__] = selection_native
-    sys.modules['config_client'].ClientConfig.selection_fallback_to_ctrl_c = True
+    sys.modules['config_client'].ClientConfig.selection_mode = 'uia_then_ctrl_c'
     sel_mod = load('core.client.llm.llm_get_selection',
                    'core/client/llm/llm_get_selection.py')
     test_clipboard_restore(clipboard_mod, sel_mod, pyclip_stub, kb_stub)
