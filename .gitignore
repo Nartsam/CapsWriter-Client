@@ -8,3 +8,4 @@ LLM/secrets.py
 
 __pycache__/
 .claude/
+.vscode/
