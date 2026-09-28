@@ -1,0 +1,10 @@
+/20[0-9][0-9]/
+/logs/
+/data/reminders.json
+/data/reminders.json.tmp
+
+
+LLM/secrets.py
+
+__pycache__/
+.claude/
