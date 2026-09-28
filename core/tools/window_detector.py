@@ -46,10 +46,8 @@ def _get_windows_window_info() -> dict:
         # 获取进程 ID 和进程名
         try:
             _, pid = win32process.GetWindowThreadProcessId(hwnd)
-            import psutil
-            process = psutil.Process(pid)
-            process_name = process.name()
-        except:
+            process_name = _get_process_name(pid)
+        except Exception:
             process_name = ""
 
         # 推测应用名称
@@ -66,6 +64,41 @@ def _get_windows_window_info() -> dict:
         return {}
     except Exception:
         return {}
+
+
+def _get_process_name(pid: int) -> str:
+    """
+    按 PID 取进程的可执行文件名（如 'WeChat.exe'），取不到返回空串。
+
+    以前用 psutil，但 internal/ 冻结运行时里没有打包 psutil，导入失败被吞掉后进程名
+    永远是空串，paste_apps / enter_apps / trash_punc_apps 因此从不生效。这里只用
+    标准库 ctypes 调 QueryFullProcessImageNameW：它只需要 PROCESS_QUERY_LIMITED_INFORMATION
+    权限，前台是管理员权限运行的程序时通常也能取到。
+    """
+    import ctypes
+    import os
+    from ctypes import wintypes
+
+    PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+    kernel32 = ctypes.WinDLL('kernel32', use_last_error=True)
+    kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    kernel32.OpenProcess.restype = wintypes.HANDLE
+    kernel32.QueryFullProcessImageNameW.argtypes = [
+        wintypes.HANDLE, wintypes.DWORD, wintypes.LPWSTR, ctypes.POINTER(wintypes.DWORD)]
+    kernel32.QueryFullProcessImageNameW.restype = wintypes.BOOL
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+
+    handle = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+    if not handle:
+        return ""
+    try:
+        size = wintypes.DWORD(32768)
+        buf = ctypes.create_unicode_buffer(size.value)
+        if not kernel32.QueryFullProcessImageNameW(handle, 0, buf, ctypes.byref(size)):
+            return ""
+        return os.path.basename(buf.value)
+    finally:
+        kernel32.CloseHandle(handle)
 
 
 def _get_macos_window_info() -> dict:

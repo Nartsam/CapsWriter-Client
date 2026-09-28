@@ -284,8 +284,7 @@ def main(argv):
         else:
             args.append(a)
 
-    # 不给路径时扫客户端全部源码（core/server 是上游 vendored 的推理引擎，
-    # 里面本来就有一批动态注入的名字，扫它只会淹没真正的信号）
+    # 不给路径时扫客户端的 core/client 与 core/ui
     repo = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     targets = args or [os.path.join(repo, 'core', 'client'),
                        os.path.join(repo, 'core', 'ui')]

@@ -184,7 +184,9 @@ for role in ROLES:
     # 具名角色是连续对话与角色前缀检测的前提
     check(bool(cfg.display_name) and cfg.display_name != RoleConfig.DEFAULT_ROLE_NAME,
           '%s 的 display_name 异常：%r' % (role, cfg.display_name))
-    check(cfg.enabled is True, '%s 被意外禁用' % role)
+    # 只验接线（enabled 是布尔值），不钉取值：开关某个角色是日常操作（翻译角色就常被
+    # 关掉），钉住它只会让这个测试在正常使用中失败，久而久之整个文件的失败都被无视
+    check(isinstance(cfg.enabled, bool), '%s.enabled 不是布尔值：%r' % (role, cfg.enabled))
 
 # ---------------------------------------------------------------- 6
 section('中间变量不会被当成配置项')

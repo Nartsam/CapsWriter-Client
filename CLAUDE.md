@@ -16,6 +16,7 @@
 ## 开发约束
 
 - 本目录是打包后的 Release 目录：系统 Python 没有项目依赖，不要直接 `import core` 跑测试（会因缺少 rich 等失败）。验证方式见 PROJECT_INDEX.md 的「开发环境与验证」一节。
+- 运行时是 `internal/` 里的 **Python 3.8**：不能用 3.9+ 的语法和标准库（如 `match`、`str.removeprefix`；注解里写 `list[int]` 要先 `from __future__ import annotations`）。只能用 `internal/` 里已有的第三方库，新依赖要先确认它在 `internal/` 里——导入失败常被 `try/except` 吞掉，功能会悄悄失效（`window_detector` 曾因此取不到进程名）。
 - 禁止将 `__pycache__`/`.pyc` 提交进仓库；语法检查用 `ast.parse` 而非 `py_compile`。
 - 修改行为后必须同步更新 PROJECT_INDEX.md 相关章节及这件事的其他归属位置（见下面的「文档维护」）；跨会话的待办、决策与已知问题记录在 `docs/DEV_NOTES.md`。
 

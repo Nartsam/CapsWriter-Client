@@ -25,16 +25,13 @@ CapsWriter 离线语音输入的**客户端**（Windows）。上游 [HaujetZhao/
 ├── config_client.py        # 唯一的客户端配置（ClientConfig 类属性，另有快捷键写法说明）
 ├── LLM/                    # 角色：每个 .py 一个角色；backends.py = 后端切换，secrets.py = 密钥（禁止读取）
 ├── hot.txt / hot-rule.txt  # 热词（音素模糊匹配）/ 正则规则，热重载
-├── hot-server.txt          # 上游遗留，客户端不读取
 ├── core/
 │   ├── protocol.py         # C/S 协议 AudioMessage / RecognitionMessage —— 与服务端仓库逐字相同
 │   ├── constants.py        # 音频格式（16kHz float32 单声道）、标点集合 —— 与服务端仓库逐字相同
 │   ├── logger.py           # 文件按 log_level 记（logs/client_latest.log，超 10MB 截断），控制台固定 WARNING+
 │   ├── client/             # 客户端各子系统（见「模块地图」）
 │   ├── ui/                 # Toast、托盘、上下文/热词对话框、DPI 声明
-│   ├── tools/              # 客户端用到 window_detector、windows_selection、zhconv、token_sync、srt_from_txt、
-│   │                       # signal_handler、my_status、asyncio_to_thread、empty_working_set；其余为上游遗留
-│   └── server/             # 上游遗留的服务端代码，客户端不导入、不运行
+│   └── tools/              # 通用工具（清单见 core/tools/__init__.py；clean_assets.py 是独立脚本，不被客户端导入）
 ├── tools/                  # 开发期验证脚本，不参与运行时（tools/README.md）
 ├── docs/                   # 功能使用说明 + DEV_NOTES.md
 ├── assets/                 # icon.ico、demo.png
@@ -164,7 +161,7 @@ CapsWriter 离线语音输入的**客户端**（Windows）。上游 [HaujetZhao/
 
 ## 服务端与协议
 
-- 服务端在独立仓库 `../CapsWriter-Server`（Qwen3-ASR 识别，文件转录用 Qwen3-ForcedAligner 出字级时间戳），部署与配置看那边的文档。本仓库的 `core/server/`、`hot-server.txt` 是上游遗留，不能当作服务端行为的参照。
+- 服务端在独立仓库 `../CapsWriter-Server`（Qwen3-ASR 识别，文件转录用 Qwen3-ForcedAligner 出字级时间戳），部署与配置看那边的文档。上游遗留的服务端代码已从本仓库删除。
 - **`core/protocol.py`、`core/constants.py` 与服务端仓库逐字相同**，改协议必须两边同步。
 - 客户端发 `AudioMessage`（JSON 文本帧，`data` 为 base64 的 float32 16kHz 单声道 PCM），带 `seg_duration`/`seg_overlap`（麦克风与文件分别取 `mic_seg_*`、`file_seg_*`，默认 60/4，分段在服务端做）、`context`（服务端当作 Qwen3 的 system prompt）、`language`。服务端每段回一条 `RecognitionMessage`，最后一条 `is_final=True`；听写用 `text`，文件转录用 `tokens`/`timestamps`。子协议 `binary`，`max_size=None`。
 - **录音打断不走协议**：服务端的音频缓冲按连接持有、只有 `is_final` 才清空，所以打断仍要发一个 `is_final` 冲掉残余音频，结果回来后在客户端按 task_id 丢弃。没有新增取消消息，是为了不必两个仓库同步部署。
