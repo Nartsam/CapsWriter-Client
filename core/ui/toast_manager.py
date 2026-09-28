@@ -237,7 +237,9 @@ class ToastMessageManager:
 
         except Exception as e:
             # 带上 traceback：这里吞掉的是窗口构造异常，只打一行消息的话
-            # 现象只剩下调用方「等待窗口超时」，根因（哪一行、哪个模块）完全丢失
+            # 现象只剩下调用方「等待窗口超时」，根因（哪一行、哪个模块）完全丢失。
+            # 结构上仍是「窗口构造失败 = 静默无弹窗」：改 core/ui/toast_*.py 后必须真的
+            # 弹一次窗口验证，控制台没有红字不说明可用
             logger.warning(f"处理队列消息时出错: {e}", exc_info=True)
 
         # 继续处理队列
@@ -319,8 +321,9 @@ class ToastMessageManager:
         新 LLM 回复窗口创建前调用：上一轮 LLM 回复窗口（无论是否被拖拽）都应由
         新窗口取代，避免新旧叠加——用户说新的话时旧回复窗口应立即消失，而不是
         等到新窗口有文字才被察觉。范围限定 smart_duration 窗口（pause_and_resume
-        标志），普通 toast（托盘/错误/录音）不受影响；OpenMate 接管时不走本方法
-        （handle_toast_mode 在 OpenMate 路径提前返回，旧窗口保留）。
+        标志），普通 toast（托盘/错误/录音）不受影响。OpenMate 接管展示时
+        handle_toast_mode 同样会调用本方法：否则被拖拽过（永不自动关闭）的旧本地窗口
+        会在一直走 OpenMate 路径时永久残留。
         """
         for window in self.active_windows[:]:
             if getattr(window, 'pause_and_resume', False):

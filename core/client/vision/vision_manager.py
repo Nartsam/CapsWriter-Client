@@ -7,10 +7,10 @@
 线程模型是本模块唯一需要小心的地方：`GlobalHotKeys` 是 pynput `keyboard.Listener`
 的子类，Windows 上走 `WH_KEYBOARD_LL` 低级钩子，**回调就在钩子线程上同步执行**。
 而剪贴板读取这条链路（DIB 解码 + 缩放 + PNG 编码）在 4K 图上可能耗时数百毫秒，
-远超系统对低级钩子的 300ms 容忍上限（同约定 12）。一旦超时被系统摘钩，连
-`llm_stop_key`（ESC）都会一起失效。所以回调里只做一次 submit，实际读取全在
+远超系统对低级钩子的 300ms 容忍上限（同 ShortcutTask.abort 的说明）。一旦超时被系统
+摘钩，连 `llm_stop_key`（ESC）都会一起失效。所以回调里只做一次 submit，实际读取全在
 工作线程完成——「按下快捷键后立刻开始录音，这次录音不带图」正是这个异步的直接
-后果，也是「下一条」从**挂载成功那一刻**起算的原因（见约定 21）。
+后果，也是「下一条」从**挂载成功那一刻**起算的原因（绑定见 ClientState.begin_image_snapshot）。
 """
 
 from __future__ import annotations

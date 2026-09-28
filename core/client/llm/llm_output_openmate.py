@@ -5,7 +5,8 @@ LLM OpenMate 输出模式
 文档见 OpenMate/docs/api/external-http-api.md）。
 
 工作方式：
-1. 请求开始时探测 /health，OpenMate 以 external 模式运行且接受写入才走此路径；
+1. 请求开始时探测 /health（无状态按需探测、不维护长连接：OpenMate 可随时启停），
+   OpenMate 以 external 模式运行且接受写入才走此路径；
    未配置目标角色时通过 GET /v1/presentation 查询当前生效角色（每次都查，
    角色可随时在 OpenMate 界面切换），再通过 GET /v1/characters/{id}/states
    获取该角色的情绪状态列表（带缓存，状态来自 OpenMate 启动快照，改立绘需
@@ -51,6 +52,8 @@ def build_emotion_prompt(states: list, default_state: str = '') -> str:
 
     标签中要求 LLM 使用稳定的状态 ID（OpenMate 文档 §4.3 的建议），
     别名只作为帮助模型理解语义的注解；零配置扫描的状态别名可能为空。
+    本地不校验模型输出的标签是否合法：OpenMate 对无效状态会回退默认立绘并剥离
+    标签，本地再做一层跨分片校验只增加复杂度、没有用户可见收益。
     """
     lines = []
     for st in states:
@@ -355,6 +358,9 @@ class OpenMateSegmentSender:
     仍保存未切分全文。第一段就绪即创建 open 队列开始展示（不等全文生成），
     后续段落边生成边追加，生成结束随最后一段封口；空白段丢弃，纯状态标签
     留给下一段正文，结束时丢弃未附着正文的标签；未发出完整段时退化为单条消息。
+
+    发送器只按分隔符切，不按字数合并或截断：一条消息该多长、分几条由角色提示词
+    约束。按字数强行合并会推迟首条投递，也容易把不同情绪或独立问题混进一条。
     """
 
     def __init__(self, client: OpenMateClient, character: str = '', delimiter: str = '\n\n'):
@@ -665,7 +671,7 @@ def _show_fallback_toast(role_config, text: str):
         window_alpha=role_config.toast_window_alpha,
         corner_radius=role_config.toast_corner_radius,
         # 智能时长：非流式一次性展示，创建即按最终文本字数计时；
-        # 悬停暂停续时、拖拽后永不自动关闭（同 handle_toast_mode）
+        # 悬停不顺延、拖拽后永不自动关闭（同 handle_toast_mode）
         smart_duration=True,
     )
     manager = ToastMessageManager()

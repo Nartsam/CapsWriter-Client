@@ -10,6 +10,8 @@ Python 3.8 运行时里没有。所以时间只能自己记。
 
 做法：后台线程按 `POLL_INTERVAL` 轮询序号，一变就记下 `time.monotonic()`。
 序号读取不需要 `OpenClipboard`，与其他程序零争用，实测单次约 0.5 微秒。
+没用事件驱动的 `AddClipboardFormatListener`：那要建 message-only 窗口加一条消息泵
+线程，而轮询的成本已经在噪声底下（见 POLL_INTERVAL 的注释）。
 
 两个必须一起做的细节：
 1. **检查时要再同步读一次序号**。用户截完图 0.2s 就按快捷键时，轮询可能还没看到

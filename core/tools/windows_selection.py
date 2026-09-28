@@ -352,7 +352,13 @@ _read_lock = threading.Lock()
 
 
 def read_selection(max_length: int) -> SelectionRead:
-    """有界等待；选区工作线程永远只读，即使超时后继续运行也不会发送按键。"""
+    """有界等待；选区工作线程永远只读，即使超时后继续运行也不会发送按键。
+
+    不强杀持有 COM 的工作线程：若某次系统调用永久不返回，它一直占着 _read_lock，
+    此后每次读取都立即返回 timeout，需重启客户端恢复。
+    返回 empty 只说明 UIA 给了空值，不能证明用户没有选中（例如 VS Code 编辑区未开启
+    屏幕阅读器优化时），是否因此回退 Ctrl+C 由调用方的 selection_mode 决定。
+    """
     max_length = max(0, int(max_length))
     if not max_length:
         return SelectionRead('empty')

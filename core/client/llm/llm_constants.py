@@ -127,7 +127,7 @@ class ToolNames:
 
 # 图片在纯文本场合（对话历史里的旧图、日记 md、UDP 广播）的占位表示。
 # 历史里只保留最近一张真图，更早的一律降级成它——多轮追问「那第三行呢」需要
-# 模型还能看见最近这张，而每轮重传全部历史图片是纯浪费（见约定 21）
+# 模型还能看见最近这张，而每轮重传全部历史图片是纯浪费（见 ContextManager.demote_images）
 IMAGE_PLACEHOLDER = '［图片］'
 
 
@@ -159,7 +159,7 @@ def estimate_tokens(text) -> int:
 
     # 带图消息的 content 形如 [{'type':'text',...}, {'type':'image_url',...}]，
     # 落到下面的逐字符迭代会拿 dict 去和字符比大小，直接 TypeError。历史里一旦
-    # 存进一条带图消息，此后每次裁剪都会炸（见 docs/DEV_NOTES.md）
+    # 存进一条带图消息，此后每次裁剪都会炸（enable_history=True 的角色第一次带图就会遇到）
     if isinstance(text, (list, tuple)):
         return max(sum(_estimate_part_tokens(part) for part in text), 1)
     if not isinstance(text, str):

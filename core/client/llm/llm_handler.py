@@ -260,7 +260,8 @@ class LLMHandler:
             matched_hotwords: 潜在热词列表
             forced_role: 连续对话指定的粘滞角色。给出时跳过角色前缀检测，整句原样发给它
             image_data: 本次录音绑定的图片（base64 data URL）。只有角色
-                enable_vision=True 时才真的带上，否则静默丢弃（见约定 21）
+                enable_vision=True 时才真的带上，否则丢弃（去向由 LLMResult.image_used
+                交给 ResultProcessor._report_image_usage 报告）
             reminder_anchor: 录音结束时间戳；仅实时录音入口提供，用作提醒时间基准
             on_selection: 选区就绪后通知控制台打印预览与识别结果；跳过读取时传 None
         """
@@ -336,7 +337,7 @@ class LLMHandler:
             # 漏改一处就是运行时崩溃；也不用 handler 上的实例属性，避免跨请求残留
             used_tools = []
             # 角色不支持视觉就不带图。不校验 model 是否真是视觉模型——那是角色文件
-            # 作者的责任，写错了服务端会返 400 并由约定 18 的诊断日志打到终端
+            # 作者的责任，写错了服务端会返 400 并由 llm_processor 的错误诊断日志打到终端
             image_for_request = image_data if role_config.enable_vision else None
             if image_data and not image_for_request:
                 logger.info(f"角色「{role_config.display_name or RoleConfig.DEFAULT_ROLE_NAME}」"

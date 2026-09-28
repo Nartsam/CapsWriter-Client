@@ -105,7 +105,7 @@ class ToastWindowBase(ABC):
         Args:
             parent_root: 父窗口（Tk 主窗口）
             text: 初始文本内容
-            font_size: 字体大小（像素）
+            font_size: 字体大小（Tk 磅值，随 DPI 缩放）
             font_family: 字体名称，空字符串使用默认字体
             bg: 背景颜色
             fg: 前景色（文字颜色）
@@ -151,6 +151,8 @@ class ToastWindowBase(ABC):
         # 顶部留白按窗口种类取值。smart_duration 在本项目里事实上等同于「这是 LLM 角色
         # 白色对话框」（close_llm_windows 同样拿它做判别），只有这类窗口需要 40px 纯空白
         # 拖动抓手；托盘/错误这类几秒即逝的提示不可拖拽也无需抓手，顶部与底部对齐即可。
+        # 复用这个标志而不另加字段：同一个概念有两个开关迟早对不齐。代价是「智能时长」
+        # 与「顶部拖动区」绑在一起，真出现只要其一的窗口种类时得先把标志拆成两个。
         # height_padding 是上下留白之和，供子类按行数反推窗口高度
         self.padding_top = DEFAULT_PADDING_TOP if smart_duration else COMPACT_PADDING_TOP
         self.height_padding = self.padding_top + DEFAULT_PADDING_BOTTOM
@@ -424,6 +426,10 @@ class ToastWindowBase(ABC):
     def _on_width_changed(self, _new_width: int) -> None:
         """宽度变化钩子，供需要显式设置换行宽度的子类覆盖。"""
 
+    # 窗口位置/尺寸一律经过这两个方法。几何字符串必须写成 f"+{x}+{y}"，负坐标得到
+    # "+-100+50"：wm geometry 把 x、y 前面的 +/- 当作「从左上边缘量」还是「从右下边缘
+    # 量」的标志位消费掉，其后的数字再按有符号数解析。f"{x:+d}" 对负数产出的
+    # "-100+50" 会被理解成「距屏幕右边缘 100px」，窗口拖出左/上边界时会跳到另一侧。
     def _set_geometry(self, width: int, height: int, x: int, y: int) -> None:
         """设置尺寸和位置。"""
         self.window.geometry(

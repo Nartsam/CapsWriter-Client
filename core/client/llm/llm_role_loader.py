@@ -55,6 +55,10 @@ class RoleLoader:
         self.roles_registry.clear()
         errors = []
 
+        # 按文件名顺序逐个 del sys.modules 再 import：被角色文件 import 的共享模块
+        # （LLM/backends.py）必须排在所有角色文件之前，热重载后角色才能拿到新值，
+        # 否则静默读到上一轮的旧值（见 backends.py 顶部说明，tools/test_backends.py 有断言）。
+        # secrets.py 也会被导入一次，因缺少 provider/model 被跳过。
         for file_path in sorted(self.llm_dir.glob('*.py')):
             if file_path.name == '__init__.py':
                 continue

@@ -40,6 +40,15 @@ class ContinuousChatSnapshot:
     隔着一整个服务端往返，期间用户完全可能已经开始说下一句、或者已经切换了状态。
     快照在 launch() 时创建、拿到 task_id 后登记，最终结果到达时消费。
 
+    连续对话只改路由、不碰对话记忆：历史一直由各角色的 enable_history 维护，所以
+    进入时不清空历史，enable_history=False 的角色（如翻译）也能进。
+
+    放弃过的更简单方案是「等结果期间禁止再次录音」：pending_task_id 在断线时没人清，
+    服务端一崩录音键就永久锁死；而且按下录音键没反应会让整句话凭空消失。
+
+    任何让这次录音作废的路径（短按取消、录音阶段或等待阶段的打断键）都回滚本次
+    切换。代价是退出也必须完成一次有效录音（静默长按过阈值再松手即可）。
+
     Attributes:
         sticky_role: 录音开始时生效的粘滞角色名；None 表示当时不在连续对话中
         toggled: 本次录音期间切换键按了奇数次
@@ -136,7 +145,7 @@ class ClientState:
 
     # 待挂图片（按下截图快捷键后从剪贴板读入，纯内存、不落盘）。
     # 与连续对话同构地按录音快照绑定：图片归属由「说这句话时它挂着没有」决定，
-    # 而不是结果到达时的全局槽位——中间隔着一整个服务端往返（见约定 21）
+    # 而不是结果到达时的全局槽位——中间隔着一整个服务端往返（同上面的连续对话快照）
     pending_image: Optional[Any] = None
     image_current: Optional[Any] = None
     image_snapshots: Dict[str, Any] = field(default_factory=dict)
@@ -398,7 +407,7 @@ class ClientState:
         「移入」而非「复制」：图片一旦绑定到某次录音就不再是待挂状态，
         这样「已绑定」与「待挂」互斥，指示器边框和后续录音的归属都不会含糊。
         还没读完剪贴板时槽位为空，本次录音就是一次普通录音——这正是
-        「下一条」从**挂载成功那一刻**起算的含义（见约定 21）。
+        「下一条」从**挂载成功那一刻**起算的含义（见 vision_manager 模块说明）。
         """
         image = self.pending_image
         self.pending_image = None

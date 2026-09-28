@@ -1,7 +1,8 @@
 """
 LLM Toast 输出模式
 
-流式显示在浮动窗口中，完成后停留 3 秒
+流式显示在浮动窗口中；生成完成后按智能时长自动关闭（时长随字数、悬停不顺延、
+拖拽后常驻，实现见 core/ui/toast_base.py 的智能时长一节）
 """
 import asyncio
 
@@ -77,7 +78,7 @@ async def handle_toast_mode(handler, text: str, role_config=None, matched_hotwor
             editable=role_config.toast_editable,
             window_alpha=role_config.toast_window_alpha,
             corner_radius=role_config.toast_corner_radius,
-            # 智能时长：时长随字数、悬停暂停续时、拖拽后永不自动关闭
+            # 智能时长：时长随字数、悬停不顺延（到期后移开即关）、拖拽后永不自动关闭
             smart_duration=True,
             stop_callback=lambda: task_stop_event.set()
         )

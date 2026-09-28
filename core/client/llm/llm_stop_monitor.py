@@ -117,7 +117,12 @@ class StopMonitor:
 
         代价：某次请求彻底卡住、一个字都不出时不能再用中断键提前掐掉，只能等
         角色的 request_timeout（两套后端均为 60s）。那种状态下按键本来也没有
-        任何反馈，换来的是「回复凭空消失」不再发生。
+        任何反馈，换来的是「回复凭空消失」不再发生。同样被接受的：粘贴模式在首个
+        分片到达前按中断键不起作用；提醒分析是非流式的，从不武装起效闸门，因此
+        不响应中断键（见 reminder/service.py 里 should_stop 那处注释）。
+
+        新增流式路径或输出模式时，stopped 分支要自己留一条 INFO 终局记录：
+        llm_processor 的空回复告警带 not stopped 条件，中断时会被抑制。
         """
         with self._state_lock:
             active, started = self._request_active, self._output_started

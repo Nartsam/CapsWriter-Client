@@ -28,8 +28,12 @@ class RoleConfig:
     model: str = 'gemma3:4b'                      # 模型名称
     enable_vision: bool = False                   # 该角色能否接收图片。为真时，待挂图片会随
                                                   # 这句话一并上传；**不校验 model 是否真支持
-                                                  # 视觉**——写错了服务端会返 400，约定 18 的
-                                                  # 诊断日志会把错误正文打到终端
+                                                  # 视觉**——写错了服务端会返 400，llm_processor
+                                                  # 的错误日志会把错误正文打到终端。刻意不做
+                                                  # 「带图时自动换成视觉模型」：那要再加全局
+                                                  # vision_model 与临时替换逻辑，而 model 本就由
+                                                  # 角色文件作者填写；代价是开启本项的角色要自己
+                                                  # 换成视觉模型，且作用于它的每一次请求
 
     # 上下文管理
     max_context_length: int = 4096                # 最大上下文长度（token 数）
@@ -42,10 +46,14 @@ class RoleConfig:
     selection_max_length: int = 1000              # 选中文字最大长度
     enable_web_search: bool = False               # 联网搜索：改走 Responses API 并挂载服务端内置
                                                   # web_search 工具，由模型自行决定是否检索
-                                                  # （目前仅 DeepSeek 的 deepseek-v4-flash 支持）
+                                                  # （需要后端实现 Responses API 与内置 web_search；
+                                                  # DeepSeek 的 api_url 须写成不带 /v1 的形式，
+                                                  # 见 LLM/backends.py）
     enable_datetime: bool = False                 # 在用户消息里注入当前日期时间，供模型判断时效性
     request_timeout: float = 0                    # 单次请求超时（秒），0 表示用 provider 默认值；
-                                                  # 联网搜索在首个正文分片前会静默数秒，必须调大
+                                                  # 联网搜索在首个正文分片前会静默数秒，必须调大。
+                                                  # 用角色级字段覆盖而不改 APIConfig.DEFAULT_TIMEOUTS：
+                                                  # 全局 2s 是「网络有问题就快速失败」的刻意设计
 
     # 输出配置
     output_mode: str = 'typing'                   # 输出方式: 'typing' 或 'toast' (即打字输出或弹窗输出)

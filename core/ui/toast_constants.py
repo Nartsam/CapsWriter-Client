@@ -15,7 +15,9 @@ DEFAULT_PADDING_TOP = 40    # 顶部纯空白拖动区高度；正文下移这�
                             # 只给 LLM 角色白色对话框用：它常驻、可拖拽，又要允许选中正文，
                             # 需要一条不会误触正文的抓手
 DEFAULT_PADDING_BOTTOM = 15
-COMPACT_PADDING_TOP = DEFAULT_PADDING_BOTTOM  # 普通 toast（托盘/错误）的顶部留白，与底部对齐
+COMPACT_PADDING_TOP = DEFAULT_PADDING_BOTTOM  # 普通 toast（托盘/错误）的顶部留白，与底部对齐。
+                            # 不取 0：单行普通 toast 高度 = 行高 + 上下留白，顶部取 0 会撞上
+                            # MIN_WINDOW_HEIGHT 兜底，省下的留白原样挪到文字下方
 
 # ============================================================
 # 窗口尺寸常量

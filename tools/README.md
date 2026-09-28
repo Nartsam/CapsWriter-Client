@@ -27,13 +27,13 @@ python tools/run_tests.py
 | `test_state_tags.py` | `StateTagFilter`。重点是**穷举分片切割位置**——标签被切在任意一处都必须被完整吃掉 |
 | `test_openmate_segments.py` | OpenMate 分段发送：纯标签段随下一段正文发送、尾部标签丢弃、跨分片一致性、首段及时交付、取消与失败回退；真实发送线程和请求构造，HTTP 在内存中收集 |
 | `test_history_payload.py` | 对话历史的上行载荷：不带 `timestamp`、不交出活引用、assistant 保留状态标签、旧图降级 |
-| `test_selection.py` | 选区捕获（约定 26）：默认不发键/不碰剪贴板、回退条件、焦点与超时、Scintilla 范围/编码/标量消息边界、历史去重预览、typing/toast/openmate 单次快照转发、终端输出顺序；所有输入与外部接口均为桩 |
+| `test_selection.py` | 选区捕获：默认不发键/不碰剪贴板、回退条件、焦点与超时、Scintilla 范围/编码/标量消息边界、历史去重预览、typing/toast/openmate 单次快照转发、终端输出顺序；所有输入与外部接口均为桩 |
 | `test_selection_native.py` | 原生 Windows 冒烟：自有隐藏 Edit 真实 UIA 读取，加自有 Scintilla 协议窗口验证只读 Win32 消息链路；后者不是真实 Scintilla 库。覆盖 Unicode、长度上限、空光标和剪贴板序号不变；仅替换焦点定位，无键盘输入或剪贴板写入。需 Windows 会话，不进流水线，不能替代 Notepad4 / Windows Terminal/TUI 验收 |
 | `probe_selection.py` | 只读诊断真实前台 UIA 父链、控件类型、进程号与选区长度；不打印选区正文，不发送输入或读写剪贴板。`--wait 10` 留出手动选择时间，`--depth 16` 可复现旧上限，`--all-patterns` 检查各祖先的选区长度（该模式最后的 status 不代表捕获结果）；`--samples 23 --interval 2` 可连续观察焦点/选区变化，控件 Name 仅按编辑器/终端标签分类，不输出原文。需要用户桌面访问，沙箱隔离桌面可能返回 HWND=0 |
-| `test_backends.py` | LLM 后端切换（约定 23）：两套 profile 取值、未知名字回退、`backends.py` 必须排在角色文件之前（热切换的前提）、四个角色在 `backend='deepseek'` 下与改造前逐字相同 |
-| `test_toast_padding.py` | Toast 顶部留白分岔（约定 17）：LLM 白框 40px 拖动区 / 普通 toast 15px、画布坐标与窗口高度、`MIN_WINDOW_HEIGHT` 兜底未触发、判别器与 `close_llm_windows` 同源。**真构造 Tk 窗口、会闪窗**，不进流水线，见下 |
+| `test_backends.py` | LLM 后端切换（`LLM/backends.py`）：两套 profile 取值、未知名字回退、`backends.py` 必须排在角色文件之前（热切换的前提）、四个角色在 `backend='deepseek'` 下与改造前逐字相同 |
+| `test_toast_padding.py` | Toast 顶部留白分岔：LLM 白框 40px 拖动区 / 普通 toast 15px、画布坐标与窗口高度、`MIN_WINDOW_HEIGHT` 兜底未触发、判别器与 `close_llm_windows` 同源。**真构造 Tk 窗口、会闪窗**，不进流水线，见下 |
 | `probe_llm_live.py` | **真发请求、消耗额度**，单独跑。见下 |
-| `probe_role_segments.py` | **真发请求、消耗额度**。用当前两套后端检查雾切响子或新岛真的分条和语气；默认仅测当前提示词，`--baseline` 可读归档提示词复现对照。生产发送器只在内存中收集消息，不向 OpenMate 投递；方法与最终结果见 `docs/ROLE_SEGMENT_FIX_2026-09-13.md` |
+| `probe_role_segments.py` | **真发请求、消耗额度**。用当前两套后端检查雾切响子或新岛真的分条和语气；默认仅测当前提示词，`--baseline` 可读归档提示词复现对照。生产发送器只在内存中收集消息，不向 OpenMate 投递。2026-09-13 调整前的原提示词归档在 git 历史里（提交 521f482 的 `docs/experiments/*.json`），做改前/改后对照时用 `git show` 取到仓库内的新文件（如 `logs/` 下）再传给 `--baseline`；输出目录必须为空 |
 
 ## 为什么 test_toast_padding.py 不进流水线
 
@@ -54,13 +54,13 @@ Win32 控件，不需要 Tk 或第三方依赖，也不夺取用户窗口焦点�
 
 ## 为什么需要 probe_llm_live.py
 
-PROJECT_INDEX 和 DEV_NOTES 里有几条结论是押在 DeepSeek 当前行为上的，本地单测
-证不了，厂商改了也不会有任何报错，只会表现成某个功能悄悄失灵：
+有几条设计结论是押在 DeepSeek 当前行为上的（写在对应代码注释和 DEV_NOTES 里），
+本地单测证不了，厂商改了也不会有任何报错，只会表现成某个功能悄悄失灵：
 
-- **P1** 图片能与服务端内置 `web_search` 工具共存（约定 21⑧；不共存就得加降级分支）
-- **P2** 历史里的图在后续轮次仍然可见（约定 21⑧「只保留最近一张真图」的前提）
-- **P3** 情绪标签跨轮保持（约定 22；历史存原文才有意义）
-- **P4** `thinking:disabled` 是否仍然「被接受但完全无效」（DEV_NOTES 已知状态）
+- **P1** 图片能与服务端内置 `web_search` 工具共存（不共存就得给带图请求加降级分支，见 `llm_processor._stream_request`）
+- **P2** 历史里的图在后续轮次仍然可见（「只保留最近一张真图」的前提，见 `ContextManager.demote_images`）
+- **P3** 情绪标签跨轮保持（历史存原文才有意义，见 `llm_state_tags` 模块说明）
+- **P4** `thinking:disabled` 是否仍然「被接受但完全无效」（DEV_NOTES「已知问题」）
 
 ```
 python tools/probe_llm_live.py          # 全跑
@@ -79,3 +79,6 @@ P2/P3 用仓库里**真实的** `RoleConfig` / `MessageBuilder` / `ContextManage
 - 每个脚本开头写 `sys.dont_write_bytecode = True`
 - 路径按 `__file__` 推导仓库根，别用 `os.getcwd()`：脚本要能从任何工作目录跑
 - 新测试文件加进 `run_tests.py` 的 `SUITES`
+- 涉及 Tk 文字度量的测试，建 Tk 之前先调 `ctypes.windll.shcore.SetProcessDpiAwareness(2)`，
+  并断言 `winfo_fpixels('1i') > 96`：不声明 DPI 感知的进程被系统虚拟成 96 DPI，
+  量出来的宽度只有实机的一半，「文字没被截断」这类断言会在测试里假通过

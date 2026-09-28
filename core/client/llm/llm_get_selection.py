@@ -34,7 +34,11 @@ def format_selection_preview(selection: SelectionContext) -> str:
 
 
 def _read_by_copy(target) -> str:
-    """供回退与直接复制模式共用，保留旧的剪贴板保护与还原行为。"""
+    """供回退与直接复制模式共用，保留旧的剪贴板保护与还原行为。
+
+    还原只能保住文本：用户确实选中了文字时，Ctrl+C 本身就会覆盖剪贴板里的图片
+    （例如视觉输入还没来得及挂载的截图），这是模拟复制取选区的固有代价。
+    """
     # 保存目标后前台可能已经改变。不能把原窗口的复制操作发给另一个窗口。
     if not target or not target[0] or get_input_target() != target:
         return ''
@@ -57,7 +61,12 @@ def _read_by_copy(target) -> str:
 
 
 def capture_selection(role_config, state) -> SelectionContext:
-    """按全局模式获取选区，再统一处理长度限制、历史去重与预览。"""
+    """按全局模式获取选区，再统一处理长度限制、历史去重与预览。
+
+    读不到就不附加，不找替代品：不为终端改发 Ctrl+Shift+C 等其他快捷键，也不把
+    剪贴板旧内容、终端全文或整个窗口的文本当成当前选区。
+    日志只记状态、长度与所用接口，不记选区正文；终端只显示成功时的预览。
+    """
     if not role_config.enable_read_selection:
         return SelectionContext()
     try:

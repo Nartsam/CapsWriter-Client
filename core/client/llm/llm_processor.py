@@ -231,7 +231,9 @@ class LLMProcessor:
 
         if role_config.enable_web_search:
             # 服务端内置工具，检索在 DeepSeek 侧执行，本地无需搜索 API Key。
-            # 是否检索由模型自行判断，普通问题不会触发，速度与不挂载工具时一致
+            # 是否检索由模型自行判断，普通问题不会触发，速度与不挂载工具时一致。
+            # 没有接第三方搜索 API，也没有做本地关键词路由：后者既会漏判（「XX 发布了
+            # 吗」不含时效词）又会误判（拖慢常识问答）
             params['tools'] = [{'type': 'web_search'}]
 
         if role_config.stop:
@@ -283,6 +285,8 @@ class LLMProcessor:
                 client, role_config, messages, callback, should_stop_check
             )
         elif role_config.enable_web_search:
+            # 带图的请求同样走这里，不降级到 Chat Completions：图片与内置 web_search
+            # 可以在同一个 Responses 请求里共存（tools/probe_llm_live.py 的 P1 复测）
             result = self._process_responses_stream(
                 client, role_config, messages, callback, should_stop_check,
                 status_callback, used_tools
@@ -591,6 +595,10 @@ class LLMProcessor:
 
         summary = (f"状态 {final_status or '未知'}，{usage_summary}，正文 {len(full_response)} 字，"
                    f"事件 [{self._format_event_counts(event_counts)}]")
+        # 读空回复告警的判据：状态 incomplete 且推理 token 很多 → 输出额度在第一个可见
+        # token 之前被推理吃光；状态是干净的 completed、事件里只有 reasoning 项、没有
+        # message 也没有任何 <工具>_call → 工具调用被中间网关吞掉、回合直接结束
+        # （CPA 网关补齐 web_search 之前的症状：闲聊正常，一问时效性问题就空）
         if not full_response.strip() and not stopped:
             logger.warning(f"模型没有返回任何正文（{summary}）")
         elif stopped:

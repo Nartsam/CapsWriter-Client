@@ -92,7 +92,7 @@ class ShortcutTask:
         snapshot = self._prepare_continuous()
 
         # 待挂图片在这一刻绑定到本次录音。剪贴板读取是异步的，此刻还没读完就是
-        # 一次不带图的普通录音——「下一条」从图片挂载成功那一刻起算（见约定 21）
+        # 一次不带图的普通录音——「下一条」从图片挂载成功那一刻起算（见 vision_manager 模块说明）
         pending_image = self.state.begin_image_snapshot()
 
         # 更新录音状态

@@ -322,7 +322,7 @@ class ShortcutManager:
         Returns:
             本次事件是否需要拦截（不传给前台程序）
 
-        与打断键同构：抑制决策在 KEYDOWN 锁存、KEYUP 无条件沿用（见约定 12）。
+        与打断键同构：抑制决策在 KEYDOWN 锁存、KEYUP 无条件沿用（原因见 _handle_cancel_key）。
         录音期间必须拦截——录音键 ctrl_r 的 KEYDOWN 虽然被吞了，但物理上它确实按着，
         放行的空格会被系统当成真正的 Ctrl+Space，也就是输入法中英文切换热键。
         """

@@ -2,14 +2,14 @@
 """
 厂商行为探针（真发请求，会消耗额度）
 
-PROJECT_INDEX 与 DEV_NOTES 里有几条结论是**押在 DeepSeek 当前行为上**的，本地
+有几条设计结论是**押在 DeepSeek 当前行为上**的（写在对应代码注释与 DEV_NOTES 里），本地
 单测证不了，改厂商模型/接口时也不会有任何报错——只会表现成某个功能悄悄失灵。
 这个脚本把它们一次性重测一遍，坏了哪条一眼看得出来。
 
-  P1 视觉 + web_search 共存      约定 21⑧（不共存就得加降级分支）
-  P2 历史里的图仍可见            约定 21⑧「历史里只保留最近一张真图」的前提
-  P3 情绪标签跨轮保持            约定 22（历史存原文才有意义）
-  P4 thinking:disabled 是否生效  DEV_NOTES 记的是「接受但完全无效」
+  P1 视觉 + web_search 共存      带图请求不降级到 Chat（llm_processor._stream_request）
+  P2 历史里的图仍可见            「历史里只保留最近一张真图」的前提（ContextManager.demote_images）
+  P3 情绪标签跨轮保持            历史存原文才有意义（llm_state_tags 模块说明）
+  P4 thinking:disabled 是否生效  DEV_NOTES「已知问题」记的是「接受但完全无效」
 
 P2/P3 用仓库里**真实的** RoleConfig / MessageBuilder / ContextManager /
 LLMProcessor 组装请求，只桩掉网络与 app，所以它们同时也是生产链路的回归测试。
@@ -208,7 +208,7 @@ def emotion_prompt() -> str:
 # ================================================================ 探针
 
 def p1_vision_with_websearch(key, prod, role) -> bool:
-    """约定 21⑧：图片能与服务端内置 web_search 工具在同一个 Responses 请求里共存"""
+    """P1：图片能与服务端内置 web_search 工具在同一个 Responses 请求里共存"""
     payload = {
         'model': role.model,
         'input': [{'role': 'user', 'content': [
@@ -265,7 +265,7 @@ def p2_image_in_history(key, prod, role) -> bool:
 
 
 def p3_state_tags_across_turns(key, prod, role) -> bool:
-    """约定 22：历史存原文之后，情绪标签必须每一轮都还在"""
+    """P3：历史存原文之后，情绪标签必须每一轮都还在（见 llm_state_tags 模块说明）"""
     turns = [('请讲一个开心的小故事。', None),
              ('请讲一个悲伤的小故事。', None),
              ('讲一个高兴的小故事。', None)]
@@ -280,7 +280,7 @@ def p3_state_tags_across_turns(key, prod, role) -> bool:
 
 
 def p4_thinking_disabled(key, prod, role) -> bool:
-    """DEV_NOTES 记的是「接受但完全无效」。此处只报数，由人判断结论是否还成立
+    """DEV_NOTES「已知问题」记的是「接受但完全无效」。此处只报数，由人判断结论是否还成立
 
     reasoning token 数天生抖动很大，单次对比说明不了问题，所以判定条件放得很松：
     只要两边都产生了 reasoning，就说明「关不掉」这条结论没变。

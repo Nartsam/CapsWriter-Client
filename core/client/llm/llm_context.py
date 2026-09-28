@@ -43,6 +43,11 @@ class ContextManager:
         模型必须还能看见最近那张；但把每一轮的图都留着，每次请求都要重传全部图片，
         而历史没有按时间过期的清理，图会一直占着内存直到被 token 压力挤出去。
 
+        调用方（llm_processor._stream_request）在响应结束、写入本轮之前才调用，而本轮
+        请求早已用降级前的历史组装好，所以换图那一轮的请求载荷里有两张真图（历史里
+        一张、本句一张，分属两条 user 消息）。这是有意保留的：提前降级会让「连续发
+        两张图时第二轮还能看见第一张」的能力消失，代价只是多传一张图。
+
         Returns:
             被降级的图片数量
         """
@@ -73,7 +78,11 @@ class ContextManager:
             logger.info("对话历史已清除")
 
     def get_history(self) -> List[Dict]:
-        """获取对话历史"""
+        """获取对话历史（只含 role/content 的副本）
+
+        组装请求时只能用它、不要直接读 history：原条目还带 timestamp 字段，会随
+        Responses 请求原样上行；而且 demote_images() 是原地修改的，交出活引用会互相影响。
+        """
         with self._lock:
             return [
                 {'role': msg['role'], 'content': msg['content']}

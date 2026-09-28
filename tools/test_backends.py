@@ -7,7 +7,7 @@
 1. resolve() 两套 profile 的取值、未知名字的回退、返回副本
 2. **加载顺序不变式**：backends.py 必须排在所有角色文件之前，否则热切换会静默失效
 3. **回归保险**：backend='deepseek' 时四个角色解析出的 RoleConfig 与改造前逐字相同
-   （唯一已知偏差是翻译的 request_timeout，由 0 变 60，见 DEV_NOTES）
+   （唯一已知偏差是翻译的 request_timeout，由 0 变 60）
 4. backend / backend_config 两个中间变量不会被 RoleLoader 当成配置项吃进去
 """
 from __future__ import annotations
@@ -112,7 +112,7 @@ check(ds['api_url'] == 'https://api.deepseek.com',
       'deepseek api_url 必须不带 /v1（Responses API 官方示例），实为 %r' % ds['api_url'])
 check(ds['api_key'] == DEEPSEEK_SENTINEL, 'deepseek api_key 没有原样传下去')
 # 与 cpa 侧对称，跟着变量走而不是钉死名字：DeepSeek 会把旧模型名路由到新模型，
-# 名字早已不代表能力，钉住它既证明不了「还能看图」，又会在约定 23② 鼓励的日常
+# 名字早已不代表能力，钉住它既证明不了「还能看图」，又会在 backends.py 鼓励的日常
 # 换模型操作里必然失败。模型是否真支持视觉只有 probe_llm_live.py 能验。
 # 这里保留的是接线性质：PROFILES 必须把 DEEPSEEK_MODEL 传出来，不许另写死一个
 # （角色循环里的 cfg.model == want['model'] 是 resolve 跟 resolve 比，守不到）
@@ -181,7 +181,7 @@ for role in ROLES:
     for k, v in BASELINE[role].items():
         check(getattr(cfg, k) == v, '%s.%s 被改动了：%r != %r' % (role, k, getattr(cfg, k), v))
 
-    # 具名角色是连续对话（约定 19）与角色前缀检测的前提
+    # 具名角色是连续对话与角色前缀检测的前提
     check(bool(cfg.display_name) and cfg.display_name != RoleConfig.DEFAULT_ROLE_NAME,
           '%s 的 display_name 异常：%r' % (role, cfg.display_name))
     check(cfg.enabled is True, '%s 被意外禁用' % role)
