@@ -22,6 +22,8 @@ class Shortcut:
         hold_mode: 长按模式。True=按下录音松开停止；False=单击开始再次单击停止
         threshold: 按下快捷键后触发语音识别的时间阈值（秒），用于防止误触。None 表示使用 Config.threshold
         enabled: 是否启用此快捷键
+        streaming: 流式上屏：按住时每说完一句（停顿约 0.6s）就把这句打进输入框，而不是松开后一次性上屏。
+            需要服务端支持（CapsWriter-Server 的 AudioMessage.streaming），不支持时自动按普通方式处理
 
     注意：
         - 非阻塞模式下，对于可恢复的切换键（CapsLock/NumLock/ScrollLock），会自动补发以恢复状态
@@ -33,6 +35,7 @@ class Shortcut:
     hold_mode: bool = True
     threshold: Optional[float] = None  # None 表示使用 Config.threshold
     enabled: bool = True
+    streaming: bool = False
 
     def __post_init__(self):
         """初始化后验证配置"""

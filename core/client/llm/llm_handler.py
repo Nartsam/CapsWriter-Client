@@ -151,6 +151,14 @@ class LLMHandler:
         """
         return self.role_detector.detect(text)
 
+    def default_role_enabled(self) -> bool:
+        """默认角色是否启用。在键盘钩子线程里调用（流式上屏的判定），只读内存，不能变慢"""
+        return self.role_detector.default_role_enabled()
+
+    def is_role_name_prefix(self, text: str) -> bool:
+        """text 是否只是某个具名角色名的开头（见 RoleDetector.is_name_prefix）"""
+        return self.role_detector.is_name_prefix(text)
+
     def resolve_role(self, role_name: str) -> Optional[RoleConfig]:
         """按显示名取回一个启用中的具名角色
 

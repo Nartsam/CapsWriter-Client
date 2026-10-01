@@ -161,6 +161,12 @@ class IndicatorState:
     continuous_role: str = ""
     # 本次录音是否绑定了待上传的图片，只影响最外圈描边颜色。
     has_image: bool = False
+    # 本次录音是否流式上屏（边说边打字），只影响录音态的说明行。
+    streaming: bool = False
+    # 流式录音中途改为松手后处理时的说明（如开头喊了角色名），非空时取代录音态的说明行。
+    stream_note: str = ""
+    # 打断时流式上屏已经打出过文字：只丢弃了还没上屏的部分。
+    cancel_partial: bool = False
     # 错误提示自动隐藏的截止时间戳。
     auto_hide_at: float = 0.0
     # 提示框锚点：输入光标位置或屏幕中心靠下的位置。
@@ -218,6 +224,7 @@ class RecordingIndicator:
         continuous_mode: str = "",
         continuous_role: str = "",
         has_image: bool = False,
+        streaming: bool = False,
     ) -> None:
         """显示录音状态。"""
         self._post(
@@ -227,7 +234,12 @@ class RecordingIndicator:
             continuous_mode=continuous_mode,
             continuous_role=continuous_role,
             has_image=has_image,
+            streaming=streaming,
         )
+
+    def update_stream_note(self, note: str) -> None:
+        """流式录音中途改为松手后处理时，录音态的说明行改成 note。"""
+        self._post("stream_note", note=note)
 
     def update_continuous(self, mode: str = "", role: str = "") -> None:
         """录音过程中切换连续对话显示态。
@@ -249,9 +261,9 @@ class RecordingIndicator:
         """更新服务端已返回的识别进度。"""
         self._post("progress", duration=duration or 0.0, preview=preview or "")
 
-    def show_cancelled(self, cancel_key: str = "", duration_ms: int = 1200) -> None:
-        """显示手动打断状态，短暂停留后自动隐藏。"""
-        self._post("cancelled", cancel_key=cancel_key, duration_ms=duration_ms)
+    def show_cancelled(self, cancel_key: str = "", duration_ms: int = 1200, partial: bool = False) -> None:
+        """显示手动打断状态，短暂停留后自动隐藏。partial：流式上屏已经打出过文字。"""
+        self._post("cancelled", cancel_key=cancel_key, duration_ms=duration_ms, partial=partial)
 
     def show_error(self, text: str, duration_ms: int = 2000) -> None:
         """显示错误并自动隐藏。"""
@@ -337,7 +349,7 @@ class RecordingIndicator:
 
         # 连续对话显示态只在录音期间有意义。松手后到达的切换命令直接丢弃，
         # 否则会把已经进入等待状态的提示框又拉回录音态。
-        if action == "continuous" and self.state.mode != "recording":
+        if action in ("continuous", "stream_note") and self.state.mode != "recording":
             return
 
         self._ensure_window()
@@ -354,9 +366,12 @@ class RecordingIndicator:
                 continuous_mode=payload.get("continuous_mode", ""),
                 continuous_role=payload.get("continuous_role", ""),
                 has_image=payload.get("has_image", False),
+                streaming=payload.get("streaming", False),
                 anchor=anchor,
                 anchor_source=source,
             )
+        elif action == "stream_note":
+            self.state.stream_note = payload.get("note", "")
         elif action == "continuous":
             # 只改连续对话相关字段，start_time 和锚点保持不动。
             self.state.continuous_mode = payload.get("mode", "")
@@ -391,6 +406,7 @@ class RecordingIndicator:
                 self.state.anchor, self.state.anchor_source = self._get_anchor()
             self.state.mode = "cancelled"
             self.state.cancel_key = payload.get("cancel_key", "")
+            self.state.cancel_partial = payload.get("partial", False)
             self.state.progress_duration = 0.0
             self.state.preview_text = ""
             self.state.auto_hide_at = time.time() + payload.get("duration_ms", 1200) / 1000
@@ -716,7 +732,12 @@ class RecordingIndicator:
         if self.state.mode == "recording":
             elapsed = max(0.0, time.time() - self.state.start_time)
             shortcut_name = self._format_shortcut_name(self.state.shortcut_key)
-            detail = f"松开{shortcut_name}后开始识别"
+            if self.state.stream_note:
+                detail = self.state.stream_note
+            elif self.state.streaming:
+                detail = f"松开{shortcut_name}结束流式识别"
+            else:
+                detail = f"松开{shortcut_name}后开始识别"
             mode = self.state.continuous_mode
             if mode == "armed":
                 return f"即将开始连续对话 {elapsed:.1f}s", detail, ACCENT
@@ -748,7 +769,8 @@ class RecordingIndicator:
 
         if self.state.mode == "cancelled":
             cancel_name = self._format_shortcut_name(self.state.cancel_key)
-            return f"已按 {cancel_name}手动打断", "识别结果已丢弃", CANCEL_ACCENT
+            detail = "已上屏的文字保留，其余丢弃" if self.state.cancel_partial else "识别结果已丢弃"
+            return f"已按 {cancel_name}手动打断", detail, CANCEL_ACCENT
 
         if self.state.mode == "error":
             return "识别未发送", self.state.preview_text or "服务端未连接", ERROR_ACCENT
@@ -888,10 +910,15 @@ def show_recording_indicator(
     continuous_mode: str = "",
     continuous_role: str = "",
     has_image: bool = False,
+    streaming: bool = False,
 ) -> None:
     RecordingIndicator().show_recording(
-        start_time, shortcut_key, continuous_mode, continuous_role, has_image
+        start_time, shortcut_key, continuous_mode, continuous_role, has_image, streaming
     )
+
+
+def update_recording_indicator_stream_note(note: str) -> None:
+    RecordingIndicator().update_stream_note(note)
 
 
 def update_recording_indicator_continuous(mode: str = "", role: str = "") -> None:
@@ -910,8 +937,8 @@ def update_recording_indicator_progress(duration: Optional[float] = None, previe
     RecordingIndicator().update_progress(duration, preview)
 
 
-def show_cancelled_indicator(cancel_key: str = "", duration_ms: int = 1200) -> None:
-    RecordingIndicator().show_cancelled(cancel_key, duration_ms)
+def show_cancelled_indicator(cancel_key: str = "", duration_ms: int = 1200, partial: bool = False) -> None:
+    RecordingIndicator().show_cancelled(cancel_key, duration_ms, partial)
 
 
 def show_recording_indicator_error(text: str, duration_ms: int = 2000) -> None:

@@ -59,3 +59,24 @@ class RoleDetector:
 
         # logger.debug("未匹配到角色且默认角色未启用，返回原始文本")
         return None, text
+
+    def default_role_enabled(self) -> bool:
+        """默认角色是否启用（启用时每句话都会交给它）"""
+        return self.role_loader.get_default_role().enabled
+
+    def is_name_prefix(self, text: str) -> bool:
+        """
+        text 是否只是某个启用中的具名角色名的开头（如「新岛」之于「新岛真」）
+
+        流式上屏按停顿切句，第一句可能恰好停在角色名中间。此时还不能断定有没有喊角色，
+        要等下一句接上再检测。
+        """
+        text = text.strip('：，。,. ')
+        if not text:
+            return False
+        for role_name, role_config in self.role_loader.get_roles().items():
+            if role_name in ['默认', 'default', ''] or not role_config.enabled:
+                continue
+            if any(name and len(name) > len(text) and name.startswith(text) for name in role_config.names):
+                return True
+        return False

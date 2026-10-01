@@ -643,13 +643,14 @@ class ConsoleTests(unittest.IsolatedAsyncioTestCase):
         console = Mock()
         config = types.SimpleNamespace(llm_enabled=True, traditional_convert=False, hot=False,
                                        paste=False, paste_apps=[], enter_apps=[], save_audio=False)
-        namespace = dict(Optional=Optional, Config=config, RecognitionMessage=object,
+        namespace = dict(Optional=Optional, Tuple=Tuple, Config=config, RecognitionMessage=object,
             console=console, logger=logging.getLogger('selection-test'), time=time, asyncio=asyncio,
             TextOutput=types.SimpleNamespace(strip_punc=lambda text: text),
             show_processing_indicator=Mock(), hide_recording_indicator=Mock(),
             get_active_window_info=lambda: {}, broadcast_output_udp=Mock(),
             format_selection_preview=selection.format_selection_preview)
-        extract_methods('core/client/output/result_processor.py', 'ResultProcessor', {'_handle_message'}, namespace)
+        extract_methods('core/client/output/result_processor.py', 'ResultProcessor',
+                        {'_handle_message', '_after_output', '_paste_for_foreground'}, namespace)
 
         async def request(text, **kwargs):
             if failure:
@@ -667,7 +668,9 @@ class ConsoleTests(unittest.IsolatedAsyncioTestCase):
         processor = types.SimpleNamespace(state=state, hotword=hotword,
             app=types.SimpleNamespace(llm=types.SimpleNamespace(process_and_output=request)),
             _resolve_forced_role=Mock(return_value=None), _report_image_usage=Mock(),
-            _update_continuous_state=Mock(), _log_modifier_key_state=Mock())
+            _update_continuous_state=Mock(), _log_modifier_key_state=Mock(), _streams={},
+            _paste_for_foreground=namespace['_paste_for_foreground'])
+        processor._after_output = lambda *args: namespace['_after_output'](processor, *args)
         message = types.SimpleNamespace(task_id='test', is_final=True, text='识别文字',
                     time_complete=10, time_submit=9, time_start=5, duration=4)
         if failure:

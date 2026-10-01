@@ -25,6 +25,8 @@ class AudioMessage:
         time_start: 录音/音频开始时间戳
         seg_duration: 分段时长（秒）
         seg_overlap: 重叠时长（秒）
+        streaming: 流式上屏（仅麦克风任务）。服务端按停顿切句、逐句回传新增文字
+                   （RecognitionMessage.delta），此时忽略 seg_duration / seg_overlap
     """
     task_id: str
     source: Literal['mic', 'file']
@@ -35,6 +37,7 @@ class AudioMessage:
     seg_overlap: float = 2.0
     context: str = ''
     language: str = 'auto'
+    streaming: bool = False
 
     def to_json(self) -> str:
         """序列化为 JSON 字符串"""
@@ -53,6 +56,7 @@ class AudioMessage:
             seg_overlap=data.get('seg_overlap', 2.0),
             context=data.get('context', ''),
             language=data.get('language', 'auto'),
+            streaming=data.get('streaming', False),
         )
 
 
@@ -73,6 +77,9 @@ class RecognitionMessage:
         text_accu: 精确输出 - 基于时间戳去重的拼接结果（用于字幕生成）
         tokens: 字级 token 列表（与 timestamps 对应）
         timestamps: 字级时间戳列表（秒）
+
+        delta: 流式任务中本条消息新增的文字，接在此前各条的 delta 之后；
+               已发出的部分不会再改，text 始终等于此前全部 delta 的拼接。非流式任务恒为空
     """
     task_id: str
     is_final: bool
@@ -88,6 +95,9 @@ class RecognitionMessage:
     text_accu: str = ''
     tokens: List[str] = field(default_factory=list)
     timestamps: List[float] = field(default_factory=list)
+
+    # 流式上屏的增量文字
+    delta: str = ''
     
     def to_json(self) -> str:
         """序列化为 JSON 字符串"""
@@ -111,4 +121,5 @@ class RecognitionMessage:
             text_accu=data.get('text_accu', ''),
             tokens=data.get('tokens', []),
             timestamps=data.get('timestamps', []),
+            delta=data.get('delta', ''),
         )

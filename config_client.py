@@ -32,7 +32,11 @@ class ClientConfig:
             'type': 'keyboard',     # 是键盘快捷键
             'suppress': True,      # 阻塞按键（短按会补发）
             'hold_mode': True,      # 长按模式
-            'enabled': True         # 启用此快捷键
+            'enabled': True,        # 启用此快捷键
+            # 流式上屏：按住时每说完一句（停顿约 0.6 秒）就把这句打进输入框，松开后只剩最后一句。
+            # 开头喊了角色名、连续对话中、挂了截图或启用了默认角色时，这次录音照旧松开后处理。
+            # 需要服务端支持，详见 docs/流式上屏如何使用.md。False 则松开后一次性上屏
+            'streaming': True,
         },
         {
             'key': 'x2',     # 监听 鼠标前进 键

@@ -380,7 +380,7 @@ class ShortcutManager:
             if self.state.rollback_image_snapshot(task_id):
                 logger.info("打断已把图片退回待挂状态")
 
-            show_cancelled_indicator(self._cancel_key)
+            show_cancelled_indicator(self._cancel_key, partial=task_id in self.state.streamed_task_ids)
 
             if self.app.companion.has_connections:
                 self.app.companion.emit_recording_cancel_threadsafe()

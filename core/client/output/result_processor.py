@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import time
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING, Dict, Optional, Tuple
 
 from config_client import ClientConfig as Config
 from core.client.state import console
@@ -17,6 +17,9 @@ from core.client.vision.image_archive import mark_outcome
 from core.protocol import RecognitionMessage
 
 from core.client.output.text_output import TextOutput
+from core.client.output.stream_output import (
+    DEFERRED, PENDING, TYPING, StreamSession, trim_for_strip_punc,
+)
 from core.tools.window_detector import get_active_window_info
 import keyboard
 from . import logger
@@ -34,6 +37,7 @@ from core.client.ui import (
     show_processing_indicator,
     show_recording_indicator_error,
     update_recording_indicator_progress,
+    update_recording_indicator_stream_note,
 )
 
 if TYPE_CHECKING:
@@ -82,6 +86,8 @@ class ResultProcessor:
         self.app = app
         self._exit_event = asyncio.Event()
         self._loop = asyncio.get_running_loop()  # 保存事件循环引用
+        # 流式上屏中的录音（task_id → 状态），见 stream_output.py
+        self._streams: Dict[str, StreamSession] = {}
 
     @property
     def state(self) -> ClientState:
@@ -303,6 +309,7 @@ class ResultProcessor:
         if self.state.is_task_cancelled(message.task_id):
             if message.is_final:
                 self.state.release_cancelled_task(message.task_id)
+                self._streams.pop(message.task_id, None)
                 # 打断路径已经做过回滚，这里只是把可能残留的快照清掉（pop 幂等）
                 self.state.pop_continuous_snapshot(message.task_id)
                 self.state.pop_image_snapshot(message.task_id)
@@ -324,6 +331,10 @@ class ResultProcessor:
 
         # 如果非最终结果，继续等待
         if not message.is_final:
+            # 流式上屏的一句：逐句打字，或在开头喊了角色时攒着等松手
+            if message.delta or message.task_id in self._streams:
+                await self._on_stream_delta(message)
+                return
             # 非最终结果用于刷新悬浮提示上的处理进度和预览文本。
             update_recording_indicator_progress(message.duration, text)
             return
@@ -333,6 +344,13 @@ class ResultProcessor:
         if self.state.pending_task_id == message.task_id:
             self.state.pending_task_id = None
         show_processing_indicator()
+
+        # 流式上屏中的录音：前面各句已经打出去了，只剩最后一句。其余情况（没有流式、
+        # 第一句还没判定、改为松手后处理）一律按整段走下面的原流程，text 就是全文
+        stream = self._streams.pop(message.task_id, None)
+        if stream is not None and stream.mode == TYPING:
+            await self._finish_stream(message, stream, delay)
+            return
 
         # 繁体转换
         if Config.traditional_convert:
@@ -394,12 +412,7 @@ class ResultProcessor:
                 logger.debug(f"潜在热词: {log_str}")
 
         # 窗口兼容性检测
-        paste = Config.paste
-        process_name = get_active_window_info().get('process_name', '').lower()
-        logger.debug(f"当前活动窗口: {process_name}")
-        if any(app.lower() == process_name for app in Config.paste_apps):
-            paste = True
-            logger.debug(f"检测到兼容性应用: {process_name}，使用粘贴模式")
+        paste, process_name = self._paste_for_foreground()
 
         # 连续对话路由：由说这句话时的快照决定，而不是此刻的全局状态。两者之间隔着
         # 一整个服务端往返，期间用户完全可能已经开始说下一句或切换了状态
@@ -434,6 +447,11 @@ class ResultProcessor:
         # 文本已经完成输出，此时关闭悬浮提示。
         hide_recording_indicator()
 
+        self._after_output(message, text, process_name, llm_result, snapshot, pending_image)
+
+    def _after_output(self, message: RecognitionMessage, text: str, process_name: str,
+                      llm_result, snapshot, pending_image) -> None:
+        """文字输出之后的收尾：自动回车、录音改名与日记、LLM 结果记录、图片去向、连续对话状态"""
         reminder_handled = bool(llm_result and getattr(llm_result, 'reminder_handled', False))
         # 提醒只有通知，不应向用户当前文档注入一个回车。
         if not reminder_handled:
@@ -482,9 +500,131 @@ class ResultProcessor:
         self._log_modifier_key_state()
 
         console.line()
-    
+
+    @staticmethod
+    def _paste_for_foreground() -> Tuple[bool, str]:
+        """按当前前台程序决定输出方式，返回 (是否粘贴, 小写进程名)"""
+        paste = Config.paste
+        process_name = get_active_window_info().get('process_name', '').lower()
+        logger.debug(f"当前活动窗口: {process_name}")
+        if any(app.lower() == process_name for app in Config.paste_apps):
+            paste = True
+            logger.debug(f"检测到兼容性应用: {process_name}，使用粘贴模式")
+        return paste, process_name
+
+    def _correct_text(self, text: str):
+        """繁简转换 + 热词替换，返回 (文字, 热词纠错结果)。与整段处理的前两步相同"""
+        if Config.traditional_convert:
+            try:
+                text = zhconv_convert(text, Config.traditional_locale)
+            except Exception as e:
+                logger.warning(f"繁体转换失败: {e}")
+        correction_result = self.hotword.get_phoneme_corrector().correct(text, k=10)
+        if Config.hot:
+            text = correction_result.text
+        return text, correction_result
+
+    # ========== 流式上屏 ==========
+
+    async def _on_stream_delta(self, message: RecognitionMessage) -> None:
+        """
+        流式上屏的一句（非最终结果的 delta）
+
+        第一句先判定这次录音还要不要边说边上屏（见 _decide_stream_mode），之后逐句打字。
+        每句单独做繁简、热词和规则替换：跨句的热词与规则匹配不到，规则里的 ^/$ 匹配的是句子边界。
+        """
+        session = self._streams.get(message.task_id)
+        if session is None:
+            session = self._streams[message.task_id] = StreamSession(message.task_id)
+        if session.mode == DEFERRED or not message.delta:
+            return
+
+        piece, correction = self._correct_text(message.delta)
+        piece = self.hotword.get_rule_corrector().substitute(piece)
+        if Config.hot:
+            session.matches.extend(correction.matchs)
+
+        if session.mode == PENDING:
+            session.held += piece
+            session.mode = self._decide_stream_mode(session.held)
+            if session.mode != TYPING:
+                return
+            piece, session.held = session.held, ''
+        await self._type_piece(session, piece)
+
+    def _decide_stream_mode(self, text: str) -> str:
+        """
+        按开头的文字判定流式上屏是否继续
+
+        命中角色（含已启用的默认角色）就整次录音改为松手后处理：角色要拿到整句话，
+        而已经打出去的字收不回来，所以必须在打第一个字之前判定。
+        """
+        llm = getattr(self.app, 'llm', None)
+        if not Config.llm_enabled or llm is None:
+            return TYPING
+        role_config, _ = llm.detect_role(text)
+        if role_config is not None:
+            name = role_config.display_name or RoleConfig.DEFAULT_ROLE_NAME
+            logger.info(f"流式上屏：开头命中角色「{name}」，本次录音改为松手后处理")
+            update_recording_indicator_stream_note(f"请求将发送给「{name}」")
+            return DEFERRED
+        if llm.is_role_name_prefix(text):
+            logger.info(f"流式上屏：第一句「{text}」可能是角色名的开头，等下一句再判断")
+            return PENDING
+        return TYPING
+
+    async def _type_piece(self, session: StreamSession, piece: str) -> None:
+        """打出流式上屏的一段；输出方式按此刻的前台程序决定"""
+        if not piece:
+            return
+        paste, _ = self._paste_for_foreground()
+        await self.output.output(piece, paste=paste)
+        session.typed += piece
+        session.pieces += 1
+        if session.pieces == 1:
+            self.state.streamed_task_ids.append(session.task_id)
+        logger.debug(f"流式上屏第 {session.pieces} 段: {piece}")
+
+    async def _finish_stream(self, message: RecognitionMessage, session: StreamSession, delay: float) -> None:
+        """流式上屏的最终结果：打出最后一句（message.delta），再做与整段结果相同的收尾"""
+        hotword_start = time.monotonic()
+        piece, correction = self._correct_text(message.delta)
+        if Config.hot:
+            session.matches.extend(correction.matchs)
+        piece = trim_for_strip_punc(session.typed, piece, TextOutput.strip_punc(session.typed + piece))
+        piece = self.hotword.get_rule_corrector().substitute(piece)
+        hotword_elapsed = time.monotonic() - hotword_start
+
+        paste, process_name = self._paste_for_foreground()
+        await self.output.output(piece, paste=paste)
+        if piece:
+            session.pieces += 1
+        text = session.typed + piece
+        self.state.last_recognition_text = text
+
+        hotword_label = f'  热词时延: {hotword_elapsed:.2f}s' if Config.hot else ''
+        console.print(f'    转录时延：{delay:.2f}s{hotword_label}')
+        original_text_stripped = TextOutput.strip_punc(message.text)
+        console.print(f'    识别结果：[green]{original_text_stripped}')
+        if original_text_stripped != text:
+            console.print(f'    热词替换：[cyan]{text}')
+        if session.matches and Config.hot:
+            replaced_info = [f"{origin}->[green4]{hw}[/]" for origin, hw, score in session.matches]
+            console.print(f'    完全匹配：{", ".join(replaced_info)}')
+        console.print(f'    流式上屏：分 {session.pieces} 段')
+
+        self.state.set_output_text(text)
+        broadcast_output_udp(text)
+        hide_recording_indicator()
+
+        snapshot = self.state.pop_continuous_snapshot(message.task_id)
+        pending_image = self.state.pop_image_snapshot(message.task_id)
+        self._after_output(message, text, process_name, None, snapshot, pending_image)
+
     def _cleanup(self) -> None:
         """清理资源"""
+        # 断线后这些录音的最终结果不会再来
+        self._streams.clear()
         if self.state.websocket is not None:
             try:
                 if self.state.websocket.closed:

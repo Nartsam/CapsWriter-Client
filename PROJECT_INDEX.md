@@ -13,7 +13,7 @@ CapsWriter 离线语音输入的**客户端**（Windows）。上游 [HaujetZhao/
 
 **便携性是硬约束**：新增代码、依赖、配置与辅助工具都留在本目录内，不修改外部环境——不靠给目标程序装扩展、改它的设置或启动参数、装全局依赖或注册系统服务来解决兼容性问题（选区读取同样适用）。
 
-相对上游的本地功能：录音悬浮指示器、录音打断、连续对话、视觉输入、一次性提醒、选区只读获取、服务端多候选、Companion 服务器；LLM 角色的 OpenMate 展示（情绪立绘、分段、typing 指示）、联网搜索与工具标签、后端切换、Toast 自适应宽度与智能时长、空回复诊断；`tools/` 离线验证。
+相对上游的本地功能：流式上屏、录音悬浮指示器、录音打断、连续对话、视觉输入、一次性提醒、选区只读获取、服务端多候选、Companion 服务器；LLM 角色的 OpenMate 展示（情绪立绘、分段、typing 指示）、联网搜索与工具标签、后端切换、Toast 自适应宽度与智能时长、空回复诊断；`tools/` 离线验证。
 
 ---
 
@@ -78,7 +78,8 @@ CapsWriter 离线语音输入的**客户端**（Windows）。上游 [HaujetZhao/
 |---|---|
 | `audio/stream.py`、`recorder.py`、`file_manager.py` | 采集；按 `AudioMessage` 分块发送、打断时丢缓存并仍发 `is_final`；录音存 MP3/WAV 并按识别文本改名（`年/月/assets/`） |
 | `connection/websocket_manager.py` | 连接与重连。`addr` 可写候选列表：未锁定时一次 `connect()` 内按序探测，首个连上即锁定（取舍见类说明） |
-| `output/result_processor.py` | 主循环：收结果 → 繁简 → 热词 → 去末尾标点 → 正则 → LLM 或直接上屏 → 自动回车 → 日记与录音改名 → LLM md 记录 → 报告图片去向 → 连续对话状态迁移 |
+| `output/result_processor.py` | 主循环：收结果 → 繁简 → 热词 → 去末尾标点 → 正则 → LLM 或直接上屏 → 自动回车 → 日记与录音改名 → LLM md 记录 → 报告图片去向 → 连续对话状态迁移；流式上屏的逐句打字（`_on_stream_delta` / `_finish_stream`，输出后的收尾与整段共用 `_after_output`） |
+| `output/stream_output.py` | 流式上屏单次录音的状态（待判定 / 逐句上屏 / 改为松手后处理）与取舍说明 |
 | `output/text_output.py`、`clipboard/clipboard.py` | 打字（`keyboard.write`）或粘贴输出；剪贴板读写（`try_paste` 区分「读不到」与「空文本」，占用时退避重试） |
 | `hotword/` | `manager.py` 加载并监视 hot.txt/hot-rule.txt；`hot_phoneme.py` 音素 RAG（粗筛 + 精算）；`hot_rule.py` 正则替换 |
 | `diary/diary_writer.py`、`llm/llm_write_md.py` | `年/月/日.md` 听写日记（`save_audio` 开启时写）；`年/月/日-角色.md` 角色对话记录 |
@@ -131,6 +132,8 @@ CapsWriter 离线语音输入的**客户端**（Windows）。上游 [HaujetZhao/
 
 **麦克风识别**：钩子 KEYDOWN → `ShortcutTask.launch()`（连续对话闲置判断、建快照、绑定待挂图片、显示指示器）→ `AudioRecorder.record_and_send()`（生成 task_id、登记快照、过阈值后分块发送）→ KEYUP：超过阈值 `finish()` 发 `is_final`，否则 `cancel()` 并补发按键 → 服务端逐段回 `RecognitionMessage`（非最终包只刷新指示器进度）→ 最终包进 ResultProcessor 流水线（见上表）。
 
+**流式上屏**（快捷键配置 `streaming`，用法与限制见 [docs/流式上屏如何使用.md](docs/流式上屏如何使用.md)）：`launch()` 按快照判定这次录音是否流式（连续对话中、挂图、默认角色启用时不流式）→ `AudioMessage.streaming` → 服务端在停顿处切句、逐句回带 `delta` 的非最终包 → `_on_stream_delta`：第一句命中角色就整次改为松手后处理（之后只攒不打），否则逐句做繁简/热词/规则并打字 → 最终包只带最后一句，`_finish_stream` 打出后走与整段相同的收尾。没收到过 `delta`（旧服务端、只有一句）的最终包一律按整段处理。
+
 **打断**：打断键在录音中 → `task.abort()`（登记 `cancelled_task_ids`、回滚快照、`queue_in` 放 abort，recorder 丢缓存、删录音、仍发 `is_final`）；在等待结果中 → `_abort_pending_result()`。被打断任务的结果在 `_handle_message` 入口整条丢弃。最终包到达后打断窗口关闭（文本随时可能上屏）。
 
 **LLM**：`process_and_output` → 提醒入口（仅录音入口的具名角色）→ Companion（有连接时转发并返回）→ `capture_selection`（一次，结果经 `on_selection` 先打印预览）→ `handle_toast_mode` / `handle_typing_mode`（toast 模式先试 OpenMate）→ `LLMHandler.process` → `LLMProcessor` 流式请求 → 回调逐层回到展示 → `LLMResult`（`used_tools`、`image_used`、`reminder_handled`）回到 ResultProcessor。
@@ -163,7 +166,7 @@ CapsWriter 离线语音输入的**客户端**（Windows）。上游 [HaujetZhao/
 
 - 服务端在独立仓库 `../CapsWriter-Server`（Qwen3-ASR 识别，文件转录用 Qwen3-ForcedAligner 出字级时间戳），部署与配置看那边的文档。上游遗留的服务端代码已从本仓库删除。
 - **`core/protocol.py`、`core/constants.py` 与服务端仓库逐字相同**，改协议必须两边同步。
-- 客户端发 `AudioMessage`（JSON 文本帧，`data` 为 base64 的 float32 16kHz 单声道 PCM），带 `seg_duration`/`seg_overlap`（麦克风与文件分别取 `mic_seg_*`、`file_seg_*`，默认 60/4，分段在服务端做）、`context`（服务端当作 Qwen3 的 system prompt）、`language`。服务端每段回一条 `RecognitionMessage`，最后一条 `is_final=True`；听写用 `text`，文件转录用 `tokens`/`timestamps`。子协议 `binary`，`max_size=None`。
+- 客户端发 `AudioMessage`（JSON 文本帧，`data` 为 base64 的 float32 16kHz 单声道 PCM），带 `seg_duration`/`seg_overlap`（麦克风与文件分别取 `mic_seg_*`、`file_seg_*`，默认 60/4，分段在服务端做）、`context`（服务端当作 Qwen3 的 system prompt）、`language`。服务端每段回一条 `RecognitionMessage`，最后一条 `is_final=True`；听写用 `text`，文件转录用 `tokens`/`timestamps`。流式任务（`streaming=True`）不用 `seg_*`，服务端在停顿处切句，每句一条消息，新增文字在 `delta` 里且发出后不再改；服务端的切句与前缀续写见服务端仓库 PROJECT_INDEX「流式任务」。子协议 `binary`，`max_size=None`。
 - **录音打断不走协议**：服务端的音频缓冲按连接持有、只有 `is_final` 才清空，所以打断仍要发一个 `is_final` 冲掉残余音频，结果回来后在客户端按 task_id 丢弃。没有新增取消消息，是为了不必两个仓库同步部署。
 
 ---
@@ -190,6 +193,7 @@ CapsWriter 离线语音输入的**客户端**（Windows）。上游 [HaujetZhao/
 | 服务端地址 / 多候选 | `addr`、`port`、`addr_probe_timeout(_lan)`；`websocket_manager.py`；启动提示 `ui/tips.py` |
 | 录音与发送 | `audio/recorder.py`、`audio/stream.py` |
 | 结果处理 / 输出方式 | `output/result_processor.py`、`output/text_output.py` |
+| 流式上屏 | 开关：`shortcuts` 的 `streaming`；是否流式 `shortcut/task.py` 的 `_want_streaming`；逐句上屏与角色回退 `result_processor` 的 `_on_stream_delta` / `_decide_stream_mode` / `_finish_stream`、`output/stream_output.py`；指示器文案 `recording_indicator` 的 `streaming` / `stream_note`；同步 [docs/流式上屏如何使用.md](docs/流式上屏如何使用.md)；验证 `tools/test_stream_output.py`。切句参数在服务端 |
 | 热词匹配 | `hotword/hot_phoneme.py`、`hot_rule.py` |
 | 新增或修改角色 | `LLM/` 下新建/编辑 .py（热重载）；字段见 `llm_role_config.py` |
 | 角色后端 / CPA 模型 | 角色文件的 `backend`；`LLM/backends.py` 的 `CPA_MODEL`、`CPA_URL`、`PROFILES`（新后端的密钥加进 `secrets.py`，由用户自己改） |

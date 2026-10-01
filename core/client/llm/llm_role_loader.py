@@ -8,9 +8,21 @@ LLM 角色加载器
 """
 
 import sys
+import traceback
 from pathlib import Path
 from typing import Dict
 from .llm_role_config import RoleConfig
+from . import logger
+
+
+def _describe_error(e: Exception) -> str:
+    """角色文件导入失败的说明。异常出自 secrets.py 时只给类型：异常信息可能带出密钥片段"""
+    frames = traceback.extract_tb(e.__traceback__)
+    from_secrets = (any(Path(f.filename).name == 'secrets.py' for f in frames)
+                    or Path(getattr(e, 'filename', '') or '').name == 'secrets.py')
+    if from_secrets:
+        return f"{type(e).__name__}（出自 secrets.py，详情不记录）"
+    return f"{type(e).__name__}: {e}"
 
 
 class RoleLoader:
@@ -87,12 +99,16 @@ class RoleLoader:
                     'error': '语法错误',
                     'details': f"第 {e.lineno} 行: {e.msg}"
                 })
+                logger.warning(f"角色文件 {file_path.name} 加载失败，该角色不可用：{_describe_error(e)}")
             except Exception as e:
                 errors.append({
                     'file': file_path.name,
                     'error': type(e).__name__,
                     'details': str(e)
                 })
+                # 导入失败的角色会从注册表里整个消失，唯一的现象是「喊它没反应」，所以必须报出来。
+                # 缺 provider/model 的跳过不报：backends.py、secrets.py 本来就不是角色
+                logger.warning(f"角色文件 {file_path.name} 加载失败，该角色不可用：{_describe_error(e)}")
 
         return errors
 

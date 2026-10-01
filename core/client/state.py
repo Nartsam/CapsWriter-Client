@@ -131,6 +131,9 @@ class ClientState:
     # 不足 0.1s 也会跳过推理直接回），收到即移除；定长队列兜底，避免服务端异常时条目滞留。
     cancelled_task_ids: Deque[str] = field(default_factory=lambda: deque(maxlen=8))
 
+    # 流式上屏已经打出过文字的任务 ID。打断只能丢弃还没上屏的部分，打断提示据此改口
+    streamed_task_ids: Deque[str] = field(default_factory=lambda: deque(maxlen=8))
+
     # 连续对话中的粘滞角色名（RoleConfig.display_name）；None 表示不在连续对话中。
     # 只在「录音正常结束」和「结果确认命中具名角色」两个时刻变更，其余一律回滚
     continuous_role: Optional[str] = None
@@ -191,6 +194,7 @@ class ClientState:
         self.audio_files.clear()
         self.pending_task_id = None
         self.cancelled_task_ids.clear()
+        self.streamed_task_ids.clear()
         self.continuous_role = None
         self.continuous_last_active = 0.0
         self.continuous_current = None

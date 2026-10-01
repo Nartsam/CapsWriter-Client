@@ -95,6 +95,8 @@ class ShortcutTask:
         # 一次不带图的普通录音——「下一条」从图片挂载成功那一刻起算（见 vision_manager 模块说明）
         pending_image = self.state.begin_image_snapshot()
 
+        streaming = self._want_streaming(snapshot, pending_image)
+
         # 更新录音状态
         self.state.start_recording(self.recording_start_time)
 
@@ -106,6 +108,7 @@ class ShortcutTask:
             snapshot.indicator_mode(),
             snapshot.sticky_role or '',
             pending_image is not None,
+            streaming,
         )
 
         # 通知 Companion 开始录音
@@ -116,7 +119,7 @@ class ShortcutTask:
         recorder = self._get_recorder()
         self.recorder = recorder
         self.task = asyncio.run_coroutine_threadsafe(
-            recorder.record_and_send(),
+            recorder.record_and_send(streaming=streaming),
             self.app.loop,
         )
 
@@ -125,6 +128,23 @@ class ShortcutTask:
             self.pool.submit(self._status.start)
         else:
             self._status.start()
+
+    def _want_streaming(self, snapshot, pending_image) -> bool:
+        """这次录音是否流式上屏（边说边打字）
+
+        连续对话中、挂了图片、启用了默认角色时，这句话注定交给角色、松手后才处理，
+        从一开始就按普通方式录音（服务端整段识别）。开头喊了具名角色的情况要等第一句
+        识别出来才知道，由 ResultProcessor 在那时改为松手后处理。
+        """
+        if not getattr(self.shortcut, 'streaming', False):
+            return False
+        if snapshot.sticky_role or pending_image is not None:
+            return False
+        from config_client import ClientConfig as Config
+        llm = getattr(self.app, 'llm', None)
+        if Config.llm_enabled and llm is not None and llm.default_role_enabled():
+            return False
+        return True
 
     def _prepare_continuous(self):
         """录音启动时的连续对话准备：闲置超时懒判断 + 建立路由快照
@@ -216,7 +236,8 @@ class ShortcutTask:
                 logger.info("打断已把图片退回待挂状态")
 
             from core.client.ui import show_cancelled_indicator
-            show_cancelled_indicator(Config.cancel_recording_key)
+            show_cancelled_indicator(Config.cancel_recording_key,
+                                     partial=task_id in self.state.streamed_task_ids)
 
             if self.app.companion.has_connections:
                 self.app.companion.emit_recording_cancel_threadsafe()

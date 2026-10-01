@@ -497,10 +497,11 @@ class ProcessorTests(unittest.IsolatedAsyncioTestCase):
         source = ast.parse((ROOT / 'core/client/output/result_processor.py').read_text(encoding='utf-8'))
         cls = next(node for node in source.body if isinstance(node, ast.ClassDef) and node.name == 'ResultProcessor')
         methods = [node for node in cls.body if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
-                   and node.name in {'_handle_message', '_report_image_usage', '_update_continuous_state'}]
+                   and node.name in {'_handle_message', '_after_output', '_paste_for_foreground',
+                                     '_report_image_usage', '_update_continuous_state'}]
         config = types.SimpleNamespace(llm_enabled=True, traditional_convert=False, hot=False, paste=False,
                                        paste_apps=[], enter_apps=[('editor', 0)], save_audio=True)
-        namespace = dict(Optional=Optional, RecognitionMessage=Any, Config=config, RoleConfig=RoleConfig,
+        namespace = dict(Optional=Optional, Tuple=Tuple, RecognitionMessage=Any, Config=config, RoleConfig=RoleConfig,
                          console=Mock(), logger=logging.getLogger('reminder-test'),
                          time=importlib.import_module('time'), asyncio=asyncio, AudioFileManager=Mock(),
                          TextOutput=types.SimpleNamespace(strip_punc=lambda value: value),
@@ -532,8 +533,9 @@ class ProcessorTests(unittest.IsolatedAsyncioTestCase):
                 hotword.get_rule_corrector.return_value.substitute.side_effect = lambda value: value
                 processor = types.SimpleNamespace(state=state, app=types.SimpleNamespace(llm=llm),
                     hotword=hotword, diary=Mock(), _resolve_forced_role=Mock(return_value=None),
-                    _log_modifier_key_state=Mock())
-                for name in ['_report_image_usage', '_update_continuous_state']:
+                    _log_modifier_key_state=Mock(), _streams={},
+                    _paste_for_foreground=namespace['_paste_for_foreground'])
+                for name in ['_report_image_usage', '_update_continuous_state', '_after_output']:
                     setattr(processor, name, types.MethodType(namespace[name], processor))
                 message = types.SimpleNamespace(task_id='task', text='十分钟后叫我', is_final=True,
                                                time_complete=stamp()+20, time_submit=stamp(),

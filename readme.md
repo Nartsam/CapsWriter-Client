@@ -26,6 +26,7 @@ Fork 自 [HaujetZhao/CapsWriter-Offline](https://github.com/HaujetZhao/CapsWrite
 - [提醒功能如何使用](docs/提醒功能如何使用.md) — 让角色在指定时间提醒你
 - [识别语言如何配置](docs/识别语言如何配置.md) — `language` 的可选值
 - [文件转录功能如何使用](docs/文件转录功能如何使用.md) — 拖拽转字幕、时间轴修正
+- [流式上屏如何使用](docs/流式上屏如何使用.md) — 按住录音键时边说边上屏
 - [常见问题](docs/常见问题.md) — FAQ
 
 

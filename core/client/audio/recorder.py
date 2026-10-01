@@ -56,6 +56,7 @@ class AudioRecorder:
         self._start_time: float = 0.0
         self._duration: float = 0.0
         self._cache: list = []
+        self._streaming: bool = False
 
     @property
     def state(self) -> ClientState:
@@ -98,14 +99,36 @@ class AudioRecorder:
                 show_recording_indicator_error("音频发送失败")
             # 具体错误日志由 WebSocketManager 记录
     
-    async def record_and_send(self) -> None:
+    def _audio_message(self, data: Optional[np.ndarray], is_final: bool) -> AudioMessage:
+        """构造本次录音的音频消息；data 是 48kHz 采集块（None 表示不带音频），在这里降到 16kHz 单声道"""
+        payload = ''
+        if data is not None:
+            payload = base64.b64encode(np.mean(data[::3], axis=1).tobytes()).decode('utf-8')
+        return AudioMessage(
+            task_id=self.task_id,
+            source='mic',
+            data=payload,
+            is_final=is_final,
+            time_start=self._start_time,
+            seg_duration=Config.mic_seg_duration,
+            seg_overlap=Config.mic_seg_overlap,
+            context=Config.context,
+            language=Config.language,
+            streaming=self._streaming,
+        )
+
+    async def record_and_send(self, streaming: bool = False) -> None:
         """
         录音并发送数据
         
         从队列中读取音频数据，保存到文件（如果启用），
         并发送到服务端进行识别。
+
+        Args:
+            streaming: 请求流式上屏，服务端会按停顿切句、逐句回传（RecognitionMessage.delta）
         """
         try:
+            self._streaming = streaming
             # 生成唯一任务 ID
             self.task_id = str(uuid.uuid1())
             # 登记为待处理任务，打断键据此判断当前是否有可打断的输入
@@ -162,20 +185,7 @@ class AudioRecorder:
                         self._file_manager.write(data)
                     
                     # 发送音频数据用于识别
-                    message = AudioMessage(
-                        task_id=self.task_id,
-                        source='mic',
-                        data=base64.b64encode(
-                            np.mean(data[::3], axis=1).tobytes()
-                        ).decode('utf-8'),
-                        is_final=False,
-                        time_start=self._start_time,
-                        seg_duration=Config.mic_seg_duration,
-                        seg_overlap=Config.mic_seg_overlap,
-                        context=Config.context,
-                        language=Config.language,
-                    )
-                    asyncio.create_task(self._send_message(message))
+                    asyncio.create_task(self._send_message(self._audio_message(data, False)))
                     
                 elif task['type'] == 'finish':
                     # 如果有缓存的数据未发送，先发送缓存
@@ -187,20 +197,7 @@ class AudioRecorder:
                         if Config.save_audio and self._file_manager:
                             self._file_manager.write(data)
 
-                        message = AudioMessage(
-                            task_id=self.task_id,
-                            source='mic',
-                            data=base64.b64encode(
-                                np.mean(data[::3], axis=1).tobytes()
-                            ).decode('utf-8'),
-                            is_final=False,
-                            time_start=self._start_time,
-                            seg_duration=Config.mic_seg_duration,
-                            seg_overlap=Config.mic_seg_overlap,
-                            context=Config.context,
-                            language=Config.language,
-                        )
-                        asyncio.create_task(self._send_message(message))
+                        asyncio.create_task(self._send_message(self._audio_message(data, False)))
 
                     # 完成写入本地文件
                     if Config.save_audio and self._file_manager:
@@ -212,18 +209,7 @@ class AudioRecorder:
                     logger.info(f"录音任务完成，任务ID: {self.task_id}, 时长: {self._duration:.2f}s")
                     
                     # 告诉服务端音频片段结束了
-                    message = AudioMessage(
-                        task_id=self.task_id,
-                        source='mic',
-                        data='',
-                        is_final=True,
-                        time_start=self._start_time,
-                        seg_duration=Config.mic_seg_duration,
-                        seg_overlap=Config.mic_seg_overlap,
-                        context=Config.context,
-                        language=Config.language,
-                    )
-                    asyncio.create_task(self._send_message(message))
+                    asyncio.create_task(self._send_message(self._audio_message(None, True)))
                     break
 
                 elif task['type'] == 'abort':
@@ -237,18 +223,7 @@ class AudioRecorder:
                     console.print('    已手动打断，识别结果将被丢弃\n')
                     logger.info(f"录音任务被打断，任务ID: {self.task_id}, 已录 {self._duration:.2f}s")
 
-                    message = AudioMessage(
-                        task_id=self.task_id,
-                        source='mic',
-                        data='',
-                        is_final=True,
-                        time_start=self._start_time,
-                        seg_duration=Config.mic_seg_duration,
-                        seg_overlap=Config.mic_seg_overlap,
-                        context=Config.context,
-                        language=Config.language,
-                    )
-                    asyncio.create_task(self._send_message(message, quiet=True))
+                    asyncio.create_task(self._send_message(self._audio_message(None, True), quiet=True))
                     break
 
         except Exception as e:
