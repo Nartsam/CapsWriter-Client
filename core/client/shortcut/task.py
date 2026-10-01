@@ -52,6 +52,8 @@ class ShortcutTask:
         self.pressed: bool = False
         self.released: bool = True
         self.event: Event = Event()
+        # 长按模式下被打断后、录音键松开之前为 True，见 abort()
+        self.wait_release: bool = False
 
         # 线程池（用于 countdown）
         self.pool = None
@@ -203,6 +205,9 @@ class ShortcutTask:
 
         logger.info(f"[{self.shortcut.key}] 手动打断录音")
         self.is_recording = False
+        # 长按模式下录音键此刻还按着。到松开之前它的按下不算新的一次录音，同族修饰键的
+        # 同步按下照样拦截（见 ShortcutManager._is_modifier_sync）；松开录音键时解除
+        self.wait_release = self.shortcut.hold_mode
 
         # 单击模式下复位按压状态，避免下一次按键落进半截的状态机
         self.pressed = False

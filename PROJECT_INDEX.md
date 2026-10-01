@@ -134,7 +134,7 @@ CapsWriter 离线语音输入的**客户端**（Windows）。上游 [HaujetZhao/
 
 **流式上屏**（快捷键配置 `streaming`，用法与限制见 [docs/流式上屏如何使用.md](docs/流式上屏如何使用.md)）：`launch()` 按快照判定这次录音是否流式（连续对话中、挂图、默认角色启用时不流式）→ `AudioMessage.streaming` → 服务端在停顿处切句、逐句回带 `delta` 的非最终包 → `_on_stream_delta`：第一句命中角色就整次改为松手后处理（之后只攒不打），否则逐句做繁简/热词/规则并打字 → 最终包只带最后一句，`_finish_stream` 打出后走与整段相同的收尾。没收到过 `delta`（旧服务端、只有一句）的最终包一律按整段处理。
 
-**打断**：打断键在录音中 → `task.abort()`（登记 `cancelled_task_ids`、回滚快照、`queue_in` 放 abort，recorder 丢缓存、删录音、仍发 `is_final`）；在等待结果中 → `_abort_pending_result()`。被打断任务的结果在 `_handle_message` 入口整条丢弃。最终包到达后打断窗口关闭（文本随时可能上屏）。
+**打断**：打断键在录音中 → `task.abort()`（登记 `cancelled_task_ids`、回滚快照、`queue_in` 放 abort，recorder 丢缓存、删录音、仍发 `is_final`）；在等待结果中 → `_abort_pending_result()`。长按模式下打断后到松开录音键之前（`task.wait_release`），录音键的按下不重新开始录音，同族修饰键的按下照样拦截（见下面约定 3）。被打断任务的结果在 `_handle_message` 入口整条丢弃。最终包到达后打断窗口关闭（文本随时可能上屏）。
 
 **LLM**：`process_and_output` → 提醒入口（仅录音入口的具名角色）→ Companion（有连接时转发并返回）→ `capture_selection`（一次，结果经 `on_selection` 先打印预览）→ `handle_toast_mode` / `handle_typing_mode`（toast 模式先试 OpenMate）→ `LLMHandler.process` → `LLMProcessor` 流式请求 → 回调逐层回到展示 → `LLMResult`（`used_tools`、`image_used`、`reminder_handled`）回到 ResultProcessor。
 
@@ -146,7 +146,7 @@ CapsWriter 离线语音输入的**客户端**（Windows）。上游 [HaujetZhao/
 
 1. **门面与单例**：`CapsWriterClient` 是唯一入口；RecordingIndicator、ToastMessageManager、GlobalHotkeyManager 是线程安全单例。
 2. **低级钩子回调只做状态翻转和派发**：超过约 300ms 会被系统摘钩，此后所有快捷键失效。耗时操作一律 submit 到线程池（打断收尾、补发按键、截图读取都是如此）。
-3. **拦截决策在 KEYDOWN 锁存、KEYUP 沿用**：判据会被按键动作本身翻转，两次各自判断会产生不配对的按下/松开。打断键与连续对话切换键只在录音阶段拦截。
+3. **拦截决策在 KEYDOWN 锁存、KEYUP 沿用**：判据会被按键动作本身翻转，两次各自判断会产生不配对的按下/松开。打断键与连续对话切换键只在录音阶段拦截。长按的录音键是修饰键时，按住期间同族修饰键的按下也拦截（`_is_modifier_sync`）：系统里这个修饰键是松开的，RayLink 等远控软件会注入一个不配对的按下来「同步」，放行就卡住。
 4. **GlobalHotKeys 共用一个 Listener**：注册新热键会重启它；一个非法组合会让整个 Listener 起不来、连带 `llm_stop_key` 失效，所以注册前自行 `HotKey.parse` 校验。
 5. **多 Tk 解释器**：创建 `tkinter.font.Font` 必须传 `root=` 指向所属窗口，否则命名字体建到进程里第一个 Tk 上，跨解释器引用时静默回退为小号宋体。
 6. **日志**：控制台处理器固定 WARNING，诊断一律走 INFO（升级等于往运行终端刷字）；用户需要当场看见的结果用 `console.print`。模块用包内的 `from . import logger`，`logging.getLogger(__name__)` 不在项目日志器树上，写不进 `logs/`。
@@ -176,7 +176,7 @@ CapsWriter 离线语音输入的**客户端**（Windows）。上游 [HaujetZhao/
 - 系统 Python 没有项目依赖（rich、pynput、sounddevice…），`import core` 会在包 `__init__` 里失败，不要直接导入或运行客户端。测试的做法是预注入 `sys.modules` 桩模块，再用 `importlib` 按文件路径加载目标模块。
 - 验证从轻到重：`ast.parse` 语法检查 → 未定义名字检查 → 桩模块单测 → `start_client.exe` 实机。前三步是 **`python tools/run_tests.py`**（离线、零依赖、不花额度），改完代码提交前跑一遍。
 - `ast.parse` 抓不到 `NameError`，而逐层转发参数改错函数这类错误常要开着某个外部程序（如 OpenMate）才走得到，由 `tools/check_undefined.py` 补救（看的是有没有新增，已知豁免在 `tools/undefined_baseline.txt`）。
-- 不进流水线的脚本：`tools/test_toast_padding.py`（真建 Tk 窗口）、`test_selection_native.py`（真实 UIA）、`probe_selection.py`（诊断前台窗口选区）、`probe_llm_live.py` 与 `probe_role_segments.py`（真发请求、消耗额度）。用法见 [tools/README.md](tools/README.md)。
+- 不进流水线的脚本：`tools/test_toast_padding.py`（真建 Tk 窗口）、`test_selection_native.py`（真实 UIA）、`probe_selection.py`（诊断前台窗口选区）、`probe_keys.py`（诊断按键、钩子拦截与 Scintilla 选区的时序）、`probe_llm_live.py` 与 `probe_role_segments.py`（真发请求、消耗额度）。用法见 [tools/README.md](tools/README.md)。
 - 不要提交 `__pycache__`/`.pyc`；语法检查用 `ast.parse` 而不是 `py_compile`。
 
 ---

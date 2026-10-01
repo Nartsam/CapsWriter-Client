@@ -17,7 +17,7 @@ from pynput import keyboard, mouse
 
 from . import logger
 from core.client.shortcut.key_mapper import *
-from core.client.shortcut.key_mapper import KeyMapper, MODIFIER_KEYS
+from core.client.shortcut.key_mapper import KeyMapper, MODIFIER_KEYS, MODIFIER_FAMILY
 from core.client.shortcut.emulator import ShortcutEmulator
 from core.client.shortcut.event_handler import ShortcutEventHandler
 from core.client.shortcut.task import ShortcutTask
@@ -69,6 +69,8 @@ class ShortcutManager:
         self._cancel_key = (getattr(Config, 'cancel_recording_key', '') or '').lower().strip()
         # 打断键抑制决策的锁存位，保证同一次按键的按下与松开处理一致
         self._cancel_suppressed = False
+        # 打断键是否处于按下状态：按住不放会连发 KEYDOWN，只有第一次参与判定
+        self._cancel_key_down = False
 
         # 连续对话切换键：录音期间按下即切换粘滞路由。留空或配置非法则禁用
         self._chat_key = self._resolve_chat_key()
@@ -182,6 +184,11 @@ class ShortcutManager:
                     self.keyboard_listener.suppress_event()
                 return True
 
+            if msg in KEY_DOWN_MESSAGES and self._is_modifier_sync(key_name):
+                if self.keyboard_listener:
+                    self.keyboard_listener.suppress_event()
+                return True
+
             # 查找匹配的快捷键
             if key_name not in self.tasks:
                 return True
@@ -253,6 +260,7 @@ class ShortcutManager:
 
         # 长按模式
         if not task.is_recording:
+            task.wait_release = False
             return
 
         duration = time.time() - task.recording_start_time
@@ -265,6 +273,27 @@ class ShortcutManager:
                 self._pool.submit(self._emulator.emulate_mouse_click, button_name)
         else:
             task.finish()
+
+    # ========== 远控软件的修饰键同步 ==========
+
+    def _is_modifier_sync(self, key_name: str) -> bool:
+        """
+        是否为录音键按住期间、同族修饰键的按下（如按住右 Ctrl 录音时来了一个左 Ctrl 按下）
+
+        录音键的按下被拦截，系统里这个修饰键一直是松开的。RayLink 转发其他按键（如打断键 Esc）时
+        发现两边状态不一致，会先注入一个左 Ctrl 按下来「同步」，事后却不补发松开：左 Ctrl 卡在按下
+        状态，之后的单击都成了 Ctrl+单击（Notepad4 里会多出一个光标）。这类按下一并拦截；松开照常
+        放行，修饰键的释放多发无害。只看长按模式：单击模式录音时键并没有按着，左 Ctrl 是用户真按的。
+        """
+        family = MODIFIER_FAMILY.get(key_name)
+        if family is None:
+            return False
+        for key, task in self.tasks.items():
+            if (key != key_name and MODIFIER_FAMILY.get(key) == family
+                    and task.shortcut.suppress and task.shortcut.hold_mode
+                    and (task.is_recording or task.wait_release)):
+                return True
+        return False
 
     # ========== 打断键处理 ==========
 
@@ -283,6 +312,12 @@ class ShortcutManager:
         没有配对按下的松开事件，pynput 组合键监听器的内部按键集合也会随之失衡。
         """
         if msg in KEY_DOWN_MESSAGES:
+            # 按住不放的连发沿用第一次的决策：打断会清掉 pending_task_id，若让连发重新判定，
+            # 后续连发和松开都会被放行，前台程序收到一个没头没尾的 Esc（微信里会关掉聊天窗口）
+            if self._cancel_key_down:
+                return self._cancel_suppressed
+            self._cancel_key_down = True
+
             # 没有待处理的输入时完全不介入，按键照常传给前台程序
             if not self.state.pending_task_id:
                 self._cancel_suppressed = False
@@ -292,7 +327,6 @@ class ShortcutManager:
             # 一旦服务端不回，拦截会让打断键全局失灵
             self._cancel_suppressed = self.state.recording
 
-            # 长按会产生连续 KEYDOWN，abort 自身幂等，重复触发会被忽略
             for task in self.tasks.values():
                 if task.is_recording:
                     task.abort()
@@ -304,6 +338,7 @@ class ShortcutManager:
             return self._cancel_suppressed
 
         if msg in KEY_UP_MESSAGES:
+            self._cancel_key_down = False
             suppressed = self._cancel_suppressed
             self._cancel_suppressed = False
             return suppressed

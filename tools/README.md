@@ -29,8 +29,10 @@ python tools/run_tests.py
 | `test_history_payload.py` | 对话历史的上行载荷：不带 `timestamp`、不交出活引用、assistant 保留状态标签、旧图降级 |
 | `test_selection.py` | 选区捕获：默认不发键/不碰剪贴板、回退条件、焦点与超时、Scintilla 范围/编码/标量消息边界、历史去重预览、typing/toast/openmate 单次快照转发、终端输出顺序；所有输入与外部接口均为桩 |
 | `test_stream_output.py` | 流式上屏：逐句打字与热词、开头角色名改为松手后处理、角色名被切开时等下一句、打断后不再打字、旧服务端（无 `delta`）按整段处理、去末尾标点只作用于最后一句；另含角色文件导入失败的日志（出自 secrets.py 时不记异常信息）。ResultProcessor 等的真实方法绑到桩对象上运行 |
+| `test_shortcut_keys.py` | 快捷键钩子：打断键按住连发不放行；按住右 Ctrl 录音时远控软件注入的左 Ctrl 按下被拦截、松开放行，打断后到松开录音键前同样拦截，单击模式不拦。按键序列取自 `probe_keys.py` 在 RayLink 下的实录；真实的过滤函数、事件处理器与 `abort` 绑到桩对象上运行 |
 | `test_selection_native.py` | 原生 Windows 冒烟：自有隐藏 Edit 真实 UIA 读取，加自有 Scintilla 协议窗口验证只读 Win32 消息链路；后者不是真实 Scintilla 库。覆盖 Unicode、长度上限、空光标和剪贴板序号不变；仅替换焦点定位，无键盘输入或剪贴板写入。需 Windows 会话，不进流水线，不能替代 Notepad4 / Windows Terminal/TUI 验收 |
 | `probe_selection.py` | 只读诊断真实前台 UIA 父链、控件类型、进程号与选区长度；不打印选区正文，不发送输入或读写剪贴板。`--wait 10` 留出手动选择时间，`--depth 16` 可复现旧上限，`--all-patterns` 检查各祖先的选区长度（该模式最后的 status 不代表捕获结果）；`--samples 23 --interval 2` 可连续观察焦点/选区变化，控件 Name 仅按编辑器/终端标签分类，不输出原文。需要用户桌面访问，沙箱隔离桌面可能返回 HWND=0 |
+| `probe_keys.py` | 只读记录按键时序：低级钩子看到的每个键（含注入标记，排在客户端钩子之前，客户端拦截的也看得到）、系统按键状态里修饰键与 Esc 的变化（只反映没被拦截的）、鼠标按键、前台窗口与菜单模式、焦点在 Scintilla 上时选区个数与模式的变化。字符键只记「字符键」。先启动客户端再运行，复现后 Ctrl+C，日志在 `logs/probe_keys.log`。需要用户桌面，不进流水线 |
 | `test_backends.py` | LLM 后端切换（`LLM/backends.py`）：两套 profile 取值、未知名字回退、`backends.py` 必须排在角色文件之前（热切换的前提）、四个角色在 `backend='deepseek'` 下与改造前逐字相同 |
 | `test_toast_padding.py` | Toast 顶部留白分岔：LLM 白框 40px 拖动区 / 普通 toast 15px、画布坐标与窗口高度、`MIN_WINDOW_HEIGHT` 兜底未触发、判别器与 `close_llm_windows` 同源。**真构造 Tk 窗口、会闪窗**，不进流水线，见下 |
 | `probe_llm_live.py` | **真发请求、消耗额度**，单独跑。见下 |

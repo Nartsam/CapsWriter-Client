@@ -35,7 +35,8 @@ class ShortcutEventHandler:
         """处理按键按下事件"""
         # 长按模式
         if task.shortcut.hold_mode:
-            if not task.is_recording:
+            # 打断后录音键还按着，这期间的按下不算新的一次（见 ShortcutTask.abort）
+            if not task.is_recording and not task.wait_release:
                 task.launch()
             return
 
@@ -61,6 +62,7 @@ class ShortcutEventHandler:
 
         # 长按模式
         if not task.is_recording:
+            task.wait_release = False
             self._release_suppressed_modifier(key_name, task)
             return
 

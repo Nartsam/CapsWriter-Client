@@ -66,12 +66,15 @@ RESTORABLE_KEYS = {
 # 边界：录音键若换成 Alt，孤立的 Alt 抬起会被不少 Win32 程序当成激活菜单栏。
 # 可选优化（暂不做）：补发前用 GetAsyncKeyState 判断是否真卡住，但抑制状态下它的返回值
 # 是否可靠需要实机验证。
-MODIFIER_KEYS = {
-    'ctrl', 'ctrl_l', 'ctrl_r',
-    'shift', 'shift_l', 'shift_r',
-    'alt', 'alt_l', 'alt_gr',
-    'cmd', 'cmd_r',
+#
+# 值是所属的键族（同一修饰键的左右变体），用于拦截远控软件的修饰键同步（见 ShortcutManager._is_modifier_sync）
+MODIFIER_FAMILY = {
+    'ctrl': 'ctrl', 'ctrl_l': 'ctrl', 'ctrl_r': 'ctrl',
+    'shift': 'shift', 'shift_l': 'shift', 'shift_r': 'shift',
+    'alt': 'alt', 'alt_l': 'alt', 'alt_gr': 'alt',
+    'cmd': 'cmd', 'cmd_r': 'cmd',
 }
+MODIFIER_KEYS = set(MODIFIER_FAMILY)
 
 
 class KeyMapper:
