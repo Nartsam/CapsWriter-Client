@@ -1,6 +1,6 @@
 # CLAUDE.md
 
-本仓库是 CapsWriter 离线语音输入的**客户端**（Windows）；配套服务端在 `../CapsWriter-Server`（另一个仓库，不在修改范围内）。
+本仓库是 CapsWriter 离线语音输入的**客户端**（Windows）；配套服务端在 CapsWriter-Server 中（另一个仓库，不在修改范围内）。
 
 ## 安全规则
 

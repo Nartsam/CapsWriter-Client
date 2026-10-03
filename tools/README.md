@@ -35,20 +35,23 @@ python tools/run_tests.py
 | `probe_keys.py` | 只读记录按键时序：低级钩子看到的每个键（含注入标记，排在客户端钩子之前，客户端拦截的也看得到）、系统按键状态里修饰键与 Esc 的变化（只反映没被拦截的）、鼠标按键、前台窗口与菜单模式、焦点在 Scintilla 上时选区个数与模式的变化。字符键只记「字符键」。先启动客户端再运行，复现后 Ctrl+C，日志在 `logs/probe_keys.log`。需要用户桌面，不进流水线 |
 | `test_backends.py` | LLM 后端切换（`LLM/backends.py`）：两套 profile 取值、未知名字回退、`backends.py` 必须排在角色文件之前（热切换的前提）、四个角色在 `backend='deepseek'` 下与改造前逐字相同 |
 | `test_toast_padding.py` | Toast 顶部留白分岔：LLM 白框 40px 拖动区 / 普通 toast 15px、画布坐标与窗口高度、`MIN_WINDOW_HEIGHT` 兜底未触发、判别器与 `close_llm_windows` 同源。**真构造 Tk 窗口、会闪窗**，不进流水线，见下 |
+| `test_toast_scaling.py` | Toast 线程的 `tk scaling` 被显示配置变更改掉后能自动恢复：启动真实的 `ToastMessageManager`，只向本进程的 Toast 线程发 `WM_DISPLAYCHANGE`；先关掉修复确认能触发字号放大，再验证恢复、日志与「先恢复再构造窗口」。**会闪窗**，不进流水线 |
 | `probe_llm_live.py` | **真发请求、消耗额度**，单独跑。见下 |
 | `probe_role_segments.py` | **真发请求、消耗额度**。用当前两套后端检查雾切响子或新岛真的分条和语气；默认仅测当前提示词，`--baseline` 可读归档提示词复现对照。生产发送器只在内存中收集消息，不向 OpenMate 投递。2026-09-13 调整前的原提示词归档在 git 历史里（提交 521f482 的 `docs/experiments/*.json`），做改前/改后对照时用 `git show` 取到仓库内的新文件（如 `logs/` 下）再传给 `--baseline`；输出目录必须为空 |
 
-## 为什么 test_toast_padding.py 不进流水线
+## 为什么两个 Toast 测试不进流水线
 
-它是唯一一个真的建 `tk.Tk()` 和 Toplevel 的测试——留白只有落到画布坐标和窗口
-几何上才算数，桩不出来。代价是需要桌面会话、屏幕上会闪几个无边框窗口，而
-`run_tests.py` 要能在没有桌面的环境里跑完，所以单列：
+`test_toast_padding.py` 与 `test_toast_scaling.py` 真的建 `tk.Tk()` 和 Toplevel——
+留白只有落到画布坐标和窗口几何上才算数，缩放比例只有真的收到窗口消息才会被改，
+都桩不出来。代价是需要桌面会话、屏幕上会闪几个无边框窗口，而 `run_tests.py`
+要能在没有桌面的环境里跑完，所以单列：
 
 ```
 python tools/test_toast_padding.py
+python tools/test_toast_scaling.py
 ```
 
-改完 `core/ui/toast_*.py` 手动跑一次。它不联网、不花额度。
+改完 `core/ui/toast_*.py` 手动跑一次。它们不联网、不花额度。
 
 ## 原生选区冒烟
 

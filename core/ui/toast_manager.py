@@ -179,9 +179,28 @@ class ToastMessageManager:
         if self.root:
             self.root.quit()
 
+    def _ensure_tk_scaling(self) -> None:
+        """把被显示配置变更改掉的 Tk 缩放比例恢复为 TK_SCALING_FACTOR。
+
+        Tk 8.6 的顶层窗口（包括隐藏的根窗口）收到 WM_DISPLAYCHANGE（虚拟显示器接入
+        或移除、分辨率或拓扑变化）时，会按系统 DPI 重算屏幕毫米宽度，`tk scaling`
+        悄悄回到系统值（192 DPI 下为 2.667），此后新建的字体放大到 4/3，直到重启。
+        字体只在窗口构造和切换 Markdown 时新建，已显示的控件仍持有旧字体，所以随队列
+        轮询检查、并排在构造窗口之前即可。
+        """
+        current = float(self.root.tk.call('tk', 'scaling'))
+        # 设置后读回的值带有毫米取整误差（屏宽 3840 时为 2.001）
+        if abs(current - TK_SCALING_FACTOR) > 0.01:
+            self.root.tk.call('tk', 'scaling', TK_SCALING_FACTOR)
+            logger.info(
+                f"Tk 缩放比例被改为 {current:.3f}（多半是显示配置变更），"
+                f"已恢复为 {TK_SCALING_FACTOR}"
+            )
+
     def _process_queue(self) -> None:
         """处理队列中的消息"""
         try:
+            self._ensure_tk_scaling()
             if not self.message_queue.empty():
                 msg = self.message_queue.get_nowait()
                 msg_id = getattr(msg, '_id', 'unknown')

@@ -120,7 +120,7 @@ CapsWriter 离线语音输入的**客户端**（Windows）。上游 [HaujetZhao/
 
 | 文件 | 职责 |
 |---|---|
-| `core/ui/toast_manager.py` | Toast 管理器（Tk 单例线程）：消息队列、窗口生命周期、`close_llm_windows()` |
+| `core/ui/toast_manager.py` | Toast 管理器（Tk 单例线程）：消息队列、窗口生命周期、`close_llm_windows()`、显示配置变更后恢复 `tk scaling`（`_ensure_tk_scaling`） |
 | `core/ui/toast_base.py`、`toast_text.py`、`toast_label.py`、`toast_constants.py` | 窗口基类（无边框置顶、透明圆角、宽度只增不减、拖动、滚轮、复制、Markdown 最终视图、智能时长）；Text 版用于流式、Label 版用于普通提示 |
 | `core/ui/dpi.py` | 进程 DPI 感知统一声明（固定 SYSTEM 级，原因见文件头） |
 | `core/tools/windows_selection.py` | ctypes 调原生 UIA（独立 MTA 线程、焦点及祖先的 TextPattern），UIA 不支持时对 Scintilla 焦点控件做标量只读查询 |
@@ -176,7 +176,7 @@ CapsWriter 离线语音输入的**客户端**（Windows）。上游 [HaujetZhao/
 - 系统 Python 没有项目依赖（rich、pynput、sounddevice…），`import core` 会在包 `__init__` 里失败，不要直接导入或运行客户端。测试的做法是预注入 `sys.modules` 桩模块，再用 `importlib` 按文件路径加载目标模块。
 - 验证从轻到重：`ast.parse` 语法检查 → 未定义名字检查 → 桩模块单测 → `start_client.exe` 实机。前三步是 **`python tools/run_tests.py`**（离线、零依赖、不花额度），改完代码提交前跑一遍。
 - `ast.parse` 抓不到 `NameError`，而逐层转发参数改错函数这类错误常要开着某个外部程序（如 OpenMate）才走得到，由 `tools/check_undefined.py` 补救（看的是有没有新增，已知豁免在 `tools/undefined_baseline.txt`）。
-- 不进流水线的脚本：`tools/test_toast_padding.py`（真建 Tk 窗口）、`test_selection_native.py`（真实 UIA）、`probe_selection.py`（诊断前台窗口选区）、`probe_keys.py`（诊断按键、钩子拦截与 Scintilla 选区的时序）、`probe_llm_live.py` 与 `probe_role_segments.py`（真发请求、消耗额度）。用法见 [tools/README.md](tools/README.md)。
+- 不进流水线的脚本：`tools/test_toast_padding.py` 与 `test_toast_scaling.py`（真建 Tk 窗口）、`test_selection_native.py`（真实 UIA）、`probe_selection.py`（诊断前台窗口选区）、`probe_keys.py`（诊断按键、钩子拦截与 Scintilla 选区的时序）、`probe_llm_live.py` 与 `probe_role_segments.py`（真发请求、消耗额度）。用法见 [tools/README.md](tools/README.md)。
 - 不要提交 `__pycache__`/`.pyc`；语法检查用 `ast.parse` 而不是 `py_compile`。
 
 ---
@@ -204,7 +204,7 @@ CapsWriter 离线语音输入的**客户端**（Windows）。上游 [HaujetZhao/
 | OpenMate 接入 | `openmate_*` 配置；`llm_output_openmate.py`；角色级 `openmate_enabled`/`openmate_character`/`enable_result_splitter`/`result_split_delimiter` |
 | 情绪标签剥离 | `llm_state_tags.py` |
 | 一次性提醒 | `reminder_*` 配置；`core/client/reminder/`、`core/ui/toast_reminder.py`；同步 [docs/提醒功能如何使用.md](docs/提醒功能如何使用.md)；验证 `tools/test_reminders.py` |
-| Toast 弹窗 | `core/ui/toast_*.py`；顶部留白 `toast_constants.py`；改完跑 `tools/test_toast_padding.py` 并实机弹一次窗口（构造失败是静默的） |
+| Toast 弹窗 | `core/ui/toast_*.py`；顶部留白 `toast_constants.py`；改完跑 `tools/test_toast_padding.py`、`test_toast_scaling.py` 并实机弹一次窗口（构造失败是静默的） |
 | 悬浮指示器 | `core/client/ui/recording_indicator.py` |
 | 托盘 | `core/ui/tray.py`、`core/client/manager/tray_manager.py` |
 | Companion | `companion_*` 配置；`core/client/companion/` |
