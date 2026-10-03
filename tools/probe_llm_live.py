@@ -167,6 +167,7 @@ def load_production():
     ns.constants = load('core.client.llm.llm_constants', 'llm_constants.py')
     ns.tags = load('core.client.llm.llm_state_tags', 'llm_state_tags.py')
     ns.role_config = load('core.client.llm.llm_role_config', 'llm_role_config.py')
+    load('core.client.llm.llm_memory', 'llm_memory.py')
     ns.context = load('core.client.llm.llm_context', 'llm_context.py')
     ns.builder = load('core.client.llm.llm_message_builder', 'llm_message_builder.py')
     ns.processor = load('core.client.llm.llm_processor', 'llm_processor.py')

@@ -26,13 +26,14 @@ class RoleFormatter:
         return width
 
     @staticmethod
-    def format_status(role_name: str, role_config: RoleConfig) -> Text:
+    def format_status(role_name: str, role_config: RoleConfig, memory_note=None) -> Text:
         """
         格式化角色状态显示
 
         Args:
             role_name: 角色名称
             role_config: 角色配置（RoleConfig 对象）
+            memory_note: 本次加载恢复记忆的结果 (文字, 样式)；None 时这一栏不占任何位置
 
         Returns:
             Text 对象（用于 Rich 渲染）
@@ -72,7 +73,11 @@ class RoleFormatter:
         # 读取选中文字
         read_selection = role_config.enable_read_selection
         text.append("读选区 " if read_selection else "读选区 ", style="green" if read_selection else "dim")
-        
+
+        # 记忆恢复结果：紧跟「读选区 」，没有时一个字符也不加，行与以前完全相同
+        if memory_note:
+            note_text, note_style = memory_note
+            text.append(note_text, style=note_style)
 
         # 模型信息
         text.append(f"  ({role_config.model} from {role_config.provider})", style="dim")
@@ -80,7 +85,7 @@ class RoleFormatter:
         return text
 
     @staticmethod
-    def print_status(role_name: str, role_config: RoleConfig, prefix: str = "  "):
+    def print_status(role_name: str, role_config: RoleConfig, prefix: str = "  ", memory_note=None):
         """
         打印角色状态（带前缀）
 
@@ -88,9 +93,10 @@ class RoleFormatter:
             role_name: 角色名称
             role_config: 角色配置
             prefix: 前缀文本（默认两个空格）
+            memory_note: 见 format_status
         """
         console = Console()
-        status_line = RoleFormatter.format_status(role_name, role_config)
+        status_line = RoleFormatter.format_status(role_name, role_config, memory_note)
 
         text = Text(prefix)
         text.append(status_line)

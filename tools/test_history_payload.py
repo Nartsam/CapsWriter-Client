@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import importlib.util
 import os
+import re
 import sys
 import types
 
@@ -61,6 +62,7 @@ def load(mod, fname):
 load('core.client.llm.llm_constants', 'llm_constants.py')
 load('core.client.llm.llm_state_tags', 'llm_state_tags.py')
 rc = load('core.client.llm.llm_role_config', 'llm_role_config.py')
+load('core.client.llm.llm_memory', 'llm_memory.py')
 ctx = load('core.client.llm.llm_context', 'llm_context.py')
 mb = load('core.client.llm.llm_message_builder', 'llm_message_builder.py')
 proc = load('core.client.llm.llm_processor', 'llm_processor.py')
@@ -96,12 +98,8 @@ IMG = 'data:image/png;base64,AAAA'
 
 
 def store(cm, messages, answer):
-    """复刻 _stream_request 的历史更新（修复后：assistant 存原文）"""
-    uc = messages[-1]['content']
-    if isinstance(uc, list):
-        cm.demote_images(IMAGE_PLACEHOLDER)
-    cm.add_message('user', uc)
-    cm.add_message('assistant', answer)
+    """走 _stream_request 里真实的历史更新（_record_turn：assistant 存原文）"""
+    p._record_turn(role, cm, messages, answer)
 
 
 # ---------------------------------------------------------------- 1
@@ -140,11 +138,16 @@ n_img = sum(1 for it in params['input'] if isinstance(it.get('content'), list)
 check(n_img == 1, '第二轮请求里的历史图片数 = %d，应为 1' % n_img)
 
 # ---------------------------------------------------------------- 5
-section('_describe_messages 口径')
-check(p._describe_messages(m1) == '0 条历史 + 本句，1 张图', '首轮摘要: %r' % p._describe_messages(m1))
-check(p._describe_messages(m2) == '2 条历史 + 本句，1 张图', '次轮摘要: %r' % p._describe_messages(m2))
-check(p._describe_messages([{'role': 'system', 'content': 's'},
-                            {'role': 'user', 'content': 'q'}]) == '0 条历史 + 本句，0 张图',
+section('_describe_messages 口径（只比数字：历史条数、图片张数，措辞随便改）')
+
+
+def counts(messages):
+    return [int(n) for n in re.findall(r'\d+', p._describe_messages(messages))]
+
+
+check(counts(m1) == [0, 1], '首轮摘要: %r' % p._describe_messages(m1))
+check(counts(m2) == [2, 1], '次轮摘要: %r' % p._describe_messages(m2))
+check(counts([{'role': 'system', 'content': 's'}, {'role': 'user', 'content': 'q'}]) == [0, 0],
       'system 不计入历史')
 
 # ---------------------------------------------------------------- 6

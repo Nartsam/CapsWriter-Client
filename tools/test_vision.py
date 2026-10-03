@@ -96,20 +96,25 @@ def test_estimate_tokens(consts):
     et = consts.estimate_tokens
     print('\n[1] estimate_tokens 多模态容忍')
 
-    check('纯文本仍按原口径', et('你好世界') == 2, et('你好世界'))
+    # 不钉估算系数（每字几个 token、一张图算多少），只验性质：图片的估算与 base64 长度无关
+    check('纯文本有正数估算', et('你好世界') > 0, et('你好世界'))
     check('空值返回 0', et('') == 0 and et(None) == 0)
 
+    small = 'data:image/png;base64,AAAA'
     huge = 'data:image/png;base64,' + 'A' * 400000
-    chat = [{'type': 'text', 'text': '看看这个报错'},
-            {'type': 'image_url', 'image_url': {'url': huge}}]
-    n = et(chat)
-    check('Chat 口味不抛异常且图片按 384 计', n == 4 + 384, n)
-    check('40 万字符的 base64 不会撑爆估算', n < 500, n)
 
-    resp = [{'type': 'input_text', 'text': 'abc'},
-            {'type': 'input_image', 'image_url': huge}]
-    check('Responses 口味同样按 384 计', et(resp) == 384 + 1, et(resp))
-    check('非字符串非列表兜底为 1', et(12345) == 1)
+    def chat(url):
+        return [{'type': 'text', 'text': '看看这个报错'}, {'type': 'image_url', 'image_url': {'url': url}}]
+
+    def resp(url):
+        return [{'type': 'input_text', 'text': 'abc'}, {'type': 'input_image', 'image_url': url}]
+
+    check('Chat 口味：40 万字符的 base64 不撑大估算', et(chat(huge)) == et(chat(small)),
+          (et(chat(huge)), et(chat(small))))
+    check('Chat 口味：图片本身计入估算', et(chat(small)) > et('看看这个报错'))
+    check('Responses 口味同样与 base64 长度无关', et(resp(huge)) == et(resp(small)),
+          (et(resp(huge)), et(resp(small))))
+    check('非字符串非列表不炸', isinstance(et(12345), int))
     check('列表里混入非法条目不炸', et([None, 'x', 42]) >= 1)
 
 
@@ -133,8 +138,8 @@ def test_demote_images(ctx_mod, consts):
 
     contents = [m['content'] for m in cm.history]
     check('降级后全部退回字符串', all(isinstance(c, str) for c in contents), contents)
-    check('占位符已写入', contents[0] == '第一张\n' + ph, repr(contents[0]))
-    check('文本部分未丢失', contents[2] == '第二张\n' + ph, repr(contents[2]))
+    check('占位符已写入', ph in contents[0] and ph in contents[2], contents)
+    check('文本部分未丢失', '第一张' in contents[0] and '第二张' in contents[2], contents)
     check('assistant 消息未被动过', contents[1] == '好的')
 
     check('再次降级为 0（幂等）', cm.demote_images(ph) == 0)
@@ -210,21 +215,20 @@ def test_responses_params(proc_mod):
 
     check('system 走 instructions', params.get('instructions') == '你是助理')
     check('max_tokens 映射为 max_output_tokens', params.get('max_output_tokens') == 4096)
-    check('web_search 工具照常挂载', params.get('tools') == [{'type': 'web_search'}])
+    check('web_search 工具照常挂载', {'type': 'web_search'} in (params.get('tools') or []))
     inp = params['input']
     check('system 不在 input 里', len(inp) == 3, len(inp))
-    check('纯文本历史消息原样透传（对象未被复制改写）',
-          inp[0] is messages[1] and inp[1] is messages[2])
+    check('纯文本历史消息内容原样透传',
+          inp[0] == messages[1] and inp[1] == messages[2])
     check('带图消息已转成 Responses 口味',
           inp[2]['content'] == [{'type': 'input_text', 'text': '看图'},
                                 {'type': 'input_image', 'image_url': url}], inp[2])
     check('原始 messages 未被就地改写',
           messages[3]['content'][1]['type'] == 'image_url')
 
-    # 不带图时行为必须与改动前逐字一致
     plain_msgs = [{'role': 'system', 'content': 'S'}, {'role': 'user', 'content': 'U'}]
     p2 = proc._build_responses_params(Role, plain_msgs)
-    check('不带图时 input 条目就是原对象', p2['input'][0] is plain_msgs[1])
+    check('不带图时 input 条目内容不变', p2['input'] == [plain_msgs[1]], p2['input'])
 
 
 # ====================================================================
@@ -316,9 +320,8 @@ def test_state(state_mod):
     st.set_pending_image('NEW')
     st.begin_image_snapshot()             # 新录音已 launch，尚未 bind
     st.pop_image_snapshot('task-old')     # 上一句的结果此时到达
-    check('pop 不会抹掉新录音尚未绑定的图', st.image_current == 'NEW', st.image_current)
     st.bind_image_snapshot('task-new')
-    check('新录音仍能正常绑定', st.image_snapshots.get('task-new') == 'NEW')
+    check('pop 不会抹掉新录音尚未绑定的图', st.pop_image_snapshot('task-new') == 'NEW')
 
     # --- 回滚：录音作废，图退回待挂 ---
     st = new_state()
@@ -368,7 +371,7 @@ def test_state(state_mod):
     st.set_pending_image('X')
     st.reset()
     check('reset 清空待挂图', st.pending_image is None)
-    check('reset 清空快照字典', st.image_snapshots == {} and st.image_current is None)
+    check('reset 清空已绑定的图', st.image_snapshots == {} and st.begin_image_snapshot() is None)
 
 
 # ====================================================================
@@ -449,16 +452,21 @@ def test_watcher(watch_mod):
 
     # 线程生命周期
     watch_mod._sequence_number = lambda: seq['v']
+    def wait_until(condition, timeout=2.0):
+        # 等到条件成立或超时，不用固定的 sleep：机器一忙固定等待就会偶发失败
+        deadline = _t.monotonic() + timeout
+        while not condition() and _t.monotonic() < deadline:
+            _t.sleep(0.01)
+        return condition()
+
     w3 = W(poll_interval=0.01)
     w3.start()
     check('可用时线程已启动', w3._thread is not None and w3._thread.is_alive())
     seq['v'] = 200
-    _t.sleep(0.05)
-    check('后台轮询能自行发现变化', w3._changed_at is not None)
+    check('后台轮询能自行发现变化', wait_until(lambda: w3._changed_at is not None))
+    thread = w3._thread
     w3.stop()
-    _t.sleep(0.05)
-    check('stop 后线程退出', not any(
-        t.name == 'clipboard-watcher' and t.is_alive() for t in __import__('threading').enumerate()))
+    check('stop 后线程退出', wait_until(lambda: not thread.is_alive()))
 
 
 def test_is_fresh(vm_mod, watch_mod):
@@ -617,11 +625,6 @@ def test_encode_fallback(clip_mod):
     img, _ = _run_grab(clip_mod, png_bytes=under, size=(321, 123))
     check('宽高取自最终图片', img and (img.width, img.height) == (321, 123))
 
-    # --- 旧构造方式仍然成立：encoding 有默认值 ---
-    legacy = clip_mod.PendingImage('data:image/png;base64,x', 1, 2, 3, 'PNG')
-    check('PendingImage.encoding 有默认值，旧位置参数构造不受影响',
-          legacy.encoding == 'PNG')
-
 
 # ====================================================================
 # 12. 剪贴板被占用时的退避重试
@@ -703,9 +706,10 @@ def test_clipboard_retry(clipboard_mod, sel_mod, pyclip_stub, kb_stub):
         pyclip_stub.copy = original_copy
 
     check('restore_clipboard 正常时返回 True',
-          clipboard_mod.restore_clipboard('原内容') is True)
+          clipboard_mod.restore_clipboard('原内容') is True and pyclip_stub.copies[-1] == '原内容')
+    clipboard_mod.restore_clipboard('')
     check('空字符串也照样写回（还原的语义是恢复原状）',
-          pyclip_stub.copies and pyclip_stub.copies[-1] == '原内容')
+          pyclip_stub.copies and pyclip_stub.copies[-1] == '', pyclip_stub.copies[-1:])
 
     # --- 核心回归：还原失败不得连累已经读到的选中文字 ---
     class Role:
@@ -740,7 +744,8 @@ def test_image_archive(archive_mod, clip_mod):
     print('\n[13] 图片归档')
     import base64, shutil, tempfile
 
-    base = tempfile.mkdtemp(prefix="capswriter-archive-test-")
+    # 临时目录放在仓库的 tools/ 下（同其他测试），不写系统临时目录
+    base = tempfile.mkdtemp(prefix="archive-test-", dir=os.path.join(REPO, 'tools'))
     try:
         payload = b"fake-png-bytes"
         url = "data:image/png;base64," + base64.b64encode(payload).decode("ascii")
@@ -782,8 +787,6 @@ def test_image_archive(archive_mod, clip_mod):
         check('改名后带 task_id', task in used_name, used_name)
         check('改名后标 used', '_used_' in used_name, used_name)
         check('pend 标记已去掉', '_pend' not in used_name, used_name)
-        check('去向标记都是 4 个字符（列目录时对齐）',
-              len('pend') == len('used') == len('drop') == 4)
         check('原文件已不在', not saved.exists())
         check('新文件内容不变', pathlib.Path(used_path).read_bytes() == payload)
 
@@ -1061,6 +1064,7 @@ def main():
     interfaces = load('core.client.llm.llm_interfaces', 'core/client/llm/llm_interfaces.py')
     sys.modules['core.client.llm'].llm_interfaces = interfaces
 
+    load('core.client.llm.llm_memory', 'core/client/llm/llm_memory.py')
     ctx_mod = load('core.client.llm.llm_context', 'core/client/llm/llm_context.py')
     role_cfg = load('core.client.llm.llm_role_config', 'core/client/llm/llm_role_config.py')
     sys.modules['core.client.llm'].llm_role_config = role_cfg

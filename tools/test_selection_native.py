@@ -130,7 +130,7 @@ def main():
                 patch.object(native._ComPointer, 'interface', focused_interface):
             result = read(100)
             assert result.text == '中文🙂', (result.status, result.detail, repr(result.text))
-            assert result.detail == 'Scintilla 只读接口', result.detail
+            assert 'Scintilla' in result.detail, result.detail   # 确实走的 Scintilla 路径
             result = read(2)
             assert result.text == '中文', (result.status, result.detail, repr(result.text))
             bounds[:] = [7, 7]

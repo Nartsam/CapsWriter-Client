@@ -2,8 +2,9 @@
 """
 Toast 顶部留白分岔的真 Tk 冒烟测试
 
-验证 2026-09-05 的改动：40px 顶部空白拖动区只给 LLM 角色白色对话框
-（`smart_duration=True`），托盘/错误这类普通 toast 顶部与底部对齐（15px）。
+验证 2026-09-05 的改动：顶部空白拖动区只给 LLM 角色白色对话框
+（`smart_duration=True`），托盘/错误这类普通 toast 顶部与底部对齐。
+留白的具体像素是可调常量，这里只验它们确实落到了画布坐标和窗口高度上。
 
 **本脚本会真的构造 Tk 窗口**（无边框、置顶，屏幕上会闪一下），因此不进
 `run_tests.py` 的流水线——那条流水线要能在没有桌面会话的环境里跑。改完
@@ -106,14 +107,7 @@ def geometry_size(window):
     return int(w), int(h)
 
 
-# ====================================================================
-# 0. 常量本身
-# ====================================================================
-print('[常量]')
-check('COMPACT 与底部对齐', COMPACT_PADDING_TOP == DEFAULT_PADDING_BOTTOM,
-      '%r != %r' % (COMPACT_PADDING_TOP, DEFAULT_PADDING_BOTTOM))
-check('LLM 顶部留白仍是 40', DEFAULT_PADDING_TOP == 40, repr(DEFAULT_PADDING_TOP))
-check('两者确实不同', DEFAULT_PADDING_TOP != COMPACT_PADDING_TOP)
+# 留白常量的具体数值不在这里钉：它们是可调参数，下面只验「取值落到了窗口上」
 
 root = tk.Tk()
 root.withdraw()
@@ -150,13 +144,18 @@ try:
                     window_alpha=1.0, corner_radius=12)
     x, y = reminder.window.winfo_x(), reminder.window.winfo_y()
     width, height = geometry_size(reminder.window)
-    check('提醒窗口位于主屏底部', y + height == reminder.window.winfo_screenheight() - 80)
+    check('提醒窗口位于主屏底部',
+          y + height == reminder.window.winfo_screenheight() - reminder_style.REMINDER_BOTTOM_OFFSET,
+          'bottom=%r screen=%r' % (y + height, reminder.window.winfo_screenheight()))
     check('提醒窗口水平居中', x == (reminder.window.winfo_screenwidth() - width) // 2)
-    check('提醒专用字号为18', reminder.my_font.cget('size') == 18)
-    check('提醒为浅暖黄底深色字', reminder.bg == '#FFF4D6' and reminder.fg == '#332B1A')
-    check('提醒不透明', float(reminder.window.attributes('-alpha')) == 1.0)
-    check('提醒独立最大宽度', reminder.max_width == min(1600, int(root.winfo_screenwidth() * 0.8)))
-    check('小屏宽度不越界', ToastWindowReminder._resolve_width_range(320, 800, .2, .5, 400) == (320, 320))
+    check('提醒字号用的是传入的值', reminder.my_font.cget('size') == reminder_style.REMINDER_FONT_SIZE)
+    # 宽度策略的具体数字是可调的，这里只验两条性质：不受通用 800px 上限约束、不超出屏幕
+    screen_w = root.winfo_screenwidth()
+    check('提醒最大宽度不受通用 800px 上限约束', screen_w < 1100 or reminder.max_width > 800,
+          'screen=%r max=%r' % (screen_w, reminder.max_width))
+    check('提醒最大宽度不超出屏幕', reminder.max_width <= screen_w)
+    lo, hi = ToastWindowReminder._resolve_width_range(320, 800, .2, .5, 400)
+    check('小屏宽度不越界', lo <= hi <= 400, (lo, hi))
     required_width = reminder._measure_text_width(reminder.full_text, reminder.my_font)
     if required_width <= reminder.max_width:
         line = reminder.text_area.dlineinfo('1.0')
@@ -191,12 +190,12 @@ try:
     llm = make(ToastWindowText, True)
     plain = make(ToastWindowText, False)
 
-    check('LLM padding_top=40', llm.padding_top == DEFAULT_PADDING_TOP, repr(llm.padding_top))
-    check('LLM height_padding=55',
+    check('LLM 顶部留白取拖动区高度', llm.padding_top == DEFAULT_PADDING_TOP, repr(llm.padding_top))
+    check('LLM 上下留白之和',
           llm.height_padding == DEFAULT_PADDING_TOP + DEFAULT_PADDING_BOTTOM,
           repr(llm.height_padding))
-    check('普通 padding_top=15', plain.padding_top == COMPACT_PADDING_TOP, repr(plain.padding_top))
-    check('普通 height_padding=30',
+    check('普通 toast 顶部留白取紧凑值', plain.padding_top == COMPACT_PADDING_TOP, repr(plain.padding_top))
+    check('普通 toast 上下留白之和',
           plain.height_padding == COMPACT_PADDING_TOP + DEFAULT_PADDING_BOTTOM,
           repr(plain.height_padding))
 
@@ -228,7 +227,7 @@ try:
     _, plain_h = geometry_size(plain.window)
     line = llm.line_height
 
-    check('普通窗口比 LLM 窗口矮 25px（40-15）',
+    check('普通窗口比 LLM 窗口矮出两种顶部留白之差',
           llm_h - plain_h == DEFAULT_PADDING_TOP - COMPACT_PADDING_TOP,
           'llm=%r plain=%r line_height=%r' % (llm_h, plain_h, line))
 
@@ -237,7 +236,7 @@ try:
     check('普通单行窗口没有被 MIN_WINDOW_HEIGHT 兜底', plain_h > MIN_WINDOW_HEIGHT,
           'plain=%r floor=%r（若不成立，顶部留白会被兜底转移到底部）'
           % (plain_h, MIN_WINDOW_HEIGHT))
-    check('普通窗口高度 = 行高 + 30',
+    check('普通窗口高度 = 行高 + 上下留白',
           plain_h == line * 1 + plain.height_padding,
           'plain=%r line=%r' % (plain_h, line))
 
@@ -259,7 +258,7 @@ try:
 
     multi = make(ToastWindowText, False, text='第一行\n第二行\n第三行')
     _, multi_h = geometry_size(multi.window)
-    check('三行窗口 = 3*行高 + 30', multi_h == line * 3 + multi.height_padding,
+    check('三行窗口 = 3 倍行高 + 上下留白', multi_h == line * 3 + multi.height_padding,
           'multi=%r line=%r' % (multi_h, line))
 
     # ================================================================
@@ -271,14 +270,14 @@ try:
     lbl_llm = make(ToastWindowLabel, True)
     lbl_plain = make(ToastWindowLabel, False)
 
-    check('Label LLM padding_top=40', lbl_llm.padding_top == DEFAULT_PADDING_TOP,
+    check('Label LLM 顶部留白取拖动区高度', lbl_llm.padding_top == DEFAULT_PADDING_TOP,
           repr(lbl_llm.padding_top))
-    check('Label 普通 padding_top=15', lbl_plain.padding_top == COMPACT_PADDING_TOP,
+    check('Label 普通 toast 顶部留白取紧凑值', lbl_plain.padding_top == COMPACT_PADDING_TOP,
           repr(lbl_plain.padding_top))
 
     _, lbl_llm_h = geometry_size(lbl_llm.window)
     _, lbl_plain_h = geometry_size(lbl_plain.window)
-    check('Label 普通窗口同样矮 25px',
+    check('Label 普通窗口同样矮出留白之差',
           lbl_llm_h - lbl_plain_h == DEFAULT_PADDING_TOP - COMPACT_PADDING_TOP,
           'llm=%r plain=%r' % (lbl_llm_h, lbl_plain_h))
 

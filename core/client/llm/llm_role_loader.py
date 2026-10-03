@@ -58,6 +58,12 @@ class RoleLoader:
         # 空字符串和「默认」都表示默认角色
         role_name = role_config.display_name or RoleConfig.DEFAULT_ROLE_NAME
 
+        # 注册表按显示名区分，重名时后加载的覆盖先加载的，被覆盖的角色喊它没反应，必须报出来
+        existing = self.roles_registry.get(role_name)
+        if existing is not None and existing.module_name != module_name:
+            logger.warning(f"角色显示名「{role_name}」重复：{existing.module_name.rsplit('.', 1)[-1]}.py "
+                           f"被 {module_name.rsplit('.', 1)[-1]}.py 覆盖")
+
         self.roles_registry[role_name] = role_config
 
         return role_name

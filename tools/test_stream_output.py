@@ -165,15 +165,15 @@ class ProcessorTests(unittest.IsolatedAsyncioTestCase):
         self.llm.process_and_output.assert_not_called()
         self.p._update_continuous_state.assert_called_once()
         self.assertEqual(self.p._streams, {})
+        # 各句的热词替换要汇总到终端那一行（只看原词出现了，不管排版）
         printed = ' '.join(str(c.args[0]) for c in self.console.print.call_args_list)
-        self.assertIn('分 3 段', printed)
-        self.assertIn('鱿鱼->', printed)
+        self.assertIn('鱿鱼', printed)
 
     async def test_role_at_start_defers_to_release(self):
         self.make()
         await self.feed(message(delta='助理，帮我查一下'), message(delta='明天的天气'))
         self.assertEqual(self.typed, [])
-        self.note.assert_called_once()
+        self.note.assert_called()
         self.assertIn('助理', self.note.call_args.args[0])
         full = '助理，帮我查一下明天的天气。'
         await self.feed(message(delta='。', text=full, is_final=True))
@@ -186,7 +186,9 @@ class ProcessorTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.typed, [])
         await self.feed(message(delta='真，你好'))
         self.assertEqual(self.typed, [])
-        self.assertEqual(self.p._streams['t'].mode, stream_mod.DEFERRED)
+        await self.feed(message(delta='。', text='新岛真，你好。', is_final=True))
+        self.assertEqual(self.typed, [])
+        self.assertEqual(self.llm.process_and_output.call_args.args[0], '新岛真，你好。')
 
     async def test_name_prefix_that_turns_out_not_a_role(self):
         self.make()

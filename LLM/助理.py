@@ -17,7 +17,7 @@ model = backend_config['model']                     # 模型名称
 enable_vision = True                                # 接收 vision_capture_key 挂载的图片。注意本项不会校验 model 是否真支持视觉，写错了服务端会返 400
 
 # ==================== 上下文管理 ====================
-max_context_length = 1024 * 1024               # 最大上下文长度（token 数）历史累积超过它的 80% 时，从最旧的消息开始丢弃
+max_context_length = 256 * 1024                # 最大上下文长度（token 数）历史累积超过它的 80% 时，从最旧的消息开始丢弃
 
 # ==================== 功能配置 ====================
 enable_hotwords = False                 # 是否启用热词

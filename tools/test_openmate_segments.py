@@ -87,8 +87,10 @@ class SegmentTests(unittest.TestCase):
         sender.push('第二条正文')
         self.assertTrue(sender.finish())
         self.assert_segments(client, ['<state:普通>第一条正文', '第二条正文'])
-        self.assertEqual(client.calls[-1], ('PATCH', '/v1/messages/captured-message',
-                                           {'appendSegments': ['第二条正文'], 'close': True}))
+        method, path, body = client.calls[-1]
+        self.assertEqual((method, path), ('PATCH', '/v1/messages/captured-message'))
+        self.assertEqual(body['appendSegments'], ['第二条正文'])
+        self.assertIs(body.get('close'), True)
 
     def test_chunk_boundaries_do_not_change_segments(self):
         text = '<state:普通>\n\n第一条\n\n<状态:微笑>\n\n第二条'
@@ -122,8 +124,10 @@ class SegmentTests(unittest.TestCase):
             with self.subTest(tail=tail):
                 sender, client = self.send(['正文\n' + tail])
                 self.assert_segments(client, ['正文'])
-                self.assertEqual(client.calls[-1], ('PATCH', '/v1/messages/captured-message',
-                                                   {'close': True}))
+                method, path, body = client.calls[-1]
+                self.assertEqual((method, path), ('PATCH', '/v1/messages/captured-message'))
+                self.assertIs(body.get('close'), True)
+                self.assertFalse(body.get('appendSegments'))
 
     def test_inline_tags_and_unrecognized_text_are_unchanged(self):
         for text in ('<state:普通>你好，<state:微笑>世界', '公式 a<b 且 c>d',

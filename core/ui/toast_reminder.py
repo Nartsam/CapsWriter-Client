@@ -5,6 +5,7 @@ from .toast_text import ToastWindowText
 REMINDER_FONT_SIZE = 18
 REMINDER_BG = '#FFF4D6'
 REMINDER_FG = '#332B1A'
+REMINDER_BOTTOM_OFFSET = 130   # 窗口底边距主屏底边的像素数
 
 
 class ToastWindowReminder(ToastWindowText):
@@ -25,7 +26,7 @@ class ToastWindowReminder(ToastWindowText):
         screen_height = self.window.winfo_screenheight()
         height = min(height, max(60, screen_height - 120))
         super()._set_geometry(width, height, (screen_width - width) // 2,
-                              max(0, screen_height - height - 130))
+                              max(0, screen_height - height - REMINDER_BOTTOM_OFFSET))
 
     def _on_mouse_enter(self, event):
         pass

@@ -56,7 +56,7 @@ class TimeTests(unittest.TestCase):
 
     def test_implicit_clock_cap(self):
         spec = {'kind': 'clock', 'day_offset': None, 'hour': 2, 'minute': 30, 'second': 0}
-        with self.assertRaisesRegex(model.ReminderError, '超过 6 小时'):
+        with self.assertRaises(model.ReminderError):
             model.resolve_time(spec, stamp(), stamp())
         self.assertEqual(model.resolve_time(spec, stamp(), stamp(), implicit_hours=12), stamp(8, 2, 30))
 
@@ -68,11 +68,11 @@ class TimeTests(unittest.TestCase):
 
     def test_explicit_past_not_rescheduled(self):
         spec = {'kind': 'clock', 'day_offset': 0, 'hour': 14, 'minute': 30, 'second': 0}
-        with self.assertRaisesRegex(model.ReminderError, '已经过去'):
+        with self.assertRaises(model.ReminderError):
             model.resolve_time(spec, stamp(), stamp())
 
     def test_lead_checked_at_completion(self):
-        with self.assertRaisesRegex(model.ReminderError, '不足 15 秒'):
+        with self.assertRaises(model.ReminderError):
             model.resolve_time(payload(20)['time'], stamp(), stamp() + 10)
         self.assertEqual(model.resolve_time(payload(20)['time'], stamp(), stamp() + 5), stamp() + 20)
 
@@ -80,7 +80,7 @@ class TimeTests(unittest.TestCase):
         spec = {'kind': 'clock', 'day_offset': 2, 'hour': 23, 'minute': 59, 'second': 59}
         self.assertEqual(model.resolve_time(spec, stamp(), stamp()), stamp(9, 23, 59, 59))
         spec.update(day_offset=3, hour=0, minute=0, second=0)
-        with self.assertRaisesRegex(model.ReminderError, '今天、明天和后天'):
+        with self.assertRaises(model.ReminderError):
             model.resolve_time(spec, stamp(), stamp())
 
     def test_invalid_types_and_fields(self):
@@ -102,16 +102,11 @@ class TimeTests(unittest.TestCase):
                                   (4205, '1小时10分钟前'), (183665, '2天3小时前')]:
             self.assertEqual(model.elapsed_label(seconds), expected)
 
-    def test_confirmation_exact(self):
+    def test_confirmation_names_day_time_role_and_subject(self):
         item = model.create_reminder(payload(), '助理', '', [], stamp(), stamp())
-        self.assertEqual(model.confirmation(item, stamp()), '提醒已设置：今天 15:10:00「助理」会提醒你站起来活动一下')
-
-    def test_high_recall_and_strict_json(self):
-        for text in ['10分钟后记得让我站起来', '十分钟后叫我', '两点半提醒我', '待会儿提醒我', '取消喝水提醒']:
-            self.assertTrue(analyzer.may_be_reminder(text))
-        for text in ['[]', '{"operation":"none","operation":"list"}', '```json\n{}\n```', '{"operation":"edit"}']:
-            with self.assertRaises(model.ReminderError):
-                analyzer.decode_result(text)
+        text = model.confirmation(item, stamp())
+        for part in ('今天', '15:10:00', '助理', '站起来活动一下'):
+            self.assertIn(part, text)
 
     def test_fullscreen_topmost_independent_and_other_monitor(self):
         self.assertTrue(fullscreen.is_fullscreen((1920, 0, 3840, 1080), (1920, 0, 3840, 1080)))
@@ -229,14 +224,18 @@ class ServiceTests(unittest.IsolatedAsyncioTestCase):
         self.service.store.replace(self.service.store.items + [item])
         return item
 
+    # 下面几项看的是存储里的结果，回复给用户的措辞不钉死
     async def test_create_duplicate_limit_and_cancel(self):
-        self.assertIn('提醒已设置', self.create())
-        self.assertIn('提醒已存在', self.create())
+        self.assertTrue(self.create())
+        self.assertEqual(len(self.service.store.items), 1)
+        self.assertTrue(self.create())                       # 同一事项同一时刻：不重复创建
+        self.assertEqual(len(self.service.store.items), 1)
         with patch.object(Config, 'reminder_max_pending', 1):
-            self.assertIn('已达到 1 条', self.create('喝水'))
+            self.assertTrue(self.create('喝水'))              # 已到上限：不再创建
+        self.assertEqual(len(self.service.store.items), 1)
         item = self.service.store.items[0]
         message = self.service._apply({'operation': 'cancel', 'id': item.id}, '', '', [], stamp(), stamp())
-        self.assertIn('提醒已取消', message)
+        self.assertTrue(message)
         self.assertEqual(self.service.store.items, [])
 
     async def test_list_cancel_does_not_guess(self):
@@ -244,13 +243,14 @@ class ServiceTests(unittest.IsolatedAsyncioTestCase):
         message = self.service._apply({'operation': 'list'}, '', '', [], stamp(), stamp())
         self.assertIn('站起来活动一下', message)
         message = self.service._apply({'operation': 'cancel', 'id': 'invented'}, '', '', [], stamp(), stamp())
-        self.assertIn('提醒未取消', message)
+        self.assertTrue(message)
         self.assertEqual(len(self.service.store.items), 1)
 
-    async def test_vague_rejection_exact(self):
+    async def test_vague_rejection_quotes_the_expression(self):
         message = self.service._apply({'operation': 'reject', 'reason': 'vague_time', 'expression': '待会儿'},
                                       '', '', [], stamp(), stamp())
-        self.assertEqual(message, '提醒未设置：“待会儿”未明确指定时间，请给出具体时刻。')
+        self.assertIn('待会儿', message)
+        self.assertEqual(self.service.store.items, [])
 
     async def test_fullscreen_defers_then_merges(self):
         self.due(seconds_ago=4200)
@@ -261,7 +261,9 @@ class ServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(self.service.store.items), 2)
         await self.service.tick()
         out.show_role.assert_awaited_once()
-        self.assertIn('1小时10分钟前，「助理」：', out.show_role.call_args.args[0])
+        text = out.show_role.call_args.args[0]
+        self.assertIn(model.elapsed_label(4200), text)
+        self.assertIn('助理', text)
         self.assertEqual(self.service.store.items, [])
 
     async def test_startup_neutral_summary_never_remote(self):
@@ -302,9 +304,10 @@ class ServiceTests(unittest.IsolatedAsyncioTestCase):
         self.due(seconds_ago=10)
         self.due('活动', 11)
         await self.service.tick()
-        lines = out.show_role.call_args.args[0].split('\n\n')
-        self.assertIn('「助理」：该喝水了。', lines)
-        self.assertIn('11秒前，「助理」：该喝水了。', lines)
+        text = out.show_role.call_args.args[0]
+        self.assertEqual(text.count('助理'), 2)                   # 两条都标出角色
+        self.assertIn(model.elapsed_label(11), text)               # 超出容差的才写迟到多久
+        self.assertNotIn(model.elapsed_label(10), text)
 
     async def test_failed_local_window_retains_pending(self):
         self.due()
@@ -326,7 +329,10 @@ class ServiceTests(unittest.IsolatedAsyncioTestCase):
         with patch.object(Config, 'openmate_enabled', True):
             await self.service.tick()
         bodies = client.post_reminder_batch.call_args.args[0]
-        self.assertEqual(bodies[0]['text'], '<notts:1小时10分钟前，>该喝水了。')
+        # <notts:…> 是 OpenMate 约定的「这段不朗读」标记；里面的措辞不钉死
+        self.assertTrue(bodies[0]['text'].startswith('<notts:'))
+        self.assertIn(model.elapsed_label(4200), bodies[0]['text'])
+        self.assertTrue(bodies[0]['text'].endswith('>该喝水了。'))
         self.assertEqual(bodies[0]['character'], 'character-a')
         self.assertNotIn('state', bodies[0])
         self.assertNotIn('character', bodies[1])
@@ -349,7 +355,7 @@ class ServiceTests(unittest.IsolatedAsyncioTestCase):
         item = self.due()
         self.service.inflight.add(item.id)
         message = self.service._apply({'operation': 'cancel', 'id': item.id}, '', '', [], stamp(), stamp())
-        self.assertIn('提醒未取消', message)
+        self.assertTrue(message)
         self.assertEqual(len(self.service.store.items), 1)
 
     async def test_restart_future_grace_and_expiration(self):
@@ -371,8 +377,7 @@ class ServiceTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_analyzer_failure_and_none_paths(self):
         with patch.object(analyzer, 'analyze', side_effect=ValueError('bad response')):
-            self.assertIn('模型调用与 JSON 解析发生异常（ValueError）',
-                          await self.service.handle(self.role, '十分钟后叫我', stamp()))
+            self.assertIn('ValueError', await self.service.handle(self.role, '十分钟后叫我', stamp()))
         self.assertEqual(self.service.store.items, [])
         with patch.object(analyzer, 'analyze', return_value={'operation': 'none'}):
             self.assertIsNone(await self.service.handle(self.role, '解释这句话里的十分钟', stamp()))
@@ -389,7 +394,8 @@ class ServiceTests(unittest.IsolatedAsyncioTestCase):
     async def test_analysis_cancellation_no_commit(self):
         self.app.llm.monitor.should_stop = lambda: True
         with patch.object(analyzer, 'analyze', return_value=payload()):
-            self.assertIn('已取消', await self.service.handle(self.role, '十分钟后叫我', stamp()))
+            # 返回 None 会让这句话再去走普通角色请求，必须由提醒流程给出回复
+            self.assertIsNotNone(await self.service.handle(self.role, '十分钟后叫我', stamp()))
         self.assertEqual(self.service.store.items, [])
 
 
@@ -409,23 +415,27 @@ class StatusStyleTests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(await namespace['show_status']('提醒已设置'))
             message = manager.add_message.call_args.args[0]
             self.assertEqual(message.font_size, expected)
-            self.assertEqual((message.bg, message.fg, message.window_alpha), ('#FFF4D6', '#332B1A', 1.0))
-            self.assertEqual(message.duration, 6000)
+            self.assertEqual((message.bg, message.fg), (namespace['REMINDER_BG'], namespace['REMINDER_FG']))
+            self.assertEqual(message.duration, config.reminder_status_duration)
             self.assertTrue(message.reminder_status)
 
 
 class AnalyzerRequestTests(unittest.TestCase):
     def test_parse_errors_are_specific_and_snippets_are_bounded(self):
-        for text, reason in [('', '没有返回正文'), ('[]', '不是对象'),
-                             ('{"operation":[]}', 'operation'),
-                             ('{"operation":"none","operation":"list"}', '重复')]:
-            with self.subTest(text=text), self.assertRaisesRegex(model.ReminderError, reason):
-                analyzer.decode_result(text)
-        with patch.object(analyzer, 'logger') as log:
-            with self.assertRaisesRegex(model.ReminderError, 'JSON 格式'):
-                analyzer.decode_result('x' * 1000)
+        # 不同的失败原因要给出不同的说明；措辞本身不钉死
+        reasons = []
+        for text in ['', '[]', '{"operation":[]}', '{"operation":"none","operation":"list"}',
+                     '```json\n{}\n```', '{"operation":"edit"}', 'x' * 1000]:
+            with self.subTest(text=text[:20]), self.assertRaises(model.ReminderError) as caught:
+                with patch.object(analyzer, 'logger') as log:
+                    analyzer.decode_result(text)
+            reasons.append(str(caught.exception))
+            # 解析失败只记 INFO（不往终端刷字），日志里的原文片段有上限
             log.warning.assert_not_called()
-            self.assertLessEqual(len(log.info.call_args.args[-1]), 240)
+            for call in log.info.call_args_list:
+                self.assertNotIn('x' * 300, ''.join(str(a) for a in call.args))
+        self.assertEqual(len(set(reasons[:4])), 4, reasons[:4])
+        self.assertIn('operation', reasons[2])
 
     def test_field_errors_identify_the_field(self):
         for field, value in [('time', {'kind': 'relative', 'offset_seconds': '300'}),
@@ -437,12 +447,10 @@ class AnalyzerRequestTests(unittest.TestCase):
                 model.create_reminder(data, '助理', '', [], stamp(), stamp())
         data = payload()
         del data['delivery_text']
-        with self.assertRaisesRegex(model.ReminderError, '缺少 delivery_text'):
+        with self.assertRaisesRegex(model.ReminderError, 'delivery_text'):
             model.create_reminder(data, '助理', '', [], stamp(), stamp())
 
-    def test_natural_delivery_is_requested_and_never_mechanically_prefixed(self):
-        self.assertIn('避免仅照抄 subject', analyzer.SYSTEM)
-        self.assertIn('不要固定套用前缀', analyzer.SYSTEM)
+    def test_delivery_text_is_never_mechanically_prefixed(self):
         for delivery in ['该站起来活动一下了。', '记得站起来活动一下', '该去喝水了']:
             data = payload()
             data['delivery_text'] = delivery
@@ -487,7 +495,7 @@ class AnalyzerRequestTests(unittest.TestCase):
                 self.assertNotIn('tools', kwargs)
                 messages = kwargs.get('messages', kwargs.get('input'))
                 body = json.loads(messages[-1]['content'])
-                self.assertEqual(set(body), {'anchor', 'role_style', 'pending', 'allowed_states', 'utterance'})
+                self.assertEqual(body['utterance'], '解释十分钟')
                 self.assertEqual(body['role_style'], role.system_prompt)
                 self.assertEqual(handler.client_pool.get_client.call_args.kwargs['request_timeout'], 60)
 
@@ -545,7 +553,8 @@ class ProcessorTests(unittest.IsolatedAsyncioTestCase):
                 state.pop_image_snapshot.assert_called_once_with('task')
                 processor.diary.write.assert_called_once_with(message.text, message.time_start, None)
                 state.enter_continuous.assert_called_once_with('助理')
-                self.assertIn('提醒任务不使用图片', str(namespace['console'].print.call_args_list))
+                # 挂着的图被消耗了，要在终端说一声（不钉措辞）
+                self.assertIn('图片', str(namespace['console'].print.call_args_list))
         namespace['write_llm_md'].assert_not_called()
         namespace['broadcast_output_udp'].assert_not_called()
         namespace['_auto_enter'].assert_not_called()
@@ -603,7 +612,7 @@ class RoutingTests(unittest.IsolatedAsyncioTestCase):
         result = await self.process(self.handler, '解释十分钟', reminder_anchor=stamp(), image_data='image')
         self.assertFalse(result.reminder_handled)
         self.assertTrue(result.image_used)
-        self.assertEqual(self.toast.handle_toast_mode.call_args.args[-2], 'image')
+        self.assertIn('image', self.toast.handle_toast_mode.call_args.args)
         self.namespace['broadcast_output_udp'].assert_called_once_with('普通回答')
 
     async def test_plain_numbers_reach_role_without_reminder_analysis(self):

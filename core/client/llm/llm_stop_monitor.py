@@ -85,11 +85,6 @@ class StopMonitor:
             self._output_started = True
         logger.debug("本次 LLM 请求已开始产出正文，中断键从此刻起生效")
 
-    @property
-    def output_started(self) -> bool:
-        with self._state_lock:
-            return self._output_started
-
     def create_stop_callback(self) -> 'threading.Event':
         """
         为新的 LLM 任务创建独立的停止事件

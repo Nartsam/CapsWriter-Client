@@ -64,11 +64,13 @@ class TrayManager:
             logger.info("用户请求重启音频")
 
     def _clear_memory(self):
-        """清除 LLM 对话历史回调"""
+        """清除 LLM 对话历史回调（内存与 logs/llm_memory/ 下的记忆文件，不动对话归档）"""
         from ..ui import toast
         if self.app.llm:
-            self.app.llm.clear_history()
-            toast("清除成功：已清除所有角色的对话历史记录", duration=3000, bg="#075077")
+            if self.app.llm.clear_history():
+                toast("清除成功：已清除所有角色的对话历史记录", duration=3000, bg="#075077")
+            else:
+                toast("部分记忆文件删除失败，详见终端警告", duration=3000, bg="#075077")
 
     def _add_hotword(self):
         """用系统默认方式打开热词文件回调"""

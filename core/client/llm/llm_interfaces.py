@@ -38,6 +38,10 @@ class IContextManager(Protocol):
         """添加消息到历史"""
         ...
 
+    def add_turn(self, user_content: Any, assistant_content: str) -> None:
+        """写入一整轮对话（提问与回复一起落盘）"""
+        ...
+
     def get_history(self) -> List[Dict[str, str]]:
         """获取对话历史"""
         ...

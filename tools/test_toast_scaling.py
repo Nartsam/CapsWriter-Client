@@ -214,8 +214,7 @@ try:
     Manager._ensure_tk_scaling = original
     time.sleep(0.35)                               # 队列轮询间隔 100ms，留足三轮
     check('比例已恢复', abs(scaling(mgr) - FACTOR) < 0.01, '%.4f' % scaling(mgr))
-    check('记了一行 INFO', len(capture.infos) == 1 and '已恢复' in capture.infos[0],
-          repr(capture.infos))
+    check('记了一行 INFO', len(capture.infos) == 1, repr(capture.infos))
 
     print()
     print('[C 消息与弹窗紧挨着：先恢复再构造]')

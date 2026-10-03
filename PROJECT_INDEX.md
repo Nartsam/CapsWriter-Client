@@ -35,7 +35,7 @@ CapsWriter 离线语音输入的**客户端**（Windows）。上游 [HaujetZhao/
 ├── tools/                  # 开发期验证脚本，不参与运行时（tools/README.md）
 ├── docs/                   # 功能使用说明 + DEV_NOTES.md
 ├── assets/                 # icon.ico、demo.png
-└── logs/  2026/ …          # 运行时生成：日志、提醒队列、视觉归档；按 年/月 存的日记与录音（不进 git）
+└── logs/  2026/ …          # 运行时生成：日志、提醒队列、视觉归档、角色记忆；按 年/月 存的日记与录音（不进 git）
 ```
 
 ---
@@ -91,9 +91,10 @@ CapsWriter 离线语音输入的**客户端**（Windows）。上游 [HaujetZhao/
 
 | 文件 | 职责 |
 |---|---|
-| `llm_handler.py` | 协调器。`process_and_output()`：角色检测（连续对话时跳过）→ 提醒入口 → Companion 转发 → 读一次选区 → 按 `output_mode` 分发；`process()` 包装回调（中断键起效闸门的唯一武装点）；`resolve_role()` 供连续对话按名重新解析 |
+| `llm_handler.py` | 协调器。`process_and_output()`：角色检测（连续对话时跳过）→ 提醒入口 → Companion 转发 → 读一次选区 → 按 `output_mode` 分发；`process()` 包装回调（中断键起效闸门的唯一武装点）；`resolve_role()` 供连续对话按名重新解析；记忆按角色 `module_name` 区分，热重载沿用同一个 `ContextManager`，`clear_history()` 清内存并删记忆文件 |
 | `llm_role_config.py`、`llm_role_loader.py`、`llm_role_detector.py`、`llm_watcher.py` | 角色字段定义；按文件名顺序加载 `LLM/*.py`；`startswith` 前缀匹配；目录变化 3s 防抖后重载（保留历史） |
-| `llm_message_builder.py`、`llm_context.py` | 组装 system + 历史 + 当前时间/热词/选区/用户输入（带图时为 Chat 口味多模态 content）；每角色一份内存历史，超 `max_context_length` 80% 从旧裁剪，旧图降级为 `［图片］` |
+| `llm_message_builder.py`、`llm_context.py` | 组装 system + 历史 + 当前时间/热词/选区/用户输入（带图时为 Chat 口味多模态 content）；每角色一份历史，超 `max_context_length` 80% 从旧裁剪，旧图降级为 `［图片］`；每轮整体落盘（`add_turn`），启动时 `restore()` 读回 |
+| `llm_memory.py` | 记忆文件：`logs/llm_memory/<角色 .py 文件名>.json`，先写临时文件再替换；读不了的改名为 `.bad-时间.json` 保留；图片落盘为占位符（由 `ContextManager` 转换） |
 | `llm_processor.py`、`llm_client_pool.py` | 三条流式路径：Ollama 原生、Chat Completions、Responses（`enable_web_search` 时，挂内置 `web_search`）；工具事件 → `used_tools`；空回复/截断/拒答诊断；每次请求 INFO 一行「请求构成」 |
 | `llm_output_typing.py`、`llm_output_toast.py`、`llm_output_openmate.py` | 三种输出：打字/粘贴；本地 Toast；OpenMate 看板（探测 `/health`、情绪指令注入、流式或分段队列、typing 指示、失败回退本地 Toast） |
 | `llm_state_tags.py` | `<state:…>` 情绪标签的识别与剥离；流式用 `StateTagFilter` |
@@ -196,6 +197,7 @@ CapsWriter 离线语音输入的**客户端**（Windows）。上游 [HaujetZhao/
 | 流式上屏 | 开关：`shortcuts` 的 `streaming`；是否流式 `shortcut/task.py` 的 `_want_streaming`；逐句上屏与角色回退 `result_processor` 的 `_on_stream_delta` / `_decide_stream_mode` / `_finish_stream`、`output/stream_output.py`；指示器文案 `recording_indicator` 的 `streaming` / `stream_note`；同步 [docs/流式上屏如何使用.md](docs/流式上屏如何使用.md)；验证 `tools/test_stream_output.py`。切句参数在服务端 |
 | 热词匹配 | `hotword/hot_phoneme.py`、`hot_rule.py` |
 | 新增或修改角色 | `LLM/` 下新建/编辑 .py（热重载）；字段见 `llm_role_config.py` |
+| 角色记忆（重启后恢复） | `llm_context.py`（`add_turn`/`restore`/落盘）、`llm_memory.py`（文件格式）、`llm_handler`（`_init_context_managers`、`clear_history`）、`llm_processor._record_turn`（空回复不写）；角色表提示 `llm_role_formatter`；同步 [docs/角色功能如何使用.md](docs/角色功能如何使用.md)；验证 `tools/test_llm_memory.py` |
 | 角色后端 / CPA 模型 | 角色文件的 `backend`；`LLM/backends.py` 的 `CPA_MODEL`、`CPA_URL`、`PROFILES`（新后端的密钥加进 `secrets.py`，由用户自己改） |
 | LLM 请求与流式解析 | `llm_handler.py`、`llm_processor.py`；联网搜索见「跨模块约定」第 13 条 |
 | 新增输出模式 | 照「跨模块约定」第 8 条的清单 |

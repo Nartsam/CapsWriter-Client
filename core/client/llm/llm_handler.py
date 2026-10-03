@@ -13,6 +13,7 @@ from pathlib import Path
 
 from .llm_role_loader import RoleLoader
 from .llm_context import ContextManager
+from .llm_memory import MemoryStore
 from .llm_watcher import LLMFileWatcher
 from .llm_role_config import RoleConfig
 from .llm_client_pool import ClientPool
@@ -59,8 +60,12 @@ class LLMHandler:
         self.roles = self.role_loader.get_roles()
         logger.info(f"已加载角色: {list(self.roles.keys())}")
 
-        # 上下文管理器池
+        # 上下文管理器池，按角色的 module_name（即 .py 文件名）区分，与记忆文件同名。
+        # 不用显示名：改称呼或调整别名顺序都会让显示名变化，记忆就断了
+        self.memory_store = MemoryStore(Path(app.base_dir) / 'logs' / 'llm_memory')
         self.context_managers: Dict[str, ContextManager] = {}
+        # 本次加载从磁盘恢复记忆的结果，供角色表显示：module_name -> (文字, 样式)
+        self.memory_notes: Dict[str, Tuple[str, str]] = {}
         self._init_context_managers()
 
         # 客户端池
@@ -80,6 +85,7 @@ class LLMHandler:
         self.watcher = LLMFileWatcher(
             on_roles_reload=lambda: self.reload_roles(),
             get_roles=lambda: self.roles,
+            get_memory_note=lambda role_config: self.memory_notes.get(role_config.module_name),
         )
         # 中断按键监控
         self.monitor = StopMonitor()
@@ -96,49 +102,70 @@ class LLMHandler:
         self.monitor.stop()
         logger.debug("LLM 系统子服务已停止")
 
-    def _init_context_managers(self):
-        """为启用了历史的角色创建上下文管理器"""
+    def _init_context_managers(self, previous: Optional[Dict[str, ContextManager]] = None):
+        """为启用了历史的角色建立上下文管理器
+
+        热重载时（previous 非空）沿用同一个管理器对象，只更新容量与显示名：重载前已发出
+        的请求手里拿着旧对象，换成新对象的话，它返回后写入的那一轮就丢了。之前没有管理器
+        的角色（启动时、新加的、刚开启历史的）从磁盘恢复，结果记进 memory_notes。
+        关掉了历史或已删除的角色，记忆文件留在磁盘上不动，重新开启或改回时再读回。
+        """
+        previous = previous or {}
+        managers: Dict[str, ContextManager] = {}
+        notes: Dict[str, Tuple[str, str]] = {}
         for role_name, role_config in self.roles.items():
-            if role_config.enable_history:
-                self.context_managers[role_name] = ContextManager(
+            if not role_config.enable_history:
+                continue
+            key = role_config.module_name
+            ctx = previous.get(key)
+            if ctx is not None:
+                ctx.max_length = role_config.max_context_length
+                ctx.display_name = role_name
+            else:
+                ctx = ContextManager(
                     max_length=role_config.max_context_length,
+                    store=self.memory_store,
+                    key=key.rsplit('.', 1)[-1],
+                    display_name=role_name,
                 )
+                rounds, failure = ctx.restore()
+                if failure:
+                    notes[key] = (f'恢复失败：{failure}', 'red')
+                elif rounds:
+                    notes[key] = (f'已恢复{rounds}轮对话', 'green')
+            managers[key] = ctx
+        # 整体替换，重载过程中并发的请求要么拿到旧表、要么拿到新表，不会落空
+        self.context_managers = managers
+        self.memory_notes = notes
 
     def reload_roles(self):
-        """重新加载所有角色（保留历史记录）"""
+        """重新加载所有角色（记忆按角色文件名沿用）"""
         logger.info("重新加载角色配置")
-        # 保存旧的历史记录
-        old_contexts = {}
-        for role_name, ctx in self.context_managers.items():
-            old_contexts[role_name] = {
-                'history': ctx.history.copy(),
-                'last_interaction': ctx.last_interaction
-            }
-
-        # 清空并重新加载
-        self.context_managers.clear()
         self.client_pool.clear()
         self.role_loader.load_all_roles()
         self.roles = self.role_loader.get_roles()
         logger.info(f"重新加载后角色: {list(self.roles.keys())}")
-        self._init_context_managers()
+        self._init_context_managers(previous=self.context_managers)
 
-        # 恢复历史记录
-        for role_name, ctx in self.context_managers.items():
-            if role_name in old_contexts:
-                ctx.history = old_contexts[role_name]['history']
-                ctx.last_interaction = old_contexts[role_name]['last_interaction']
-                logger.debug(f"恢复角色 '{role_name}' 的历史记录: {len(ctx.history)} 条")
+    def clear_history(self) -> bool:
+        """清除所有角色的记忆：内存里的历史，以及 logs/llm_memory/ 下的全部文件
+        （含暂时没有角色在用的、改名保留的损坏文件）。对话归档 年/月/日-角色.md 不动
 
-    def clear_history(self):
-        """清除所有角色的对话历史记录"""
+        Returns:
+            记忆文件是否全部删除成功
+        """
         logger.info("正在清除所有角色的对话历史记录...")
-        count = 0
-        for role_name, manager in self.context_managers.items():
+        for manager in self.context_managers.values():
             manager.clear()
-            count += 1
         clear_selection_usage()
-        logger.info(f"已清除 {count} 个角色的对话历史记录")
+        try:
+            failed = self.memory_store.clear()
+        except OSError as e:
+            failed = [str(e)]
+        if failed:
+            logger.warning(f"部分记忆文件删除失败：{'、'.join(failed)}")
+        logger.info(f"已清除 {len(self.context_managers)} 个角色的对话历史记录")
+        return not failed
 
     def detect_role(self, text: str) -> Tuple[Optional[RoleConfig], str]:
         """检测文本是否匹配某个角色前缀
@@ -221,7 +248,8 @@ class LLMHandler:
         logger.debug(f"开始 LLM 核心处理 [角色: {role_name}] [内容长度: {len(content)}]")
 
         # 获取上下文管理器（如果启用历史）
-        context_manager = self.context_managers.get(role_name) if role_config.enable_history else None
+        context_manager = (self.context_managers.get(role_config.module_name)
+                           if role_config.enable_history else None)
         if context_manager:
             logger.debug(f"角色 '{role_name}' 启用历史，当前历史条数: {len(context_manager.history)}")
         

@@ -32,16 +32,19 @@ class LLMFileWatcher(FileSystemEventHandler):
         self,
         on_roles_reload: Callable[[], None],
         get_roles: Callable[[], Dict[str, Any]],
+        get_memory_note: Optional[Callable[[Any], Optional[tuple]]] = None,
     ):
         """初始化文件监控器
 
         Args:
             on_roles_reload: 角色配置重载回调
             get_roles: 获取当前角色列表的回调
+            get_memory_note: 取某个角色本次加载恢复记忆的结果 (文字, 样式)，没有时返回 None
         """
         # 回调函数
         self._on_roles_reload = on_roles_reload
         self._get_roles = get_roles
+        self._get_memory_note = get_memory_note or (lambda role_config: None)
         
         self.observer = Observer()
         from config_client import BASE_DIR
@@ -240,4 +243,5 @@ class LLMFileWatcher(FileSystemEventHandler):
 
     def _print_role_info(self, role_name: str, role_config):
         """打印单个角色信息（使用 Rich 带颜色格式）"""
-        RoleFormatter.print_status(role_name, role_config)
+        RoleFormatter.print_status(role_name, role_config,
+                                   memory_note=self._get_memory_note(role_config))

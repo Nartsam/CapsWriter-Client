@@ -303,23 +303,41 @@ class LLMProcessor:
             total_tokens = estimate_tokens(full_response)
             result = (full_response, total_tokens, generation_time)
 
-        # 更新历史
-        if role_config.enable_history and context_manager:
-            user_content = messages[-1]['content']
-            if isinstance(user_content, list):
-                # 新一轮带图：先把历史里更早的图降成占位符，历史中因此最多只有一张真图
-                demoted = context_manager.demote_images(IMAGE_PLACEHOLDER)
-                if demoted:
-                    logger.debug(f"历史中 {demoted} 张旧图已降级为占位符")
-            context_manager.add_message('user', user_content)
-            # 存**原文**，标签一并进历史。此前这里剥离过，结果是历史里的 assistant
-            # 消息永远不带标签，模型从第二轮起照抄自己上一条的形态、不再输出标签
-            # （few-shot 漂移压过 system 指令，2026-09-04 探针实测复现）。标签是展示
-            # 层指令，剥离改由各输出路径在展示前做（见 llm_state_tags）。
-            context_manager.add_message('assistant', full_response)
-            logger.debug(f"已更新历史记录")
+        self._record_turn(role_config, context_manager, messages, full_response)
 
         return result
+
+    def _record_turn(
+        self,
+        role_config: RoleConfig,
+        context_manager: Optional[IContextManager],
+        messages: List[Dict[str, Any]],
+        full_response: str
+    ) -> None:
+        """把本轮写进记忆（仅开启了历史的角色）
+
+        回复为空（输出额度被推理耗尽、拒答、出字前就按了中断键）时整轮不写：用户没看到
+        回答，记下来只会让之后每次请求都带着一条空消息，记忆落盘后更是一直带着；只写提问
+        又会留下两条相连的 user 消息，模型容易把两个问题混在一起答。已输出部分文字后被
+        打断的照常写入，那些文字用户看到了。
+        """
+        if not (role_config.enable_history and context_manager):
+            return
+        if not (full_response or '').strip():
+            logger.info("回复为空，本轮不写入记忆")
+            return
+        user_content = messages[-1]['content']
+        if isinstance(user_content, list):
+            # 新一轮带图：先把历史里更早的图降成占位符，历史中因此最多只有一张真图
+            demoted = context_manager.demote_images(IMAGE_PLACEHOLDER)
+            if demoted:
+                logger.debug(f"历史中 {demoted} 张旧图已降级为占位符")
+        # 存**原文**，标签一并进历史。此前这里剥离过，结果是历史里的 assistant
+        # 消息永远不带标签，模型从第二轮起照抄自己上一条的形态、不再输出标签
+        # （few-shot 漂移压过 system 指令，2026-09-04 探针实测复现）。标签是展示
+        # 层指令，剥离改由各输出路径在展示前做（见 llm_state_tags）。
+        context_manager.add_turn(user_content, full_response)
+        logger.debug(f"已更新历史记录")
 
     def _process_ollama_stream(
         self,

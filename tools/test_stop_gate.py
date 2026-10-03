@@ -95,17 +95,18 @@ m.on_stop_pressed()
 check(not m.should_stop(), 'end_request 后按键不再生效')
 m.begin_request()
 check(not m.should_stop(), '下一次请求不继承上一次的停止标志')
-check(not m.output_started, '下一次请求需要重新武装')
+m.on_stop_pressed()
+check(not m.should_stop(), '下一次请求需要重新武装')
 
 # ---------------------------------------------------------------- 4
-section('mark_output_started 的边界')
+section('重复武装')
+# 「请求作用域之外武装无效」没有可观察的效果（begin_request 本来就会清零），不单独测
 m = StopMonitor()
-m.mark_output_started()
-check(not m.output_started, '请求作用域之外武装无效')
 m.begin_request()
 m.mark_output_started()
 m.mark_output_started()
-check(m.output_started, '重复武装幂等')
+m.on_stop_pressed()
+check(m.should_stop(), '重复武装幂等')
 
 # ---------------------------------------------------------------- 5
 section('跨线程可见性（should_stop 实际在执行器线程上被调用）')

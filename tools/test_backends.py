@@ -2,12 +2,12 @@
 """
 后端切换单测（桩掉 secrets，不联网）
 
-覆盖 2026-09-05 新增的 LLM/backends.py：
+覆盖 LLM/backends.py 的接线，不检查各角色当前的参数取值（温度、开关、模型名都是
+日常会改的配置，钉住它们只会让测试在正常使用中失败）：
 
-1. resolve() 两套 profile 的取值、未知名字的回退、返回副本
-2. **加载顺序不变式**：backends.py 必须排在所有角色文件之前，否则热切换会静默失效
-3. **回归保险**：backend='deepseek' 时四个角色解析出的 RoleConfig 与改造前逐字相同
-   （唯一已知偏差是翻译的 request_timeout，由 0 变 60）
+1. resolve() 两套 profile 的接线、协议约束、未知名字的回退、返回副本
+2. **加载顺序不变式**：backends.py 必须排在所有引用它的角色文件之前，否则热切换会静默失效
+3. 写了 backend 的角色文件，五个后端字段都取自同一套 profile
 4. backend / backend_config 两个中间变量不会被 RoleLoader 当成配置项吃进去
 """
 from __future__ import annotations
@@ -52,10 +52,17 @@ def load_by_path(mod, relpath):
     return m
 
 
-# llm_role_config.py 只依赖 dataclasses/typing，可以直接按路径加载，不必桩 core
-RoleConfig = load_by_path(
-    '_rc_for_backends',
-    os.path.join('core', 'client', 'llm', 'llm_role_config.py')).RoleConfig
+# 角色加载器要用包内相对导入（logger、llm_role_config），桩出 core 包后按路径加载真代码
+for _name in ('core', 'core.client', 'core.client.llm'):
+    _pkg = types.ModuleType(_name)
+    _pkg.__path__ = []
+    sys.modules[_name] = _pkg
+sys.modules['core.client.llm'].logger = types.SimpleNamespace(
+    debug=lambda *a, **k: None, info=lambda *a, **k: None, warning=lambda *a, **k: None)
+RoleConfig = load_by_path('core.client.llm.llm_role_config',
+                          os.path.join('core', 'client', 'llm', 'llm_role_config.py')).RoleConfig
+RoleLoader = load_by_path('core.client.llm.llm_role_loader',
+                          os.path.join('core', 'client', 'llm', 'llm_role_loader.py')).RoleLoader
 
 PASS = FAIL = 0
 
@@ -75,63 +82,49 @@ def section(t):
 
 
 def build_role_config(module):
-    """复刻 RoleLoader.register_role：只读 RoleConfig 声明过的字段"""
-    config = {'module_name': module.__name__}
-    for f in fields(RoleConfig):
-        if f.name == 'module_name':
-            continue
-        if hasattr(module, f.name):
-            config[f.name] = getattr(module, f.name)
-    return RoleConfig(**config)
+    """用真实的 RoleLoader.register_role 把角色模块转成 RoleConfig"""
+    loader = RoleLoader.__new__(RoleLoader)
+    loader.roles_registry = {}
+    name = loader.register_role(module.__name__, module)
+    return loader.roles_registry[name]
 
 
-ROLES = ['助理', '雾切响子', '新岛真', '翻译']
-
-# 改造前的取值，逐字抄自改造前的四个角色文件
-BASELINE = {
-    '助理': dict(temperature=0.3, max_tokens=4096, enable_vision=True,
-                 enable_web_search=True, enable_datetime=True, enable_history=True,
-                 enable_read_selection=True, output_mode='toast'),
-    '雾切响子': dict(temperature=0.7, max_tokens=4096, enable_vision=True,
-                     enable_web_search=True, enable_datetime=True, enable_history=True,
-                     enable_read_selection=True, output_mode='toast'),
-    '新岛真': dict(temperature=0.7, max_tokens=4096, enable_vision=True,
-                   enable_web_search=True, enable_datetime=True, enable_history=True,
-                   enable_read_selection=True, output_mode='toast'),
-    '翻译': dict(temperature=0.2, max_tokens=4096, enable_vision=True,
-                 enable_web_search=False, enable_datetime=False, enable_history=False,
-                 enable_read_selection=True, output_mode='toast'),
-}
+# 引用了 backends 的角色文件：按文件内容判断，新增或删除角色都不用改这里
+LLM_DIR = os.path.join(REPO, 'LLM')
+NOT_ROLES = {'__init__.py', 'backends.py', 'secrets.py'}
+ALL_FILES = sorted(os.path.basename(p) for p in glob.glob(os.path.join(LLM_DIR, '*.py')))
+BACKEND_ROLES = [
+    n for n in ALL_FILES
+    if n not in NOT_ROLES
+    and 'LLM.backends' in open(os.path.join(LLM_DIR, n), encoding='utf-8').read()
+]
+USED_KEYS = {'provider', 'api_url', 'api_key', 'model', 'request_timeout'}
 
 # ---------------------------------------------------------------- 1
 section('resolve() 的两套 profile')
 
 ds = backends.resolve('deepseek')
-check(ds['provider'] == 'deepseek', 'deepseek provider: %r' % ds['provider'])
-check(ds['api_url'] == 'https://api.deepseek.com',
-      'deepseek api_url 必须不带 /v1（Responses API 官方示例），实为 %r' % ds['api_url'])
+check(not ds['api_url'].rstrip('/').endswith('/v1'),
+      'deepseek api_url 必须不带 /v1（Responses API 拼在根路径后面），实为 %r' % ds['api_url'])
 check(ds['api_key'] == DEEPSEEK_SENTINEL, 'deepseek api_key 没有原样传下去')
-# 与 cpa 侧对称，跟着变量走而不是钉死名字：DeepSeek 会把旧模型名路由到新模型，
-# 名字早已不代表能力，钉住它既证明不了「还能看图」，又会在 backends.py 鼓励的日常
-# 换模型操作里必然失败。模型是否真支持视觉只有 probe_llm_live.py 能验。
-# 这里保留的是接线性质：PROFILES 必须把 DEEPSEEK_MODEL 传出来，不许另写死一个
-# （角色循环里的 cfg.model == want['model'] 是 resolve 跟 resolve 比，守不到）
+# 跟着变量走而不是钉死名字：模型名是 backends.py 鼓励日常改动的配置。这里保留的是
+# 接线性质：PROFILES 必须把 DEEPSEEK_MODEL 传出来，不许另写死一个
 check(ds['model'] == backends.DEEPSEEK_MODEL, 'deepseek model 没有跟随 DEEPSEEK_MODEL')
-check(ds['request_timeout'] == 60, 'deepseek request_timeout: %r' % ds['request_timeout'])
 
 cpa = backends.resolve('cpa')
-check(cpa['provider'] == 'cpa',
-      'cpa provider 应为 cpa（网关也代理 kimi/glm/grok，不写 gemini），实为 %r' % cpa['provider'])
-check(cpa['api_url'] == backends.CPA_URL, 'cpa api_url: %r' % cpa['api_url'])
-check(cpa['api_url'].endswith('/v1'),
+check(cpa['api_url'] == backends.CPA_URL, 'cpa api_url 没有跟随 CPA_URL：%r' % cpa['api_url'])
+check(cpa['api_url'].rstrip('/').endswith('/v1'),
       'cpa base_url 必须带 /v1：chat/completions 与 responses 两条路径都拼在它后面')
 check(cpa['api_key'] == CPA_SENTINEL, 'cpa api_key 没有原样传下去')
 check(cpa['model'] == backends.CPA_MODEL, 'cpa model 没有跟随 CPA_MODEL')
-check(cpa['request_timeout'] == 60,
-      'cpa request_timeout 必须大于 0：provider 兜底的 2s 对 3~7s 的实测延迟发发超时')
 
-check(set(ds) == set(cpa) == {'provider', 'api_url', 'api_key', 'model', 'request_timeout'},
-      '两套 profile 的键必须一致，否则角色文件里的取用会 KeyError')
+for name, profile in (('deepseek', ds), ('cpa', cpa)):
+    # 0 表示用 provider 兜底的 2 秒，对联网检索与网关的实测延迟必然超时
+    check(profile['request_timeout'] > 0, '%s request_timeout 必须大于 0' % name)
+    check(profile['provider'] != 'ollama', '%s 是 OpenAI 兼容接口，不能走 Ollama 分支' % name)
+
+check(set(ds) == set(cpa), '两套 profile 的键必须一致，否则角色文件里的取用会 KeyError')
+check(USED_KEYS <= set(ds), '角色文件取用的键缺了：%r' % (USED_KEYS - set(ds)))
 
 # ---------------------------------------------------------------- 2
 section('未知 backend 回退而不是抛异常')
@@ -152,53 +145,30 @@ check(backends.resolve('cpa')['model'] == backends.CPA_MODEL, '下一次 resolve
 # ---------------------------------------------------------------- 4
 section('加载顺序不变式（热切换的前提）')
 
-names = sorted(os.path.basename(p) for p in glob.glob(os.path.join(REPO, 'LLM', '*.py')))
-names = [n for n in names if n != '__init__.py']
-check(names[0] == 'backends.py',
-      'backends.py 必须是 sorted(glob) 里的第一个，否则角色会 import 到上一轮的旧值；实为 %r' % names[:2])
-
-role_files = [n for n in names if os.path.splitext(n)[0] in ROLES]
-check(len(role_files) == 4, '角色文件应有 4 个，实为 %r' % role_files)
-check(all(names.index('backends.py') < names.index(n) for n in role_files),
-      'backends.py 排在了某个角色文件之后')
+check(bool(BACKEND_ROLES), '没有找到引用 backends 的角色文件，下面的检查都落空了')
+late = [n for n in BACKEND_ROLES if ALL_FILES.index(n) < ALL_FILES.index('backends.py')]
+check(not late, 'backends.py 必须排在引用它的角色文件之前，否则角色会 import 到上一轮的旧值：%r' % late)
 
 # ---------------------------------------------------------------- 5
-section('四个角色的接线与回归基线')
+section('角色文件的接线')
 
-for role in ROLES:
+for file_name in BACKEND_ROLES:
+    role = os.path.splitext(file_name)[0]
     mod = importlib.import_module('LLM.%s' % role)
+    if not hasattr(mod, 'backend'):
+        continue
     cfg = build_role_config(mod)
     want = backends.resolve(mod.backend)
-
-    # 接线不变式：无论 backend 选的是哪一套，五个字段都必须来自同一套 profile
-    check(cfg.provider == want['provider'], '%s provider 未跟随 backend' % role)
-    check(cfg.api_url == want['api_url'], '%s api_url 未跟随 backend' % role)
-    check(cfg.api_key == want['api_key'], '%s api_key 未跟随 backend' % role)
-    check(cfg.model == want['model'], '%s model 未跟随 backend' % role)
-    check(cfg.request_timeout == want['request_timeout'], '%s request_timeout 未跟随 backend' % role)
-
-    # 回归基线：其余字段一个都不许动
-    for k, v in BASELINE[role].items():
-        check(getattr(cfg, k) == v, '%s.%s 被改动了：%r != %r' % (role, k, getattr(cfg, k), v))
-
-    # 具名角色是连续对话与角色前缀检测的前提
-    check(bool(cfg.display_name) and cfg.display_name != RoleConfig.DEFAULT_ROLE_NAME,
-          '%s 的 display_name 异常：%r' % (role, cfg.display_name))
-    # 只验接线（enabled 是布尔值），不钉取值：开关某个角色是日常操作（翻译角色就常被
-    # 关掉），钉住它只会让这个测试在正常使用中失败，久而久之整个文件的失败都被无视
-    check(isinstance(cfg.enabled, bool), '%s.enabled 不是布尔值：%r' % (role, cfg.enabled))
+    # 无论 backend 选的是哪一套，五个字段都必须来自同一套 profile
+    for key in sorted(USED_KEYS):
+        check(getattr(cfg, key) == want[key], '%s.%s 未跟随 backend' % (role, key))
 
 # ---------------------------------------------------------------- 6
 section('中间变量不会被当成配置项')
 
 field_names = {f.name for f in fields(RoleConfig)}
-check('backend' not in field_names, 'backend 撞上了 RoleConfig 字段名，会被 RoleLoader 吃进配置')
-check('backend_config' not in field_names, 'backend_config 撞上了 RoleConfig 字段名')
-check('resolve' not in field_names, 'resolve 撞上了 RoleConfig 字段名')
-
-mod = importlib.import_module('LLM.助理')
-check(hasattr(mod, 'backend') and hasattr(mod, 'backend_config'),
-      '角色文件里应保留这两个中间变量，供人阅读')
+for name in ('backend', 'backend_config', 'resolve'):
+    check(name not in field_names, '%s 撞上了 RoleConfig 字段名，会被 RoleLoader 吃进配置' % name)
 
 print()
 print('=' * 60)

@@ -74,71 +74,45 @@ check(strip_state_tags('3 < 5 且 5 > 3') == '3 < 5 且 5 > 3', '普通尖括号
 check(strip_state_tags('<states:x>') == '<states:x>', '相近但不匹配的名字不动')
 
 # ---------------------------------------------------------------- 2
-section('单切点穷举：标签被切在任意位置都要被吃掉')
-TEXT = '<state:微笑>今天天气很好。'
-EXPECT = '今天天气很好。'
-bad = [i for i in range(len(TEXT) + 1) if run(TEXT, [i]) != EXPECT]
-check(not bad, '单切点失败于下标 %s' % bad)
-
-TEXT2 = '前言<状态:失落>正文。'
-EXPECT2 = '前言正文。'
-bad = [i for i in range(len(TEXT2) + 1) if run(TEXT2, [i]) != EXPECT2]
-check(not bad, '中文标签单切点失败于下标 %s' % bad)
+section('切点穷举：标签被切在任意一处或两处都要被吃掉')
+# 两处切点的组合里含切点 0，已经覆盖了只切一处的全部情形
+for text, expect in (('<state:微笑>今天天气很好。', '今天天气很好。'),
+                     ('前言<状态:失落>正文。', '前言正文。')):
+    bad = [(i, j) for i, j in itertools.combinations(range(len(text) + 1), 2)
+           if run(text, [i, j]) != expect]
+    check(not bad, '%r 切点失败 %d 处，例如 %s' % (text, len(bad), bad[:3]))
 
 # ---------------------------------------------------------------- 3
-section('双切点穷举')
-bad = [(i, j) for i, j in itertools.combinations(range(len(TEXT) + 1), 2)
-       if run(TEXT, [i, j]) != EXPECT]
-check(not bad, '双切点失败 %d 处，例如 %s' % (len(bad), bad[:3]))
+section('逐字符喂入时与整段 strip 结果一致')
+for t in ('<state:微笑>你好，<state:得意>世界。', '<状态:惊讶>啊！<state:普通>好的。',
+          'a<state:x>b<state:y>c', '普通文本没有任何标签', '公式 a<b 与 c>d 混在一起'):
+    check(run(t, range(len(t))) == strip_state_tags(t), '一致性: %r' % t)
 
 # ---------------------------------------------------------------- 4
-section('逐字符喂入（最坏情况）')
-for t, e in ((TEXT, EXPECT), (TEXT2, EXPECT2),
-             ('a<state:x>b<state:y>c', 'abc'),
-             ('无标签的普通回复', '无标签的普通回复')):
-    check(run(t, range(len(t))) == e, '逐字符: %r' % t)
-
-# ---------------------------------------------------------------- 5
 section('不该被吞掉的文本')
 for t in ('3 < 5', 'a<b', '<', '<<<', '<state', '<state:', 'x<y<z',
           '数学：a<b 且 b>c', '<states:x>', '<state:a<b>'):
     got = run(t, range(len(t)))
     check(got == t, '原样通过失败: %r -> %r' % (t, got))
 
-# ---------------------------------------------------------------- 6
+# ---------------------------------------------------------------- 5
 section('缓冲上界：孤立的 < 之后不能无限攒着不放行')
-f = StateTagFilter()
-out = f.feed('<state:' + 'x' * 200)
-check(len(out) > 100, '超长伪标签必须放行，实际放行 %d 字' % len(out))
-check(len(f._pending) <= mod._MAX_PENDING, '暂存长度 %d 超上界' % len(f._pending))
+for text, label in (('<state:' + 'x' * 200, '超长伪标签'), ('<' + 'a' * 300, '孤立的 <')):
+    f = StateTagFilter()
+    out = ''.join(f.feed(c) for c in text)
+    check(len(text) - len(out) <= mod._MAX_PENDING,
+          '%s：扣着没放行的 %d 字超过上界' % (label, len(text) - len(out)))
+    check(out + f.finish() == text, '%s：正文不能丢' % label)
 
-f = StateTagFilter()
-out = ''.join(f.feed(c) for c in '<' + 'a' * 300)
-check(len(out) + len(f._pending) == 301, '孤立 < 后的正文既不丢也不无限缓冲')
-
-# ---------------------------------------------------------------- 7
+# ---------------------------------------------------------------- 6
 section('finish 不吞字')
-f = StateTagFilter()
-first = f.feed('结尾有个尖括号<')
-check(first + f.finish() == '结尾有个尖括号<', '未闭合尾巴要交出来')
-
-f = StateTagFilter()
-first = f.feed('半截标签<state:微')
-check(first + f.finish() == '半截标签<state:微', '半截标签在 finish 时原样交出')
+for text in ('结尾有个尖括号<', '半截标签<state:微'):
+    f = StateTagFilter()
+    first = f.feed(text)
+    check(first + f.finish() == text, '未闭合的尾巴要在 finish 时原样交出: %r' % text)
 
 f = StateTagFilter()
 check(f.finish() == '' and f.finish() == '', 'finish 幂等且不产生残留')
-
-# ---------------------------------------------------------------- 8
-section('跨分片与流式一致性：过滤器结果 == 整段 strip')
-CASES = [
-    '<state:微笑>你好，<state:得意>世界。',
-    '普通文本没有任何标签',
-    '<状态:惊讶>啊！<state:普通>好的。',
-    '公式 a<b 与 c>d 混在一起',
-]
-for t in CASES:
-    check(run(t, range(len(t))) == strip_state_tags(t), '一致性: %r' % t)
 
 print()
 print('=' * 60)
