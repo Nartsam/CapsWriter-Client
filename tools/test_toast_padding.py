@@ -5,6 +5,7 @@ Toast 顶部留白分岔的真 Tk 冒烟测试
 验证 2026-09-05 的改动：顶部空白拖动区只给 LLM 角色白色对话框
 （`smart_duration=True`），托盘/错误这类普通 toast 顶部与底部对齐。
 留白的具体像素是可调常量，这里只验它们确实落到了画布坐标和窗口高度上。
+另含提醒窗口的位置与宽度、流式文本窗口的占位替换与续写（第 8 节）。
 
 **本脚本会真的构造 Tk 窗口**（无边框、置顶，屏幕上会闪一下），因此不进
 `run_tests.py` 的流水线——那条流水线要能在没有桌面会话的环境里跑。改完
@@ -49,8 +50,8 @@ class _StubLogger:
 def install_stubs():
     """本目录是打包后的 Release，系统 Python 没有 markdown / tkhtmlview。
 
-    toast_base 在模块顶层 import 它们，但本测试全程 markdown=False、走不到
-    渲染分支，桩掉即可。core / core.ui 也要预注入：`import core` 会在包
+    toast_base 在模块顶层 import 它们，常规检查不走渲染分支；末节用 Tk Text 替身
+    单独验证控件替换时的焦点，不验证 Markdown 排版。core / core.ui 也要预注入：`import core` 会在包
     __init__ 里连锁导入 rich 而失败。给 core.ui 的桩挂上真实 __path__，
     让 toast_base 里的 `from .toast_constants import ...` 仍然加载真代码。
     """
@@ -125,7 +126,7 @@ def make(cls, smart, text='测试文本', **kw):
         duration=kw.pop('duration', 60000),        # 不会触发：本测试从不进 mainloop
         initial_height=kw.pop('initial_height', 0),
         streaming=kw.pop('streaming', False),
-        markdown=False,
+        markdown=kw.pop('markdown', False),
         smart_duration=smart,
         **kw
     )
@@ -298,6 +299,120 @@ try:
           all((w.padding_top == DEFAULT_PADDING_TOP) == w.pause_and_resume
               for w in windows),
           '两者出现了分歧，close_llm_windows 的语义会和留白对不上')
+
+    # ================================================================
+    # 8. 流式文本：状态占位被正文整段取代，正文续写只追加
+    # ================================================================
+    print()
+    print('[流式文本的占位与续写]')
+
+    def shown(w):
+        return w.text_area.get('1.0', 'end-1c')
+
+    s = make(ToastWindowText, True, text='正在思考…', streaming=True)
+    check('占位随窗口一起显示', shown(s) == '正在思考…', repr(shown(s)))
+    s.update_text('正在联网搜索…')
+    check('状态换成另一条状态', shown(s) == '正在联网搜索…', repr(shown(s)))
+    s.update_text('红')
+    check('比占位短的正文也整段取代占位', shown(s) == '红' and s.full_text == '红', repr(shown(s)))
+    s.update_text('红色。')
+    check('正文续写', shown(s) == '红色。', repr(shown(s)))
+    s.update_text('红色。')
+    check('同样的文本不重复插入', shown(s) == '红色。', repr(shown(s)))
+    s.update_text('')
+    check('清空占位（空回复收尾前）', shown(s) == '' and s.full_text == '', repr(shown(s)))
+    h0 = geometry_size(s.window)[1]
+    s.update_text('第一行\n' * 6)
+    check('多行正文撑高窗口', geometry_size(s.window)[1] > h0,
+          'before=%r after=%r' % (h0, geometry_size(s.window)[1]))
+
+    blank = make(ToastWindowText, True, text='', streaming=True)
+    for part in ('今', '今天', '今天晴。'):
+        blank.update_text(part)
+    check('无占位时逐片续写', shown(blank) == '今天晴。' and blank.full_text == '今天晴。', repr(shown(blank)))
+
+    print()
+    print('[角色窗口：点击、焦点与 Esc]')
+
+    def click(widget):
+        widget.event_generate('<ButtonPress-1>', x=2, y=2)
+        widget.event_generate('<ButtonRelease-1>', x=2, y=2)
+        root.update()
+
+    def escape(widget):
+        widget.event_generate('<Escape>')
+        root.update()
+
+    cancelled = []
+    active = make(ToastWindowText, True, text='正在思考…', streaming=True,
+                  stop_callback=lambda: cancelled.append('active'))
+    active.window.focus_force()
+    root.update()
+    escape(active.window)
+    check('未经点击的角色窗口不接受 Esc', active.window.winfo_exists() and not cancelled)
+    click(active.text_area)
+    check('点击正文取得焦点，普通单击不变为拖拽常驻',
+          active._has_keyboard_focus() and not active._user_dragged)
+    other = make(ToastWindowText, False, text='另一个窗口')
+    other.window.focus_force()
+    root.update()
+    escape(active.window)
+    check('焦点切走后 Esc 不取消角色窗口', active.window.winfo_exists() and not cancelled)
+    active.window.focus_force()
+    root.update()
+    escape(active.window)
+    check('已点击且有焦点时 Esc 关闭并取消', not active.window.winfo_exists() and cancelled == ['active'])
+
+    # Markdown 库用真实 Tk Text 替身：这里只验证控件替换时焦点与 Esc 的生命周期。
+    class MarkdownText(tk.Text):
+        def __init__(self, master, html='', **kwargs):
+            super().__init__(master, **kwargs)
+            self.insert('1.0', '完整回答')
+        def fit_height(self):
+            self.configure(height=1)
+
+    base_module = importlib.import_module('core.ui.toast_base')
+    original_html = base_module.HTMLLabel
+    base_module.HTMLLabel = MarkdownText
+    try:
+        completed = make(ToastWindowText, True, text='完整回答', streaming=True, markdown=True,
+                         stop_callback=lambda: cancelled.append('completed'))
+        completed.window.focus_force()
+        root.update()
+        escape(completed.window)
+        check('新窗口不继承前一个窗口的点击状态', completed.window.winfo_exists())
+        click(completed.window)  # 顶部/空白面走窗口拖动绑定，单击同样可以激活 Esc。
+        completed.finish()
+        root.update()
+        check('切换 Markdown 后保留本窗口焦点', completed._has_keyboard_focus())
+        escape(completed.md_label)
+        check('生成完成后 Esc 只关窗，不触发取消',
+              not completed.window.winfo_exists() and cancelled == ['active'])
+
+        other = make(ToastWindowText, False, text='切换后的另一个窗口')
+        changing = make(ToastWindowText, True, text='完整回答', streaming=True, markdown=True)
+        changing.window.focus_force()
+        root.update()
+        click(changing.text_area)
+        original_markdown = base_module.markdown.markdown
+        def render_while_focus_changes(*args, **kwargs):
+            other.window.focus_force()
+            root.update()
+            return ''
+        base_module.markdown.markdown = render_while_focus_changes
+        try:
+            changing.finish()
+            root.update()
+            check('Markdown 转换期间已失焦时不抢回焦点', other._has_keyboard_focus())
+        finally:
+            base_module.markdown.markdown = original_markdown
+    finally:
+        base_module.HTMLLabel = original_html
+
+    other.window.focus_force()
+    root.update()
+    escape(other.window)
+    check('普通 Toast 仍可按 Esc 关闭，无需点击武装', not other.window.winfo_exists())
 
 finally:
     for w in windows:

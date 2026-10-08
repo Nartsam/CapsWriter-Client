@@ -138,6 +138,7 @@ class ToastWindowBase(ABC):
         
         # 状态标志
         self.pause = False
+        self._escape_armed = False
         self.mouse_inside = False
         self.timer_id: Optional[str] = None
 
@@ -217,13 +218,29 @@ class ToastWindowBase(ABC):
         self.window.bind('<ButtonPress-1>', self._on_drag_start)
         self.window.bind('<ButtonRelease-1>', self._on_drag_stop)
         self.window.bind('<B1-Motion>', self._on_drag_motion)
-        self.window.bind('<Escape>', self._destroy_window)
+        self.window.bind('<Escape>', self._on_escape)
         self.window.bind('<Enter>', self._on_mouse_enter)
         self.window.bind('<Leave>', self._on_mouse_leave)
         self.window.bind('<MouseWheel>', self._on_mouse_wheel)
         self.window.bind('<Button-4>', self._on_mouse_wheel)  # Linux 向上滚动
         self.window.bind('<Button-5>', self._on_mouse_wheel)  # Linux 向下滚动
         self.window.bind('<Control-c>', self._on_copy)        # Ctrl+C 复制
+
+    def _has_keyboard_focus(self) -> bool:
+        focused = self.window.focus_displayof()
+        return focused is not None and focused.winfo_toplevel() == self.window
+
+    def _focus_from_click(self, event: tk.Event) -> None:
+        if self.pause_and_resume:
+            self._escape_armed = True
+            event.widget.focus_set()
+
+    def _on_escape(self, event: tk.Event) -> str:
+        # 角色白框必须由用户点过，且此刻焦点仍在本窗口；新窗口不继承旧窗口的武装状态。
+        if self.pause_and_resume and (not self._escape_armed or not self._has_keyboard_focus()):
+            return 'break'
+        self._destroy_window(event)
+        return 'break'
 
     @staticmethod
     def _valid_number(value: Any) -> Optional[float]:
@@ -490,6 +507,7 @@ class ToastWindowBase(ABC):
 
     def _on_selectable_press(self, event: tk.Event) -> str:
         """文字上拖动选择文本；文本控件空白处拖动窗口。"""
+        self._focus_from_click(event)
         self._dragging_from_text_blank = not self._is_text_hit(event)
         if self._dragging_from_text_blank:
             self._on_drag_start(event)
@@ -550,6 +568,7 @@ class ToastWindowBase(ABC):
 
     def _on_drag_start(self, event: tk.Event) -> None:
         """拖动开始"""
+        self._focus_from_click(event)
         self.pause = True
         self._drag_pointer_x = event.x_root
         self._drag_pointer_y = event.y_root
@@ -752,8 +771,8 @@ class ToastWindowBase(ABC):
             event: 事件对象（ESC 键触发时传入）
         """
         try:
-            # 调用停止回调（用于停止 LLM 输出）
-            if self.stop_callback:
+            # 角色白框生成完后仅关窗；自动到期也不代表用户放弃回答。
+            if self.stop_callback and (not self.pause_and_resume or (event is not None and self.streaming)):
                 try:
                     self.stop_callback()
                 except Exception as e:
@@ -832,6 +851,7 @@ class ToastWindowBase(ABC):
             """
 
             # 先销毁流式 Text，再创建 HTMLLabel，避免 Canvas 中残留旧窗口项。
+            had_focus = self._has_keyboard_focus()
             self._destroy_content_widget()
 
             self.md_label = HTMLLabel(
@@ -844,6 +864,8 @@ class ToastWindowBase(ABC):
             )
             self._mount_content_widget(self.md_label)
             self._bind_selectable_text_widget(self.md_label)
+            if had_focus:
+                self.md_label.focus_set()
             
             # 根据 editable 参数设置是否可编辑
             # DISABLED 状态下仍可选择文字，但无法编辑

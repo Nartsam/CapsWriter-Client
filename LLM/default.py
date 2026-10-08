@@ -11,14 +11,14 @@ enabled = False                      # 是否启用此角色
 provider = 'deepseek'                   # API 提供商：'ollama', 'openai', 'deepseek', 'moonshot', 'zhipu', 'claude', 'gemini'
 api_url = ''                            # 留空则自动使用 provider 对应的默认值
 api_key = DEEPSEEK_API_KEY              # API Key
-model = 'deepseek-v4-flash'             # 模型名称
+model = 'deepseek-flash'             # 模型名称
 
 # ==================== 上下文管理 ====================
 max_context_length = 4096               # 最大上下文长度（token 数）
 
 # ==================== 功能配置 ====================
 enable_hotwords = True                  # 是否启用热词
-enable_thinking = False                 # 是否启用思考（仅 Ollama）
+enable_thinking = False                 # 是否启用思考（关闭时直接回答、更快；Ollama 与 DeepSeek 生效）
 enable_history = True                   # 是否保留对话历史
 enable_read_selection = False           # 是否启用获取选中文字（默认 UI Automation）
 selection_max_length = 1024             # 选中文字最大长度
@@ -27,9 +27,9 @@ selection_max_length = 1024             # 选中文字最大长度
 output_mode = 'typing'                  # 输出方式：'typing' 直接打字, 'toast' 浮动窗口
 
 # ==================== Toast 弹窗配置（仅在 output_mode='toast' 时有效） ====================
-toast_min_width_px = 320                # 最小宽度像素值；正数时优先于比例配置
-toast_max_width_px = 800                # 最大宽度像素值；正数时优先于比例配置
-toast_min_width_ratio = 0.2             # 最小宽度比例回退值（像素值无效时使用）
+toast_min_width_px = 0                # 最小宽度像素值；正数时优先于比例配置
+toast_max_width_px = 0                # 最大宽度像素值；正数时优先于比例配置
+toast_min_width_ratio = 0.3             # 最小宽度比例回退值（像素值无效时使用）
 toast_max_width_ratio = 0.5             # 最大宽度比例回退值（像素值无效时使用）
 toast_initial_height = 0                # 窗口初始高度（0 表示自动计算）
 toast_font_family = '微软雅黑'

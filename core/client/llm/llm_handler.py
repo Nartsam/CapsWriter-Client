@@ -40,6 +40,7 @@ class LLMResult:
     used_tools: List[str] = field(default_factory=list)  # 本次请求实际触发的服务端工具 ID
     image_used: bool = False       # 本次绑定的图片是否真的随请求上传了
     reminder_handled: bool = False  # 独立提醒任务，不写角色对话归档、不广播输出
+    cancelled: bool = False         # 本地 Toast 生成中取消：整轮丢弃，不归档或自动回车
 
 
 # ======================================================================
@@ -207,7 +208,7 @@ class LLMHandler:
 
     def process(self, role_config: RoleConfig, content: str, matched_hotwords=None, callback=None,
                 status_callback=None, used_tools=None, image_data=None,
-                selection=None) -> Tuple[str, int, float]:
+                selection=None, toast_request=None) -> Tuple[str, int, float]:
         """执行实际的 LLM 模型调用（内部方法）
 
         Args:
@@ -220,27 +221,35 @@ class LLMHandler:
             image_data: 随本句上传的图片（base64 data URL）。与 used_tools 一样，
                 新增输出模式时必须记得转发，漏了不报错、只是图片静默丢失
             selection: 本次请求已读取的选区；None 仅供直接调用时现场读取
+            toast_request: 本地 Toast 的本轮状态，取消后即使线程尚在收尾也不影响下一轮
 
         Returns:
             (处理后的文本, 输出token数, 生成时间秒)
         """
         # 获取中断检查函数
-        should_stop_check = lambda: self.monitor.should_stop()
+        should_stop_check = (toast_request.cancelled.is_set if toast_request is not None
+                             else self.monitor.should_stop)
+        if toast_request is not None and should_stop_check():
+            return '', 0, 0.0
 
-        # 中断键的起效闸门（见 StopMonitor.on_stop_pressed）：在这里统一包一层，
-        # 三条流式路径与粘贴模式就都覆盖到了，不必往 llm_processor 里塞监控对象。
-        # callback 即便原本是 None 也要传包装后的，否则粘贴模式（不给回调）永远
-        # 武装不起来，ESC 对它就成了摆设
+        # OpenMate / typing 仍在首次输出时武装全局中断键（粘贴模式即使没有回调也要武装）。
+        # 本地 Toast 只使用本轮对象，取消后的旧线程不能武装下一轮的全局快捷键。
         monitor = self.monitor
 
         def marking_callback(chunk: str):
-            monitor.mark_output_started()
+            if toast_request is not None and should_stop_check():
+                return
+            if toast_request is None:
+                monitor.mark_output_started()
             if callback:
                 callback(chunk)
 
         def marking_status(status: str):
             # 工具状态占位（如「正在联网搜索」）同样是用户看得见的东西
-            monitor.mark_output_started()
+            if toast_request is not None and should_stop_check():
+                return
+            if toast_request is None:
+                monitor.mark_output_started()
             status_callback(status)
 
         # 获取处理后的角色名称（空字符串 -> '默认'）
@@ -274,11 +283,13 @@ class LLMHandler:
             should_stop_check=should_stop_check,
             context_manager=context_manager,
             status_callback=marking_status if status_callback else None,
-            used_tools=used_tools
+            used_tools=used_tools,
+            toast_request=toast_request
         )
 
         # 记录选中文字的使用（用于下一轮判断是否重复）
-        record_selection_usage(role_config, selection_text)
+        if toast_request is None or not toast_request.cancelled.is_set():
+            record_selection_usage(role_config, selection_text)
 
         return result_text, token_count, gen_time
 
@@ -389,7 +400,7 @@ class LLMHandler:
                     image_for_request, selection)
 
             # 5. 后置处理
-            # 更新全局状态（即便是中断了，也记录已经输出的部分）
+            # 本地 Toast 取消整轮返回空串；其他模式仍记录已经输出的部分。
             if result:
                 self.app.state.set_output_text(result)
                 broadcast_output_udp(result)
@@ -403,7 +414,8 @@ class LLMHandler:
                 input_text=content,
                 generation_time=gen_time,
                 used_tools=used_tools,
-                image_used=image_used
+                image_used=image_used,
+                cancelled=self.monitor.toast_cancelled()
             )
         finally:
             self.monitor.end_request()

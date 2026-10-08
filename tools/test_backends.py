@@ -7,7 +7,7 @@
 
 1. resolve() 两套 profile 的接线、协议约束、未知名字的回退、返回副本
 2. **加载顺序不变式**：backends.py 必须排在所有引用它的角色文件之前，否则热切换会静默失效
-3. 写了 backend 的角色文件，五个后端字段都取自同一套 profile
+3. 写了 backend 的角色文件，六个后端字段都取自同一套 profile
 4. backend / backend_config 两个中间变量不会被 RoleLoader 当成配置项吃进去
 """
 from __future__ import annotations
@@ -98,14 +98,17 @@ BACKEND_ROLES = [
     if n not in NOT_ROLES
     and 'LLM.backends' in open(os.path.join(LLM_DIR, n), encoding='utf-8').read()
 ]
-USED_KEYS = {'provider', 'api_url', 'api_key', 'model', 'request_timeout'}
+USED_KEYS = {'provider', 'api_format', 'api_url', 'api_key', 'model', 'request_timeout'}
 
 # ---------------------------------------------------------------- 1
 section('resolve() 的两套 profile')
 
 ds = backends.resolve('deepseek')
-check(not ds['api_url'].rstrip('/').endswith('/v1'),
-      'deepseek api_url 必须不带 /v1（Responses API 拼在根路径后面），实为 %r' % ds['api_url'])
+# DeepSeek 的 Responses API 忽略 web_search，只有 Anthropic 兼容接口真的执行联网搜索
+check(ds['api_format'] == 'anthropic',
+      'deepseek 必须走 Anthropic 接口，否则联网搜索静默失效，实为 %r' % ds['api_format'])
+check(ds['api_url'].rstrip('/').endswith('/anthropic'),
+      'deepseek api_url 必须是 Anthropic 接口的根（客户端在后面拼 /v1/messages），实为 %r' % ds['api_url'])
 check(ds['api_key'] == DEEPSEEK_SENTINEL, 'deepseek api_key 没有原样传下去')
 # 跟着变量走而不是钉死名字：模型名是 backends.py 鼓励日常改动的配置。这里保留的是
 # 接线性质：PROFILES 必须把 DEEPSEEK_MODEL 传出来，不许另写死一个
@@ -113,6 +116,8 @@ check(ds['model'] == backends.DEEPSEEK_MODEL, 'deepseek model 没有跟随 DEEPS
 
 cpa = backends.resolve('cpa')
 check(cpa['api_url'] == backends.CPA_URL, 'cpa api_url 没有跟随 CPA_URL：%r' % cpa['api_url'])
+check(cpa['api_format'] == 'openai',
+      'cpa 网关按 OpenAI 格式接入（Chat Completions / Responses），实为 %r' % cpa['api_format'])
 check(cpa['api_url'].rstrip('/').endswith('/v1'),
       'cpa base_url 必须带 /v1：chat/completions 与 responses 两条路径都拼在它后面')
 check(cpa['api_key'] == CPA_SENTINEL, 'cpa api_key 没有原样传下去')
@@ -159,7 +164,7 @@ for file_name in BACKEND_ROLES:
         continue
     cfg = build_role_config(mod)
     want = backends.resolve(mod.backend)
-    # 无论 backend 选的是哪一套，五个字段都必须来自同一套 profile
+    # 无论 backend 选的是哪一套，六个字段都必须来自同一套 profile
     for key in sorted(USED_KEYS):
         check(getattr(cfg, key) == want[key], '%s.%s 未跟随 backend' % (role, key))
 

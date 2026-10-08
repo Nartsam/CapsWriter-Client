@@ -346,10 +346,9 @@ class ToastMessageManager:
         """
         for window in self.active_windows[:]:
             if getattr(window, 'pause_and_resume', False):
-                # 与 _destroy_window 的 ESC 路径语义对称：顶掉旧窗口时也触发其停止回调。
-                # 串行处理下旧请求的 LLM 已完成、回调无害；防未来并发处理时旧请求继续烧 token
+                # 顶掉仍在生成的旧窗口时取消它自己的请求，完成后的窗口仅销毁。
                 stop_cb = getattr(window, 'stop_callback', None)
-                if stop_cb:
+                if stop_cb and window.streaming:
                     try:
                         stop_cb()
                     except Exception:

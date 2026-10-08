@@ -21,7 +21,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 sys.dont_write_bytecode = True
 
-from probe_llm_live import load_production, load_role
+from probe_llm_live import load_production, load_role, post
 
 ROOT = Path(__file__).resolve().parents[1]
 CASES = {
@@ -169,11 +169,14 @@ def run_request(prod, openmate, role, profile, prompt, user_text, history):
     messages = builder.build_messages(role, user_text, context_manager=history,
                                       selection_text='', hotwords=None, image_data=None)
     processor = prod.processor.LLMProcessor.__new__(prod.processor.LLMProcessor)
-    payload = processor._build_responses_params(role, messages)
+    if role.api_format == 'anthropic':
+        payload = processor._build_anthropic_params(role, messages)
+    else:
+        payload = processor._build_responses_params(role, messages)
+        # OpenAI SDK 的 extra_body 会并入 HTTP JSON；timeout 是客户端参数，不上行。
+        if not role.enable_thinking:
+            payload['thinking'] = {'type': 'disabled'}
     payload['stream'] = True
-    # OpenAI SDK 的 extra_body 会并入 HTTP JSON；timeout 是客户端参数，不上行。
-    if not role.enable_thinking:
-        payload['thinking'] = {'type': 'disabled'}
 
     class CaptureClient(openmate.OpenMateClient):
         def __init__(self):
@@ -191,6 +194,9 @@ def run_request(prod, openmate, role, profile, prompt, user_text, history):
     capture = CaptureClient()
     sender = openmate.OpenMateSegmentSender(capture, role.openmate_character,
                                             role.result_split_delimiter)
+    if role.api_format == 'anthropic':
+        return _finish(prod, capture, sender, payload,
+                       _run_anthropic(role, payload, sender))
     request = urllib.request.Request(
         role.api_url.rstrip('/') + '/responses',
         data=json.dumps(payload, ensure_ascii=False).encode('utf-8'), method='POST',
@@ -234,6 +240,42 @@ def run_request(prod, openmate, role, profile, prompt, user_text, history):
         sender.abort()
     result['elapsed_seconds'] = round(time.monotonic() - started, 3)
     result['text'] = ''.join(parts)
+    return _finish(prod, capture, sender, payload, result)
+
+
+def _run_anthropic(role, payload, sender):
+    """Anthropic 格式（DeepSeek 后端）：请求与 SSE 解析复用 probe_llm_live.post"""
+    started = time.monotonic()
+    result = {'first_delta_seconds': None, 'http_status': None, 'text': '', 'usage': {},
+              'events': {}, 'status': '', 'errors': []}
+
+    def on_text(delta):
+        if delta and result['first_delta_seconds'] is None:
+            result['first_delta_seconds'] = round(time.monotonic() - started, 3)
+        sender.push(delta)
+
+    try:
+        reply = post(payload, role, timeout=role.request_timeout, on_text=on_text)
+        # 与 Responses 分支统一口径：正常结束记为 completed，其余照录结束原因
+        result.update(http_status=reply['status'], text=reply['text'], usage=reply['usage'],
+                      events=reply['counts'],
+                      status='completed' if reply['stop_reason'] == 'end_turn' else reply['stop_reason'],
+                      # 不落服务器错误正文，避免网关回显认证信息
+                      errors=['HTTPError'] if reply['status'] != 200 else (['error'] if reply['error'] else []))
+        if reply['status'] == 200 and not reply['error']:
+            result['sender_completed'] = sender.finish()
+        else:
+            sender.abort()
+    except Exception as error:
+        # 与 Responses 分支一致：单次读取失败只记为无效样本，清理发送器后继续整批实验。
+        result['errors'].append(type(error).__name__)
+        sender.abort()
+    result['elapsed_seconds'] = round(time.monotonic() - started, 3)
+    return result
+
+
+def _finish(prod, capture, sender, payload, result):
+    """两种格式共用的结果整理：分段、可见字数、是否有效"""
     result['segments'] = capture.segments
     visible = [prod.tags.strip_state_tags(text).strip() for text in capture.segments]
     result['visible_segments'] = visible
@@ -273,7 +315,7 @@ def main():
     role = load_role(prod, role_file)
     if not (role.enable_web_search and role.enable_result_splitter
             and role.result_split_delimiter and role.output_mode == 'toast'):
-        parser.error('本探针仅适用开启 Responses 搜索与 OpenMate 分段的 toast 角色')
+        parser.error('本探针仅适用开启联网搜索与 OpenMate 分段的 toast 角色')
     if args.history and not role.enable_history:
         parser.error('角色未开启历史，不能附加实验历史')
     from LLM.backends import resolve

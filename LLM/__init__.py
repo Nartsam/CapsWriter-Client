@@ -27,7 +27,7 @@ model: str = 'gemma3:4b'                     # 模型名称
 max_context_length: int = 4096               # 最大上下文长度（token 数）
 
 # 功能配置
-enable_thinking: bool = False                # 是否启用思考（仅 Ollama 支持）
+enable_thinking: bool = False                # 是否启用思考（关闭时直接回答、更快；Ollama 与 DeepSeek 生效）
 enable_history: bool = False                 # 是否保留对话历史
 enable_hotwords: bool = False                # 是否读取潜在热词列表
 enable_read_selection: bool = False          # 是否读取鼠标所选文字（默认 UI Automation）
@@ -37,9 +37,9 @@ selection_max_length: int = 1000             # 选中文字最大长度
 output_mode: str = 'typing'                  # 输出方式: 'typing' 或 'toast' (即打字输出或弹窗输出)
 
 # Toast 弹窗配置
-toast_min_width_px: int = 320                # 最小宽度像素值；正数时优先于比例配置
-toast_max_width_px: int = 800                # 最大宽度像素值；正数时优先于比例配置
-toast_min_width_ratio: float = 0.2           # 最小宽度比例回退值（像素值无效时使用）
+toast_min_width_px: int = 0                  # 最小宽度像素值；正数时优先于比例配置
+toast_max_width_px: int = 0                  # 最大宽度像素值；正数时优先于比例配置
+toast_min_width_ratio: float = 0.3           # 最小宽度比例回退值（像素值无效时使用）
 toast_max_width_ratio: float = 0.5           # 最大宽度比例回退值（像素值无效时使用）
 toast_initial_height: int = 0                # Toast 窗口初始高度（0 表示自动计算）
 toast_font_family: str = '微软雅黑'          # Toast 字体

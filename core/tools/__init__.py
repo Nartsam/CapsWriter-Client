@@ -9,6 +9,7 @@
 - clean_assets: 独立脚本（不被客户端导入），递归清理没被 Markdown 引用的图片、音频附件
 - empty_working_set: Windows 内存管理
 - format_tools: 文本格式化（中英文空格调整）
+- local_port: 本机 TCP 端口是否有程序监听（只读查询系统连接表）
 - my_status: Rich Status 扩展
 - signal_handler: Ctrl+C 退出处理
 - srt_from_txt: SRT 字幕生成

@@ -42,6 +42,7 @@ for mod, attrs in (
         'wrap_openai_error': lambda *a, **k: None,
         'OpenAIErrorWrapper': type('OpenAIErrorWrapper', (Exception,), {}),
         'TimeoutErrorWrapper': type('TimeoutErrorWrapper', (Exception,), {}),
+        'APIResponseErrorWrapper': type('APIResponseErrorWrapper', (Exception,), {}),
     }),
 ):
     m = types.ModuleType(mod)
@@ -65,6 +66,7 @@ rc = load('core.client.llm.llm_role_config', 'llm_role_config.py')
 load('core.client.llm.llm_memory', 'llm_memory.py')
 ctx = load('core.client.llm.llm_context', 'llm_context.py')
 mb = load('core.client.llm.llm_message_builder', 'llm_message_builder.py')
+load('core.client.llm.llm_anthropic', 'llm_anthropic.py')
 proc = load('core.client.llm.llm_processor', 'llm_processor.py')
 
 RoleConfig = rc.RoleConfig

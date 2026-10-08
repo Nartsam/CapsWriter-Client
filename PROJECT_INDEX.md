@@ -91,19 +91,20 @@ CapsWriter 离线语音输入的**客户端**（Windows）。上游 [HaujetZhao/
 
 | 文件 | 职责 |
 |---|---|
-| `llm_handler.py` | 协调器。`process_and_output()`：角色检测（连续对话时跳过）→ 提醒入口 → Companion 转发 → 读一次选区 → 按 `output_mode` 分发；`process()` 包装回调（中断键起效闸门的唯一武装点）；`resolve_role()` 供连续对话按名重新解析；记忆按角色 `module_name` 区分，热重载沿用同一个 `ContextManager`，`clear_history()` 清内存并删记忆文件 |
+| `llm_handler.py` | 协调器。`process_and_output()`：角色检测（连续对话时跳过）→ 提醒入口 → Companion 转发 → 读一次选区 → 按 `output_mode` 分发；`process()` 包装回调（OpenMate / typing 全局中断键的唯一武装点）；`resolve_role()` 供连续对话按名重新解析；记忆按角色 `module_name` 区分，热重载沿用同一个 `ContextManager`，`clear_history()` 清内存并删记忆文件 |
 | `llm_role_config.py`、`llm_role_loader.py`、`llm_role_detector.py`、`llm_watcher.py` | 角色字段定义；按文件名顺序加载 `LLM/*.py`；`startswith` 前缀匹配；目录变化 3s 防抖后重载（保留历史） |
 | `llm_message_builder.py`、`llm_context.py` | 组装 system + 历史 + 当前时间/热词/选区/用户输入（带图时为 Chat 口味多模态 content）；每角色一份历史，超 `max_context_length` 80% 从旧裁剪，旧图降级为 `［图片］`；每轮整体落盘（`add_turn`），启动时 `restore()` 读回 |
 | `llm_memory.py` | 记忆文件：`logs/llm_memory/<角色 .py 文件名>.json`，先写临时文件再替换；读不了的改名为 `.bad-时间.json` 保留；图片落盘为占位符（由 `ContextManager` 转换） |
-| `llm_processor.py`、`llm_client_pool.py` | 三条流式路径：Ollama 原生、Chat Completions、Responses（`enable_web_search` 时，挂内置 `web_search`）；工具事件 → `used_tools`；空回复/截断/拒答诊断；每次请求 INFO 一行「请求构成」 |
-| `llm_output_typing.py`、`llm_output_toast.py`、`llm_output_openmate.py` | 三种输出：打字/粘贴；本地 Toast；OpenMate 看板（探测 `/health`、情绪指令注入、流式或分段队列、typing 指示、失败回退本地 Toast） |
+| `llm_processor.py`、`llm_client_pool.py` | 四条流式路径：Ollama 原生、Anthropic Messages（`api_format='anthropic'`）、Chat Completions、Responses（OpenAI 格式且 `enable_web_search` 时）；工具事件 → `used_tools`；空回复/截断/拒答诊断；Anthropic 流内错误进入统一响应错误处理，本轮不写记忆；每次请求 INFO 一行「请求构成」 |
+| `llm_anthropic.py` | Anthropic 格式：内部 Chat 口味消息的转换，及基于 httpx 的极简客户端（SSE 解析、HTTP 状态映射到与 openai 路径相同的包装异常）；请求重试策略见 [DEV_NOTES 的有效决策](docs/DEV_NOTES.md#仍然有效的决策) |
+| `llm_output_typing.py`、`llm_output_toast.py`、`llm_output_openmate.py` | 三种输出：打字/粘贴；本地 Toast（以「正在思考…」占位弹出，工具状态与正文整段取代它）；OpenMate 看板（探测 `/health`，本机地址先查端口监听表、没开就不等超时；情绪指令注入、流式或分段队列、typing 指示、失败回退本地 Toast） |
 | `llm_state_tags.py` | `<state:…>` 情绪标签的识别与剥离；流式用 `StateTagFilter` |
-| `llm_stop_monitor.py` | 中断键两层闸门：请求作用域 + 已产出正文 |
+| `llm_stop_monitor.py` | OpenMate / typing 的全局中断键两层闸门；本地 Toast 使用独立 `ToastRequest`，跨线程共享取消状态、互斥确定完成与取消 |
 | `llm_get_selection.py` | 按 `selection_mode` 获取选区，`SelectionContext` 区分本轮附加文字与终端预览，按角色相邻轮次去重 |
 | `llm_error_handler.py` | 错误分类：认证/连接/响应错误弹红色错误框；超时、限流及其他未归类异常降级为把识别原文打字输出 |
-| `LLM/backends.py` | 角色文件只写 `backend = 'deepseek' \| 'cpa'`，模型/地址/超时由 `resolve()` 给出（约束见其文件头） |
+| `LLM/backends.py` | 角色文件只写 `backend = 'deepseek' \| 'cpa'`，模型/地址/请求格式/超时由 `resolve()` 给出（约束见其文件头）；DeepSeek 走 Anthropic 兼容接口，CPA 走 OpenAI 格式 |
 
-当前角色文件：`default.py`（typing，已禁用）、`助理.py`、`翻译.py`（当前禁用）、`雾切响子.py`、`新岛真.py`（后四个为 toast；两个人设角色开启 OpenMate 分段，按单换行切）。
+当前角色文件：`default.py`（typing，已禁用）、`助理.py`、`翻译.py`（当前禁用）、`雾切响子.py`、`新岛真.py`（后四个为 toast；两个人设角色开启 OpenMate 分段，按单换行切）。内置角色的本地 Toast 宽度配置已统一，取值与优先级见 [角色功能说明](docs/角色功能如何使用.md#toast-模式)。
 
 ### 视觉输入（`core/client/vision/`）与一次性提醒（`core/client/reminder/`）
 
@@ -122,7 +123,7 @@ CapsWriter 离线语音输入的**客户端**（Windows）。上游 [HaujetZhao/
 | 文件 | 职责 |
 |---|---|
 | `core/ui/toast_manager.py` | Toast 管理器（Tk 单例线程）：消息队列、窗口生命周期、`close_llm_windows()`、显示配置变更后恢复 `tk scaling`（`_ensure_tk_scaling`） |
-| `core/ui/toast_base.py`、`toast_text.py`、`toast_label.py`、`toast_constants.py` | 窗口基类（无边框置顶、透明圆角、宽度只增不减、拖动、滚轮、复制、Markdown 最终视图、智能时长）；Text 版用于流式、Label 版用于普通提示 |
+| `core/ui/toast_base.py`、`toast_text.py`、`toast_label.py`、`toast_constants.py` | 窗口基类（无边框置顶、透明圆角、宽度只增不减、拖动、滚轮、复制、Markdown 最终视图、智能时长）；Text 版用于流式（续写只追加，不是续写时整段替换）、Label 版用于普通提示 |
 | `core/ui/dpi.py` | 进程 DPI 感知统一声明（固定 SYSTEM 级，原因见文件头） |
 | `core/tools/windows_selection.py` | ctypes 调原生 UIA（独立 MTA 线程、焦点及祖先的 TextPattern），UIA 不支持时对 Scintilla 焦点控件做标量只读查询 |
 | `core/tools/window_detector.py` | 前台窗口进程名，供 `paste_apps`/`enter_apps`/`trash_punc_apps` 匹配 |
@@ -157,7 +158,8 @@ CapsWriter 离线语音输入的**客户端**（Windows）。上游 [HaujetZhao/
 10. **`smart_duration` = 「LLM 角色白框」**：同一个标志决定智能时长、40px 顶部拖动区和 `close_llm_windows()` 的顶替范围；新 LLM 回复（含 OpenMate 接管）先顶掉所有旧白框。
 11. **剪贴板**：之后要写回剪贴板的读取必须用 `try_paste()`，`safe_paste()` 会把「读不到」折叠成空串、写回时清掉原内容（典型是待挂的截图）。只读选区模式（`selection_mode='uia'`）不碰剪贴板，复制模式与粘贴输出仍会写。
 12. **配置读取**：本地新增的 `ClientConfig` 项在代码里用 `getattr(Config, 名, 默认值)` 读取（多数还会校验取值、非法时回退默认），缺项时照常运行；新增配置照此办理。角色文件未写的字段取 `RoleConfig` 默认值。
-13. **联网搜索**：`enable_web_search` 改走 Responses API 并挂内置 `web_search`：① DeepSeek 的 `api_url` 须不带 `/v1`（`APIConfig` 默认带）；② 检索期数秒无分片，必须设 `request_timeout`（两套后端均由 `backends.py` 给 60s）；③ Responses 参数名不同（`instructions`/`input`/`max_output_tokens`，无 `stop`），在 `_build_responses_params` 收敛。
+13. **联网搜索**：`enable_web_search` 挂服务端内置搜索工具，是否检索由模型决定：① 工具随请求格式而定——`api_format='anthropic'` 挂 `web_search_20250305`（工具事件是 `server_tool_use` 块），OpenAI 格式改走 Responses API 挂 `web_search`（事件是 `<工具>_call`）；DeepSeek 的 Responses API 忽略 `web_search`，所以 DeepSeek 必须走 Anthropic 格式（`tools/test_backends.py` 钉住）；② 检索期数秒无正文，必须设 `request_timeout`（两套后端均由 `backends.py` 给 60s）；③ 各格式的参数差异分别在 `_build_responses_params`（`instructions`/`input`/`max_output_tokens`，无 `stop`）与 `_build_anthropic_params`（`system` 顶层、`max_tokens` 必填、`stop_sequences`）收敛。
+14. **本地 Toast 取消隔离**：`toast_request` 从输出层经 Handler 传到 Processor；线程认领完成后才提交记忆，取消后不再更新窗口、选区去重或历史。输出层立即结束本地等待，底层网络线程收尾只读自己那一轮的状态；`LLMResult.cancelled` 让 ResultProcessor 跳过角色归档和自动回车。点击与 Esc 的用户行为见 [角色功能说明](docs/角色功能如何使用.md#toast-模式)。
 
 > 旧编号对照：`LLM/backends.py` 注释与 `tools/probe_llm_live.py` 输出文字里仍有「约定 15/21/22」，分别指本节第 13 条、视觉输入（`core/client/vision/`）、第 9 条。
 
@@ -198,15 +200,15 @@ CapsWriter 离线语音输入的**客户端**（Windows）。上游 [HaujetZhao/
 | 热词匹配 | `hotword/hot_phoneme.py`、`hot_rule.py` |
 | 新增或修改角色 | `LLM/` 下新建/编辑 .py（热重载）；字段见 `llm_role_config.py` |
 | 角色记忆（重启后恢复） | `llm_context.py`（`add_turn`/`restore`/落盘）、`llm_memory.py`（文件格式）、`llm_handler`（`_init_context_managers`、`clear_history`）、`llm_processor._record_turn`（空回复不写）；角色表提示 `llm_role_formatter`；同步 [docs/角色功能如何使用.md](docs/角色功能如何使用.md)；验证 `tools/test_llm_memory.py` |
-| 角色后端 / CPA 模型 | 角色文件的 `backend`；`LLM/backends.py` 的 `CPA_MODEL`、`CPA_URL`、`PROFILES`（新后端的密钥加进 `secrets.py`，由用户自己改） |
-| LLM 请求与流式解析 | `llm_handler.py`、`llm_processor.py`；联网搜索见「跨模块约定」第 13 条 |
+| 角色后端 / CPA 模型 | 角色文件的 `backend`；`LLM/backends.py` 的 `CPA_MODEL`、`CPA_URL`、`PROFILES`（每套 profile 给出 `api_format`；新后端的密钥加进 `secrets.py`，由用户自己改）；验证 `tools/test_backends.py` |
+| LLM 请求与流式解析 | `llm_handler.py`、`llm_processor.py`、`llm_anthropic.py`；联网搜索见「跨模块约定」第 13 条；验证 `tools/test_anthropic_path.py`，厂商行为 `tools/probe_llm_live.py` |
 | 新增输出模式 | 照「跨模块约定」第 8 条的清单 |
 | 选区获取 | `selection_mode`；`core/tools/windows_selection.py`、`llm_get_selection.py`；验证 `tools/test_selection.py`、`test_selection_native.py` |
 | 中断键生效条件 | `llm_stop_key`；`llm_stop_monitor.py`；`llm_handler`（`process` 的回调包装、`process_and_output` 的 try/finally）；验证 `tools/test_stop_gate.py` |
 | OpenMate 接入 | `openmate_*` 配置；`llm_output_openmate.py`；角色级 `openmate_enabled`/`openmate_character`/`enable_result_splitter`/`result_split_delimiter` |
 | 情绪标签剥离 | `llm_state_tags.py` |
 | 一次性提醒 | `reminder_*` 配置；`core/client/reminder/`、`core/ui/toast_reminder.py`；同步 [docs/提醒功能如何使用.md](docs/提醒功能如何使用.md)；验证 `tools/test_reminders.py` |
-| Toast 弹窗 | `core/ui/toast_*.py`；顶部留白 `toast_constants.py`；改完跑 `tools/test_toast_padding.py`、`test_toast_scaling.py` 并实机弹一次窗口（构造失败是静默的） |
+| Toast 弹窗 | `core/ui/toast_*.py`；顶部留白 `toast_constants.py`；改完跑 `tools/test_toast_padding.py`、`test_toast_scaling.py` 并实机弹一次窗口（构造失败是静默的）；LLM 白框的占位流程验证 `tools/test_toast_status.py` |
 | 悬浮指示器 | `core/client/ui/recording_indicator.py` |
 | 托盘 | `core/ui/tray.py`、`core/client/manager/tray_manager.py` |
 | Companion | `companion_*` 配置；`core/client/companion/` |
@@ -217,4 +219,4 @@ CapsWriter 离线语音输入的**客户端**（Windows）。上游 [HaujetZhao/
 
 ## 主要依赖（均在 `internal/`）
 
-pynput（钩子、模拟按键、全局热键）、keyboard（`keyboard.write` 打字）、sounddevice + numpy（采集）、websockets 13（C/S 与 Companion）、openai / ollama（LLM）、rich（控制台）、watchdog（文件监视）、tkinter + markdown + tkhtmlview（指示器与 Toast）、Pillow（视觉输入）、pypinyin（热词音素）、pyclip（剪贴板）、pywin32（窗口检测）、pystray（托盘）、srt / typer（字幕）。外部可执行文件：FFmpeg（文件转录，需在 PATH 或客户端根目录）。
+pynput（钩子、模拟按键、全局热键）、keyboard（`keyboard.write` 打字）、sounddevice + numpy（采集）、websockets 13（C/S 与 Companion）、openai / ollama（LLM；Anthropic 格式直接用 openai 依赖的 httpx 发）、rich（控制台）、watchdog（文件监视）、tkinter + markdown + tkhtmlview（指示器与 Toast）、Pillow（视觉输入）、pypinyin（热词音素）、pyclip（剪贴板）、pywin32（窗口检测）、pystray（托盘）、srt / typer（字幕）。外部可执行文件：FFmpeg（文件转录，需在 PATH 或客户端根目录）。

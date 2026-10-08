@@ -20,6 +20,9 @@ LLM_TOAST_BG = "#f7fbff"
 LLM_TOAST_FG = "black"
 LLM_TOAST_ALPHA = 0.92
 LLM_TOAST_CORNER_RADIUS = 12
+# 窗口弹出到首个正文分片（或工具状态）之间的占位。CPA 网关要攒齐整段才发，这段
+# 空白有 3～13s；窗口点击获得焦点后即可用 Esc 取消，不响应全局中断键
+LLM_TOAST_THINKING_TEXT = '正在思考…'
 
 
 async def handle_toast_mode(handler, text: str, role_config=None, matched_hotwords=None, content=None,
@@ -51,14 +54,20 @@ async def handle_toast_mode(handler, text: str, role_config=None, matched_hotwor
         return openmate_result
 
     handler.monitor.reset()  # 重置停止标志
-    task_stop_event = handler.monitor.create_stop_callback()
+    loop = asyncio.get_running_loop()
+    cancel_notice = asyncio.Event()
+    request = handler.monitor.create_toast_request(
+        lambda: loop.call_soon_threadsafe(cancel_notice.set))
     toast_manager = ToastMessageManager()
     msg_id = None
+    work = cancel_wait = None
 
     try:
         # 创建初始 toast
         msg = ToastMessage(
-            text="",
+            # 以占位创建而不是弹出后再改：省掉一帧空白。之后的状态与正文都是整段替换
+            # 掉它（ToastWindowText.update_text 对「不是延续」的文本整段重绘）
+            text=LLM_TOAST_THINKING_TEXT,
             # 优先使用角色配置的外观，空值回退到统一的白色亚克力默认值。
             # 此前这里硬编码常量是为了掩盖"字体永远显示为宋体"的问题，
             # 真正原因是命名字体跨 Tk 解释器失效，已在 toast_text/toast_base 中修复。
@@ -80,7 +89,7 @@ async def handle_toast_mode(handler, text: str, role_config=None, matched_hotwor
             corner_radius=role_config.toast_corner_radius,
             # 智能时长：时长随字数、悬停不顺延（到期后移开即关）、拖拽后永不自动关闭
             smart_duration=True,
-            stop_callback=lambda: task_stop_event.set()
+            stop_callback=request.cancel
         )
 
         # 新 LLM 回复窗口生成：顶掉所有旧的 LLM 白色对话框（无论是否拖拽），
@@ -99,6 +108,8 @@ async def handle_toast_mode(handler, text: str, role_config=None, matched_hotwor
         tag_filter = StateTagFilter()
 
         def stream_toast_chunk(chunk: str):
+            if request.cancelled.is_set():
+                return
             visible = tag_filter.feed(chunk)
             if not visible:
                 return
@@ -107,14 +118,21 @@ async def handle_toast_mode(handler, text: str, role_config=None, matched_hotwor
 
         def show_toast_status(status: str):
             # 状态只在正文到达前占位；一旦有分片，后续 update 会用全文覆盖掉它
-            if not chunks:
+            if not request.cancelled.is_set() and not chunks:
                 toast_manager.update_toast(msg_id, status)
 
         # 流式调用 LLM
-        polished_text, token_count, gen_time = await to_thread(
+        work = asyncio.create_task(to_thread(
             handler.process, role_config, content, matched_hotwords, stream_toast_chunk,
-            show_toast_status, used_tools, image_data, selection
-        )
+            show_toast_status, used_tools, image_data, selection, toast_request=request
+        ))
+        cancel_wait = asyncio.create_task(cancel_notice.wait())
+        await asyncio.wait((work, cancel_wait), return_when=asyncio.FIRST_COMPLETED)
+        if request.cancelled.is_set():
+            logger.info(f"[{role_config.display_name or '默认'}] 本地 Toast 请求已取消，整轮不保存")
+            toast_manager.close_toast(msg_id)
+            return '', 0, 0.0
+        polished_text, token_count, gen_time = await work
 
         tail = tag_filter.finish()
         if tail:
@@ -125,21 +143,19 @@ async def handle_toast_mode(handler, text: str, role_config=None, matched_hotwor
         # 空回复不降级成识别原文：Toast 模式下这段文字压根没有被展示给用户，
         # 拿它冒充模型输出会让控制台、md 记录、UDP 广播三处都误报成一次成功回复，
         # 把静默失败伪装得连事后都查不出来（typing 模式的降级是真打字出去了，不同）
-        if handler.monitor.should_stop():
-            # 中断分支同样要留痕：llm_processor 的空回复告警被中断抑制了
-            logger.info(f"[{role_config.display_name or '默认'}] 输出被用户中断，"
-                        f"弹窗已关闭（已展示 {len(''.join(chunks))} 字）")
-            toast_manager.close_toast(msg_id)
-            return (''.join(chunks), token_count, gen_time)
-        else:
-            toast_manager.finish_toast(msg_id)
-            if not polished_text:
-                logger.warning(f"角色 [{role_config.display_name or '默认'}] 返回空回复，"
-                               f"弹窗无内容（原始输入：{content[:30]}…）")
-            return (polished_text, token_count, gen_time)
+        if not chunks:
+            # 一个可见字都没收到（空回复、只有情绪标签）：收尾前清掉占位或工具状态。
+            toast_manager.update_toast(msg_id, '')
+        toast_manager.finish_toast(msg_id)
+        if not polished_text:
+            logger.warning(f"角色 [{role_config.display_name or '默认'}] 返回空回复，"
+                           f"弹窗无内容（原始输入：{content[:30]}…）")
+        return (polished_text, token_count, gen_time)
 
     except Exception as e:
         if msg_id: toast_manager.close_toast(msg_id)
+        if not request.finish():
+            return '', 0, 0.0
 
         from .llm_error_handler import handle_llm_error, should_fallback_to_original
         from .llm_role_config import RoleConfig
@@ -157,3 +173,16 @@ async def handle_toast_mode(handler, text: str, role_config=None, matched_hotwor
             from .llm_error_handler import show_error_notification
             show_error_notification(e, role_name)
             return ("", 0, 0.0)
+    finally:
+        # 取消 asyncio 等待不会终止阻塞的网络线程；线程继续持有本轮 request，
+        # 迟到回调与历史提交都会被它拦住，绝不读取下一轮的全局停止状态。
+        if work is not None and not work.done():
+            request.cancel()
+        else:
+            request.finish()
+        tasks = [task for task in (work, cancel_wait) if task is not None]
+        for task in tasks:
+            if not task.done():
+                task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)

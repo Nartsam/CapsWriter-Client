@@ -4,6 +4,7 @@ import asyncio
 from dataclasses import dataclass, field
 from datetime import datetime
 import importlib
+import inspect
 import json
 import logging
 from pathlib import Path
@@ -498,6 +499,37 @@ class AnalyzerRequestTests(unittest.TestCase):
                 self.assertEqual(body['utterance'], '解释十分钟')
                 self.assertEqual(body['role_style'], role.system_prompt)
                 self.assertEqual(handler.client_pool.get_client.call_args.kwargs['request_timeout'], 60)
+
+    def test_anthropic_path_is_isolated_and_nonstreaming(self):
+        role = RoleConfig(name='助理', provider='deepseek', api_format='anthropic', enable_web_search=True,
+                          system_prompt='温柔地提醒', max_tokens=4096,
+                          extra_options={'tools': ['forbidden'], 'stream': True})
+        client = Mock()
+        client.create.return_value = {'stop_reason': 'end_turn',
+                                      'content': [{'type': 'text', 'text': '{"operation":"none"}'}]}
+        handler = types.SimpleNamespace(client_pool=Mock())
+        handler.client_pool.get_client.return_value = client
+        self.assertEqual(analyzer.analyze(handler, role, '解释十分钟', [], [], stamp(), 60),
+                         {'operation': 'none'})
+        pool_kwargs = handler.client_pool.get_client.call_args.kwargs
+        self.assertEqual(pool_kwargs['api_format'], 'anthropic')
+        self.assertEqual(pool_kwargs['request_timeout'], 60)
+        create = importlib.import_module('core.client.llm.llm_anthropic').AnthropicClient.create
+        call = inspect.signature(create).bind(client, *client.create.call_args.args,
+                                              **client.create.call_args.kwargs)
+        call.apply_defaults()
+        body = call.arguments['body']
+        self.assertNotIn('tools', body)
+        self.assertNotIn('stream', body)       # 由客户端的 create() 补成 False
+        self.assertNotIn('thinking', body)     # 关掉思考会把相对时间误判为模糊，见 analyzer 注释
+        self.assertEqual(body['system'], analyzer.SYSTEM)
+        self.assertTrue(all(m['role'] in ('user', 'assistant') for m in body['messages']))
+        self.assertEqual(json.loads(body['messages'][-1]['content'])['utterance'], '解释十分钟')
+        self.assertEqual(call.arguments['max_retries'], 0)
+
+        client.create.return_value = {'stop_reason': 'max_tokens', 'content': []}
+        with self.assertRaises(model.ReminderError):
+            analyzer.analyze(handler, role, '解释十分钟', [], [], stamp(), 60)
 
 
 class ProcessorTests(unittest.IsolatedAsyncioTestCase):

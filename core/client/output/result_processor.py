@@ -453,8 +453,9 @@ class ResultProcessor:
                       llm_result, snapshot, pending_image) -> None:
         """文字输出之后的收尾：自动回车、录音改名与日记、LLM 结果记录、图片去向、连续对话状态"""
         reminder_handled = bool(llm_result and getattr(llm_result, 'reminder_handled', False))
+        cancelled = bool(llm_result and getattr(llm_result, 'cancelled', False))
         # 提醒只有通知，不应向用户当前文档注入一个回车。
-        if not reminder_handled:
+        if not reminder_handled and not cancelled:
             for app, delay in Config.enter_apps:
                 if app.lower() == process_name:
                     asyncio.create_task(_auto_enter(delay))
@@ -473,7 +474,9 @@ class ResultProcessor:
             self.diary.write(text, message.time_start, file_audio)
 
         # LLM 结果显示和保存
-        if reminder_handled:
+        if cancelled:
+            console.print(f'    模型结果[{llm_result.role_name}]：已取消', markup=False)
+        elif reminder_handled:
             console.print(f'    {llm_result.result}', markup=False)
         elif Config.llm_enabled and llm_result and llm_result.processed:
             console.print(self._format_llm_result(llm_result))

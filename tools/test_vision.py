@@ -1084,6 +1084,7 @@ def main():
     ollama_stub.Client = object
     ollama_stub.ResponseError = type('ResponseError', (Exception,), {})
     sys.modules['ollama'] = ollama_stub
+    load('core.client.llm.llm_anthropic', 'core/client/llm/llm_anthropic.py')
     pool = load('core.client.llm.llm_client_pool', 'core/client/llm/llm_client_pool.py')
     sys.modules['core.client.llm'].llm_client_pool = pool
     exc = load('core.client.llm.llm_exceptions', 'core/client/llm/llm_exceptions.py')

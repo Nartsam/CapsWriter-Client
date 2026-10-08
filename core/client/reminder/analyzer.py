@@ -4,6 +4,7 @@ import re
 from datetime import datetime
 
 from core.client import logger
+from core.client.llm.llm_anthropic import extract_text
 from .model import ReminderError, PARSE_ERROR
 
 
@@ -92,16 +93,26 @@ def analyze(handler, role, content, pending, states, anchor, timeout):
             'utterance': content,
         }, ensure_ascii=False)},
     ]
-    # 保持该角色原有 API 路径，Responses 角色仍使用 Responses，但不挂载搜索。
+    # 保持该角色原有 API 路径（Anthropic、Responses 角色各走各的格式），但不挂载搜索。
     # 不合并 extra_options，避免其中的 tools/stream/messages 覆盖隔离边界。
     client = handler.client_pool.get_client(role.provider, role.api_url, role.api_key,
-                                           request_timeout=timeout)
+                                           request_timeout=timeout, api_format=role.api_format)
     params = {'model': role.model, 'temperature': role.temperature, 'top_p': role.top_p}
     if role.provider == 'ollama':
         response = client.chat(model=role.model, messages=messages, stream=False, format='json',
                                options={'temperature': role.temperature, 'top_p': role.top_p,
                                         'num_predict': max(role.max_tokens, 2048)}, think=role.enable_thinking)
         text = response.message.content
+    elif role.api_format == 'anthropic':
+        # 不传 thinking、用服务端默认（会先思考），与另两条分支一样。不能跟着角色的
+        # enable_thinking=False 关掉：关掉后「十分钟后」「半小时以后」这类相对时间
+        # 被判成 vague_time 拒绝（2026-10-07 实测各 3/3），思考开着则全部正确
+        body = dict(params, system=SYSTEM, messages=messages[1:], max_tokens=max(role.max_tokens, 2048))
+        response = client.create(body, timeout=timeout, max_retries=0)
+        if response.get('stop_reason') != 'end_turn':
+            logger.info('提醒 Anthropic 未完成：stop_reason=%s', response.get('stop_reason'))
+            raise ReminderError('提醒未设置：模型响应未正常完成（可能被截断）。')
+        text = extract_text(response)
     elif role.enable_web_search:
         response = client.with_options(max_retries=0).responses.create(
             **params, instructions=SYSTEM, input=messages[1:], stream=False,

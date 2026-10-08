@@ -35,6 +35,7 @@ import urllib.request
 import uuid
 
 from core.tools.asyncio_to_thread import to_thread
+from core.tools.local_port import is_port_listening
 from . import logger
 
 # 状态标签的正则与剥离统一放在 llm_state_tags：本地 Toast / 打字两条路径也要用，
@@ -99,6 +100,10 @@ class OpenMateClient:
 
     def is_available(self, timeout: float = 0.5) -> bool:
         """探测 OpenMate 是否以 external 模式运行且当前接受外部写入"""
+        # OpenMate 没开时，Windows 连本机空端口要等满 timeout 才失败（原因见 local_port），
+        # 每次角色请求都白等 0.5s。地址在本机时先查监听表，确定没人监听就不再发 HTTP
+        if self._local_port_closed():
+            return False
         try:
             info = self._request('GET', '/health', timeout=timeout)
         except Exception:
@@ -106,6 +111,18 @@ class OpenMateClient:
         return (info.get('mode') == 'external'
                 and bool(info.get('ready'))
                 and bool(info.get('acceptsExternalMessages')))
+
+    def _local_port_closed(self) -> bool:
+        """地址是本机且确定没有程序监听该端口时为真；其余情况（远程地址、查询失败）为假"""
+        try:
+            parts = urllib.parse.urlsplit(self.base_url)
+            host = (parts.hostname or '').lower()
+            if host not in ('127.0.0.1', 'localhost', '::1'):
+                return False
+            port = parts.port or (443 if parts.scheme == 'https' else 80)
+        except ValueError:
+            return False
+        return is_port_listening(port) is False
 
     def get_presentation(self) -> dict:
         """查询当前生效角色与活动流状态（含未传 character 时写请求的回退结果）"""

@@ -15,10 +15,11 @@ from .llm_role_config import RoleConfig
 from .llm_interfaces import IContextManager
 from .llm_client_pool import ClientPool
 from .llm_constants import estimate_tokens, ToolNames, IMAGE_PLACEHOLDER
+from .llm_anthropic import to_anthropic_messages, DEFAULT_MAX_TOKENS, WEB_SEARCH_TOOL
 from .llm_exceptions import (
     APIException,
     wrap_openai_error, OpenAIErrorWrapper,
-    TimeoutErrorWrapper
+    TimeoutErrorWrapper, APIResponseErrorWrapper
 )
 from . import logger
 
@@ -54,7 +55,8 @@ class LLMProcessor:
         should_stop_check: Optional[Callable[[], bool]] = None,
         context_manager: Optional[IContextManager] = None,
         status_callback: Optional[Callable[[str], None]] = None,
-        used_tools: Optional[List[str]] = None
+        used_tools: Optional[List[str]] = None,
+        toast_request=None
     ) -> Tuple[str, int, float]:
         """
         执行 LLM 处理
@@ -67,6 +69,7 @@ class LLMProcessor:
             context_manager: 上下文管理器（用于更新历史）
             status_callback: 过程状态回调（如联网搜索中），仅用于展示，不计入正文
             used_tools: 出参列表，本次请求实际触发的服务端工具 ID 会按序追加进来
+            toast_request: 本地 Toast 的取消/完成状态，决定本轮是否提交历史
 
         Returns:
             (处理后的文本, 输出token数, 生成时间秒)
@@ -78,7 +81,8 @@ class LLMProcessor:
         client = self.client_pool.get_client(
             provider=role_config.provider,
             api_url=role_config.api_url,
-            api_key=role_config.api_key
+            api_key=role_config.api_key,
+            api_format=role_config.api_format
         )
 
         try:
@@ -90,12 +94,16 @@ class LLMProcessor:
                 context_manager,
                 messages,
                 status_callback,
-                used_tools
+                used_tools,
+                toast_request
             )
 
         except OpenAIErrorWrapper:
             raise
         except Exception as e:
+            if toast_request is not None and toast_request.cancelled.is_set():
+                logger.debug(f"忽略已取消 Toast 请求的迟到异常: {type(e).__name__}")
+                return '', 0, 0.0
             if isinstance(e, APIException):
                 raise
 
@@ -244,6 +252,46 @@ class LLMProcessor:
 
         return params
 
+    def _build_anthropic_params(
+        self,
+        role_config: RoleConfig,
+        messages: List[Dict[str, Any]]
+    ) -> Dict[str, Any]:
+        """构建 Anthropic Messages 请求参数（不含 stream，由客户端按调用方式补上）
+
+        与另两套的差异：system 走顶层字段；max_tokens 是必填项；停止序列叫
+        stop_sequences；搜索工具是 web_search_20250305
+        """
+        system, items = to_anthropic_messages(messages)
+        params = {
+            'model': role_config.model,
+            'messages': items,
+            'max_tokens': role_config.max_tokens if role_config.max_tokens > 0 else DEFAULT_MAX_TOKENS,
+            'temperature': role_config.temperature,
+            'top_p': role_config.top_p,
+        }
+        if system:
+            params['system'] = system
+
+        if role_config.stop:
+            stop_list = role_config.stop
+            if isinstance(stop_list, str):
+                stop_list = [s.strip() for s in stop_list.split(',')]
+            params['stop_sequences'] = stop_list
+
+        # 与另两条 OpenAI 路径一致：只在关闭时显式声明。DeepSeek 的 Anthropic 接口上
+        # 这个开关是生效的（Responses 上被忽略，见 DEV_NOTES）
+        if not role_config.enable_thinking:
+            params['thinking'] = {'type': 'disabled'}
+
+        if role_config.enable_web_search:
+            params['tools'] = [dict(WEB_SEARCH_TOOL)]
+
+        if role_config.extra_options:
+            params.update(role_config.extra_options)
+
+        return params
+
     @staticmethod
     def _describe_messages(messages: List[Dict[str, str]]) -> str:
         """一行请求构成摘要（几条历史、带几张图）
@@ -274,15 +322,24 @@ class LLMProcessor:
         context_manager: Optional[IContextManager],
         messages: List[Dict[str, str]],
         status_callback: Optional[Callable[[str], None]] = None,
-        used_tools: Optional[List[str]] = None
+        used_tools: Optional[List[str]] = None,
+        toast_request=None
     ) -> Tuple[str, int, float]:
         """执行流式请求并协调不同处理引擎"""
 
+        if toast_request is not None and toast_request.cancelled.is_set():
+            return '', 0, 0.0
         logger.info(f"请求构成：{self._describe_messages(messages)}")
 
         if role_config.provider == 'ollama':
             result = self._process_ollama_stream(
                 client, role_config, messages, callback, should_stop_check
+            )
+        elif role_config.api_format == 'anthropic':
+            # 联网搜索（开启时）也在这条路径里挂工具，不再分 Responses / Chat 两条
+            result = self._process_anthropic_stream(
+                client, role_config, messages, callback, should_stop_check,
+                status_callback, used_tools
             )
         elif role_config.enable_web_search:
             # 带图的请求同样走这里，不降级到 Chat Completions：图片与内置 web_search
@@ -303,7 +360,10 @@ class LLMProcessor:
             total_tokens = estimate_tokens(full_response)
             result = (full_response, total_tokens, generation_time)
 
-        self._record_turn(role_config, context_manager, messages, full_response)
+        # 在工作线程里确定生成完成：之后再按 Esc 只关窗。取消先发生时整轮丢弃，
+        # 即使用户已经看到了半截回答，也不把它写入后续上下文。
+        if toast_request is None or toast_request.finish():
+            self._record_turn(role_config, context_manager, messages, full_response)
 
         return result
 
@@ -318,8 +378,8 @@ class LLMProcessor:
 
         回复为空（输出额度被推理耗尽、拒答、出字前就按了中断键）时整轮不写：用户没看到
         回答，记下来只会让之后每次请求都带着一条空消息，记忆落盘后更是一直带着；只写提问
-        又会留下两条相连的 user 消息，模型容易把两个问题混在一起答。已输出部分文字后被
-        打断的照常写入，那些文字用户看到了。
+        又会留下两条相连的 user 消息，模型容易把两个问题混在一起答。OpenMate / typing
+        已输出的部分照常写入；本地 Toast 的取消轮次在调用本方法之前整轮拦截。
         """
         if not (role_config.enable_history and context_manager):
             return
@@ -625,5 +685,118 @@ class LLMProcessor:
             logger.info(f"Responses 流被用户中断：{summary}")
         else:
             logger.debug(f"Responses 流结束：{summary}")
+
+        return full_response.strip(), total_tokens, generation_time
+
+    def _process_anthropic_stream(
+        self,
+        client: Any,
+        role_config: RoleConfig,
+        messages: List[Dict[str, Any]],
+        callback: Optional[Callable[[str], None]],
+        should_stop_check: Optional[Callable[[], bool]],
+        status_callback: Optional[Callable[[str], None]] = None,
+        used_tools: Optional[List[str]] = None
+    ) -> Tuple[str, int, float]:
+        """处理 Anthropic Messages 流（api_format='anthropic'）
+
+        服务端工具以 server_tool_use 内容块出现，块的 name 就是工具 ID（web_search），
+        与 Responses 路径的 <工具>_call 事件一样触发状态占位与 used_tools
+        """
+        params = self._build_anthropic_params(role_config, messages)
+        timeout = role_config.request_timeout if role_config.request_timeout > 0 else None
+
+        full_response, total_tokens, generation_start_time = "", 0, None
+        seen_tools = []
+        # 计数键带上块与增量的类型（block_start[server_tool_use]、delta[thinking_delta]），
+        # 只数事件名的话空回复时看不出模型这几秒在思考、在搜索还是什么都没干
+        event_counts = {}
+        usage = {}
+        stop_reason, refusal_note, stopped = '', '', False
+
+        with client.stream(params, timeout=timeout) as events:
+            for event in events:
+                if should_stop_check and should_stop_check():
+                    stopped = True
+                    break
+
+                event_type = event.get('type', '')
+                block = event.get('content_block') or {}
+                delta = event.get('delta') or {}
+                if event_type == 'content_block_start':
+                    count_key = f"block_start[{block.get('type', '?')}]"
+                elif event_type == 'content_block_delta':
+                    count_key = f"delta[{delta.get('type', '?')}]"
+                else:
+                    count_key = event_type
+                event_counts[count_key] = event_counts.get(count_key, 0) + 1
+
+                if event_type == 'content_block_delta' and delta.get('type') == 'text_delta':
+                    content = delta.get('text') or ''
+                    if content:
+                        full_response += content
+                        if generation_start_time is None:
+                            generation_start_time = time.time()
+                        if callback:
+                            callback(content)
+
+                elif event_type == 'content_block_start' and block.get('type') == 'server_tool_use':
+                    tool_id = block.get('name') or 'server_tool'
+                    # 一个回合里可能搜索多次，只认第一次
+                    if tool_id not in seen_tools:
+                        seen_tools.append(tool_id)
+                        if used_tools is not None:
+                            used_tools.append(tool_id)
+                        logger.info(f"模型触发了服务端工具: {tool_id}")
+                        if status_callback:
+                            status_callback(ToolNames.status(tool_id))
+
+                elif event_type == 'content_block_start' and block.get('type', '').endswith('_tool_result'):
+                    # 工具执行失败时 content 是 {'type': ..._error, 'error_code': ...} 而不是结果列表，
+                    # 模型会接着凭记忆回答，不记下来就看不出这次其实没搜到
+                    result = block.get('content')
+                    if isinstance(result, dict) and result.get('error_code'):
+                        logger.warning(f"服务端工具执行失败: {block.get('type')} {result.get('error_code')}")
+
+                elif event_type == 'message_start':
+                    usage.update(_dig(event, 'message', 'usage') or {})
+
+                elif event_type == 'message_delta':
+                    # message_delta 里的 usage 是累计终值（输入含搜索结果、输出含工具调用参数）
+                    usage.update(event.get('usage') or {})
+                    stop_reason = delta.get('stop_reason') or stop_reason
+
+                elif event_type == 'error':
+                    # 不能按正常结束返回：半截正文会被写入记忆。响应错误走现有错误提示，
+                    # 不触发把识别原文打进当前窗口的降级路径。
+                    error = APIResponseErrorWrapper(
+                        RuntimeError(f"Anthropic 接口流内错误: {_dig(event, 'error', 'message') or event}"),
+                        role_config.provider)
+                    logger.error(f"LLM API 调用失败: {error}")
+                    raise error
+
+        generation_time = time.time() - generation_start_time if generation_start_time else 0.0
+        total_tokens = usage.get('output_tokens') or 0
+        usage_summary = self._format_usage(usage) if usage else 'usage 缺失'
+        searches = _dig(usage, 'server_tool_use', 'web_search_requests')
+        if searches:
+            usage_summary += f"，搜索 {searches} 次"
+
+        if stop_reason == 'refusal':
+            refusal_note = '（模型拒答）'
+        summary = (f"结束原因 {stop_reason or '未知'}{refusal_note}，{usage_summary}，"
+                   f"正文 {len(full_response)} 字，事件 [{self._format_event_counts(event_counts)}]")
+        if not full_response.strip() and not stopped:
+            logger.warning(f"模型没有返回任何正文（{summary}）")
+        elif stopped:
+            # 同 Responses 路径：中断抑制了空回复告警，这里补终局快照
+            logger.info(f"Anthropic 流被用户中断：{summary}")
+        elif stop_reason == 'max_tokens':
+            logger.warning(f"回复达到 max_tokens 被截断（{summary}）")
+        elif stop_reason == 'pause_turn':
+            # 服务端工具循环过长时会暂停回合、要求客户端续发；本客户端不续发，回复可能不完整
+            logger.warning(f"服务端暂停了本回合，回复可能不完整（{summary}）")
+        else:
+            logger.debug(f"Anthropic 流结束：{summary}")
 
         return full_response.strip(), total_tokens, generation_time

@@ -580,6 +580,7 @@ class RequestTests(unittest.IsolatedAsyncioTestCase):
                     detect_role=Mock(return_value=(self.role, '问题')), processor=Mock(), message_builder=Mock(),
                     memory_store=Mock(clear=Mock(return_value=[])))
         self.handler.processor.process.return_value = ('回答', 1, 1)
+        self.handler.monitor.toast_cancelled.return_value = False
         self.typing = types.ModuleType('core.client.llm.llm_output_typing')
         self.typing.handle_typing_mode = AsyncMock(return_value=('回答', 1, 1))
         self.typing.output_text = AsyncMock()
@@ -618,6 +619,17 @@ class RequestTests(unittest.IsolatedAsyncioTestCase):
         self.namespace['process'](self.handler, self.role, '问题', selection=self.preview)
         self.capture.assert_not_called()
         self.assertEqual(self.handler.message_builder.build_messages.call_args.kwargs['selection_text'], '选择内容')
+
+    async def test_cancelled_toast_does_not_mark_selection_as_used(self):
+        stop = load('core.client.llm.llm_stop_monitor', 'core/client/llm/llm_stop_monitor.py')
+        request = stop.ToastRequest(lambda: None)
+        def process(**kwargs):
+            request.cancel()
+            return '半截回答', 2, 0.1
+        self.handler.processor.process.side_effect = process
+        self.namespace['process'](self.handler, self.role, '问题', selection=self.preview,
+                                  toast_request=request)
+        self.namespace['record_selection_usage'].assert_not_called()
 
     async def test_no_role_reminder_and_companion_skip_selection(self):
         for branch in ('no_role', 'reminder', 'companion'):
@@ -721,7 +733,8 @@ class DispatchTests(unittest.IsolatedAsyncioTestCase):
 
         monitor = Mock()
         monitor.should_stop.return_value = False
-        monitor.create_stop_callback.return_value = threading.Event()
+        stop = load('core.client.llm.llm_stop_monitor', 'core/client/llm/llm_stop_monitor.py')
+        monitor.create_toast_request.side_effect = stop.ToastRequest
         self.handler = types.SimpleNamespace(process=process, monitor=monitor)
         tags = load('core.client.llm.llm_state_tags', 'core/client/llm/llm_state_tags.py')
         text_output = types.ModuleType('core.client.output.text_output')

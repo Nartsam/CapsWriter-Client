@@ -97,7 +97,6 @@ class ToastWindowText(ToastWindowBase):
         # 通常是录音指示器线程）上，跨解释器传到本窗口会退化成无效家族名 -> 小号宋体
         self.my_font = font.Font(root=self.window, family=self.font_family, size=self.font_size)
         self.line_height = self.my_font.metrics('linespace')
-        self.last_char_count = 0
 
         # 创建 Text 组件
         text_height = STREAMING_TEXT_HEIGHT if streaming else NON_STREAMING_TEXT_HEIGHT
@@ -138,7 +137,6 @@ class ToastWindowText(ToastWindowBase):
             self.text_area.config(state=tk.NORMAL)
             self.text_area.insert(tk.END, text)
             self.text_area.config(state=tk.DISABLED)
-            self.last_char_count = len(text)
 
         # 强制更新布局
         self.window.update_idletasks()
@@ -203,11 +201,14 @@ class ToastWindowText(ToastWindowBase):
             logger.warning(f"设置窗口位置失败: {e}")
 
     def update_text(self, new_text: str) -> None:
-        """更新文本内容（增量插入模式）
-        
-        仅在流式模式下有效。增量插入新字符到 Text 组件末尾，
-        并根据内容自动调整窗口高度。
-        
+        """更新文本内容
+
+        仅在流式模式下有效。new_text 是当前文字的延续时只把新增部分插到末尾（流式
+        的常态，不整段重绘）；不是延续时整段替换——「正在思考…」这类状态占位被
+        另一条状态或正文取代时就是这样。此前只按长度增量追加：占位之后显示成
+        「占位 + 正文去掉前几个字」，不比占位长的回复（如「红色。」）干脆显示不出来。
+        根据内容自动调整窗口高度（只增不减）。
+
         Args:
             new_text: 完整的新文本内容
         """
@@ -223,19 +224,19 @@ class ToastWindowText(ToastWindowBase):
             self.streaming = False
             return
 
-        # 计算新增的字符
-        current_char_count = len(new_text)
-        if current_char_count > self.last_char_count:
+        old_text = self.full_text
+        if new_text != old_text:
             # 保存完整文本
             self.full_text = new_text
-            
-            # 获取新增部分
-            new_chars = new_text[self.last_char_count:]
 
             try:
                 # 更新 Text 组件
                 self.text_area.config(state=tk.NORMAL)
-                self.text_area.insert(tk.END, new_chars)
+                if new_text.startswith(old_text):
+                    self.text_area.insert(tk.END, new_text[len(old_text):])
+                else:
+                    self.text_area.delete('1.0', tk.END)
+                    self.text_area.insert(tk.END, new_text)
                 self.text_area.config(state=tk.DISABLED)
 
                 # 强制同步布局计算
@@ -261,8 +262,6 @@ class ToastWindowText(ToastWindowBase):
                     curr_y = self.window.winfo_y()
                     self._set_geometry(current_w, int(needed_h), curr_x, curr_y)
                     self._apply_window_shape()
-
-                self.last_char_count = current_char_count
             except tk.TclError:
                 # 窗口已被销毁，停止流式输出
                 self.streaming = False

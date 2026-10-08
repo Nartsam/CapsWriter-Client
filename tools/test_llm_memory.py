@@ -103,7 +103,8 @@ stub('core.client.llm.llm_exceptions',
      APIException=type('APIException', (Exception,), {}),
      wrap_openai_error=lambda *a, **k: None,
      OpenAIErrorWrapper=type('OpenAIErrorWrapper', (Exception,), {}),
-     TimeoutErrorWrapper=type('TimeoutErrorWrapper', (Exception,), {}))
+     TimeoutErrorWrapper=type('TimeoutErrorWrapper', (Exception,), {}),
+     APIResponseErrorWrapper=type('APIResponseErrorWrapper', (Exception,), {}))
 stub('core.client.llm.llm_role_detector', RoleDetector=object)
 stub('core.client.llm.llm_get_selection',
      capture_selection=lambda *a, **k: types.SimpleNamespace(text=''),
@@ -129,6 +130,7 @@ rc = load('llm_role_config')
 memory = load('llm_memory')
 ctx = load('llm_context')
 load('llm_message_builder')
+load('llm_anthropic')
 proc = load('llm_processor')
 formatter = load('llm_role_formatter')
 watcher = load('llm_watcher')

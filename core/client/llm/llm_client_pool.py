@@ -9,6 +9,7 @@ from openai import OpenAI
 from typing import Dict, Any, Union
 from ollama import Client as OllamaClient
 from .llm_constants import APIConfig
+from .llm_anthropic import AnthropicClient
 
 
 class ClientPool:
@@ -18,18 +19,19 @@ class ClientPool:
         self._clients: Dict[str, Any] = {}
 
     def get_client(self, provider: str, api_url: str = '', api_key: str = '',
-                   request_timeout: float = 0) -> Any:
+                   request_timeout: float = 0, api_format: str = 'openai') -> Any:
         """获取 LLM 客户端（带缓存）
 
         Args:
             provider: API 提供商（如 'ollama', 'openai'）
             api_url: API 地址（可选，优先使用此值）
             api_key: API Key（可选）
+            api_format: 'anthropic' 时返回 AnthropicClient（见 llm_anthropic），其余按 provider
 
         Returns:
-            OpenAI 或 ollama.Client 客户端实例
+            OpenAI、ollama.Client 或 AnthropicClient 客户端实例
         """
-        cache_key = f"{provider}_{api_url}"
+        cache_key = f"{provider}_{api_format}_{api_url}"
         if request_timeout > 0:
             cache_key += f"_timeout_{request_timeout}"
 
@@ -46,7 +48,14 @@ class ClientPool:
                 timeout = request_timeout
 
             # 创建客户端
-            if provider == 'ollama':
+            if provider != 'ollama' and api_format == 'anthropic':
+                self._clients[cache_key] = AnthropicClient(
+                    base_url=final_url,
+                    api_key=final_key,
+                    timeout=timeout,
+                    provider=provider,
+                )
+            elif provider == 'ollama':
                 self._clients[cache_key] = OllamaClient(
                     host=final_url,
                     timeout=timeout,

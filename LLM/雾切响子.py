@@ -14,6 +14,7 @@ provider = backend_config['provider']               # API 提供商
 api_url = backend_config['api_url']                 # API 地址
 api_key = backend_config['api_key']                 # API Key
 model = backend_config['model']                     # 模型名称
+api_format = backend_config['api_format']           # 请求格式（OpenAI / Anthropic），随后端而定
 enable_vision = True                                # 接收 vision_capture_key 挂载的图片。注意本项不会校验 model 是否真支持视觉，写错了服务端会返 400
 
 # ==================== 上下文管理 ====================
@@ -21,7 +22,7 @@ max_context_length = 256 * 1024                # 最大上下文长度（token �
 
 # ==================== 功能配置 ====================
 enable_hotwords = False                 # 是否启用热词
-enable_thinking = False                 # 是否启用思考（仅 Ollama）
+enable_thinking = False                 # 是否启用思考（关闭时直接回答、更快；Ollama 与 DeepSeek 生效）
 enable_history = True                   # 是否保留对话历史
 enable_read_selection = True            # 是否启用获取选中文字（默认 UI Automation）
 selection_max_length = 1000             # 选中文字最大长度
@@ -33,9 +34,9 @@ request_timeout = backend_config['request_timeout'] # 单次请求超时。两�
 output_mode = 'toast'                   # 输出方式：'typing' 直接打字, 'toast' 浮动窗口
 
 # ==================== Toast 弹窗配置（仅在 output_mode='toast' 时有效） ====================
-toast_min_width_px = 320                # 最小宽度像素值；正数时优先于比例配置
-toast_max_width_px = 800                # 最大宽度像素值；正数时优先于比例配置
-toast_min_width_ratio = 0.2             # 最小宽度比例回退值（像素值无效时使用）
+toast_min_width_px = 0                # 最小宽度像素值；正数时优先于比例配置
+toast_max_width_px = 0                # 最大宽度像素值；正数时优先于比例配置
+toast_min_width_ratio = 0.3             # 最小宽度比例回退值（像素值无效时使用）
 toast_max_width_ratio = 0.5             # 最大宽度比例回退值（像素值无效时使用）
 toast_initial_height = 0                # 窗口初始高度（0 表示自动计算）
 toast_font_family = '微软雅黑'

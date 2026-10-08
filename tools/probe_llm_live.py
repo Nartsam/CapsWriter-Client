@@ -4,22 +4,25 @@
 
 有几条设计结论是**押在 DeepSeek 当前行为上**的（写在对应代码注释与 DEV_NOTES 里），本地
 单测证不了，改厂商模型/接口时也不会有任何报错——只会表现成某个功能悄悄失灵。
-这个脚本把它们一次性重测一遍，坏了哪条一眼看得出来。
+这个脚本把它们一次性重测一遍，坏了哪条一眼看得出来。全部走生产路径：DeepSeek 后端的
+Anthropic 兼容接口（api_format='anthropic'，见 core/client/llm/llm_anthropic.py）。
 
-  P1 视觉 + web_search 共存      带图请求不降级到 Chat（llm_processor._stream_request）
+  P1 视觉 + 联网搜索共存         带图的请求照常挂搜索工具，不另走分支（llm_processor._stream_request）
   P2 历史里的图仍可见            「历史里只保留最近一张真图」的前提（ContextManager.demote_images）
   P3 情绪标签跨轮保持            历史存原文才有意义（llm_state_tags 模块说明）
-  P4 thinking:disabled 是否生效  DEV_NOTES「已知问题」记的是「接受但完全无效」
+  P4 thinking:disabled 是否生效  Anthropic 接口上应生效（Responses 上无效，见 DEV_NOTES）
+  P5 联网搜索真的执行            Responses 接口曾静默忽略搜索工具，flash 把工具调用当正文吐出
 
-P2/P3 用仓库里**真实的** RoleConfig / MessageBuilder / ContextManager /
-LLMProcessor 组装请求，只桩掉网络与 app，所以它们同时也是生产链路的回归测试。
+请求都用仓库里**真实的** RoleConfig / MessageBuilder / ContextManager /
+LLMProcessor 组装，只桩掉网络与 app，所以它们同时也是生产链路的回归测试。
 
 用法：python tools/probe_llm_live.py [P1 P3 ...]     # 不给参数则全跑
-密钥从 LLM.secrets 读入，**从不打印**，输出里也不含 Authorization 头。
+密钥经 LLM.backends 从 LLM.secrets 读入，**从不打印**，输出里也不含认证头。
 """
 from __future__ import annotations
 
 import base64
+import dataclasses
 import importlib.util
 import io
 import json
@@ -39,7 +42,6 @@ REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if REPO not in sys.path:
     sys.path.insert(0, REPO)
 
-BASE = 'https://api.deepseek.com'
 TAG = re.compile(r'<state:([^>]*)>')
 
 
@@ -80,45 +82,70 @@ def data_url() -> str:
 
 # ================================================================ HTTP
 
-def post(payload: dict, api_key: str, path: str = '/responses', timeout: int = 120):
-    """发一次流式请求，返回 (http_status, 正文, 事件类型计数, usage)"""
+def post(payload: dict, role, timeout: int = 120, on_text=None) -> dict:
+    """按生产路径发一次 Anthropic 流式请求（地址与请求头同 AnthropicClient）
+
+    返回 dict：status（HTTP 状态，建连异常为 -1）、text、counts（事件计数，块与增量带类型，
+    如 block_start[server_tool_use]）、usage（终值）、stop_reason、error、tool_errors
+    on_text: 每个正文分片到达时回调（probe_role_segments 用它驱动分段发送器）
+    """
     req = urllib.request.Request(
-        BASE + path,
-        data=json.dumps(payload, ensure_ascii=False).encode('utf-8'),
-        headers={'Content-Type': 'application/json',
-                 'Authorization': 'Bearer ' + api_key,
-                 'Accept': 'text/event-stream'},
+        role.api_url.rstrip('/') + '/v1/messages',
+        data=json.dumps(dict(payload, stream=True), ensure_ascii=False).encode('utf-8'),
+        headers={'content-type': 'application/json', 'x-api-key': role.api_key,
+                 'anthropic-version': '2023-06-01', 'accept': 'text/event-stream'},
         method='POST')
+    result = {'status': None, 'text': '', 'counts': {}, 'usage': {}, 'stop_reason': '',
+              'error': '', 'tool_errors': []}
     try:
         resp = urllib.request.urlopen(req, timeout=timeout)
     except urllib.error.HTTPError as e:
-        return e.code, e.read().decode('utf-8', 'replace')[:800], {}, {}
+        with e:
+            result.update(status=e.code, error=e.read().decode('utf-8', 'replace')[:800])
+        return result
     except Exception as e:
-        return -1, '{}: {}'.format(type(e).__name__, e), {}, {}
+        result.update(status=-1, error='{}: {}'.format(type(e).__name__, e))
+        return result
 
-    parts, counts, usage = [], {}, {}
-    for raw in resp:
-        line = raw.decode('utf-8', 'replace').strip()
-        if not line.startswith('data:'):
-            continue
-        body = line[5:].strip()
-        if body == '[DONE]':
-            continue
-        try:
-            evt = json.loads(body)
-        except Exception:
-            continue
-        etype = evt.get('type') or 'chat.chunk'
-        counts[etype] = counts.get(etype, 0) + 1
-        if etype == 'response.output_text.delta':
-            parts.append(evt.get('delta') or '')
-        elif etype == 'response.completed':
-            usage = ((evt.get('response') or {}).get('usage')) or {}
-    return resp.status, ''.join(parts), counts, usage
-
-
-def reasoning_tokens(usage: dict) -> int:
-    return int(((usage.get('output_tokens_details') or {}).get('reasoning_tokens')) or 0)
+    result['status'] = resp.status
+    parts, counts = [], result['counts']
+    # 读取期间断连、超时或回调抛错时也关闭响应；异常由各探针的请求边界记录。
+    with resp:
+        for raw in resp:
+            line = raw.decode('utf-8', 'replace').strip()
+            if not line.startswith('data:'):
+                continue
+            try:
+                evt = json.loads(line[5:].strip())
+            except ValueError:
+                continue
+            etype = evt.get('type') or '?'
+            delta = evt.get('delta') or {}
+            block = evt.get('content_block') or {}
+            if etype == 'content_block_start':
+                key = 'block_start[{}]'.format(block.get('type'))
+                if block.get('type', '').endswith('_tool_result'):
+                    content = block.get('content')
+                    if isinstance(content, dict) and content.get('error_code'):
+                        result['tool_errors'].append(content['error_code'])
+            elif etype == 'content_block_delta':
+                key = 'delta[{}]'.format(delta.get('type'))
+            else:
+                key = etype
+            counts[key] = counts.get(key, 0) + 1
+            if etype == 'content_block_delta' and delta.get('type') == 'text_delta':
+                parts.append(delta.get('text') or '')
+                if on_text:
+                    on_text(delta.get('text') or '')
+            elif etype == 'message_start':
+                result['usage'].update((evt.get('message') or {}).get('usage') or {})
+            elif etype == 'message_delta':
+                result['usage'].update(evt.get('usage') or {})
+                result['stop_reason'] = delta.get('stop_reason') or result['stop_reason']
+            elif etype == 'error':
+                result['error'] = str((evt.get('error') or {}).get('message') or evt)[:300]
+    result['text'] = ''.join(parts)
+    return result
 
 
 # ================================================================ 生产模块加载
@@ -148,6 +175,7 @@ def load_production():
             'wrap_openai_error': lambda *a, **k: None,
             'OpenAIErrorWrapper': type('OpenAIErrorWrapper', (Exception,), {}),
             'TimeoutErrorWrapper': type('TimeoutErrorWrapper', (Exception,), {}),
+            'APIResponseErrorWrapper': type('APIResponseErrorWrapper', (Exception,), {}),
         }),
     ):
         m = types.ModuleType(mod)
@@ -170,6 +198,7 @@ def load_production():
     load('core.client.llm.llm_memory', 'llm_memory.py')
     ns.context = load('core.client.llm.llm_context', 'llm_context.py')
     ns.builder = load('core.client.llm.llm_message_builder', 'llm_message_builder.py')
+    ns.anthropic = load('core.client.llm.llm_anthropic', 'llm_anthropic.py')
     ns.processor = load('core.client.llm.llm_processor', 'llm_processor.py')
     return ns
 
@@ -208,23 +237,26 @@ def emotion_prompt() -> str:
 
 # ================================================================ 探针
 
+def production_params(prod, role, text, image=None) -> dict:
+    """生产链路组装的单轮请求参数（MessageBuilder + _build_anthropic_params）"""
+    builder = prod.builder.MessageBuilder(app=None)
+    messages = builder.build_messages(role, text, None, image_data=image,
+                                      hotwords=None, selection_text='')
+    p = prod.processor.LLMProcessor.__new__(prod.processor.LLMProcessor)
+    return p._build_anthropic_params(role, messages)
+
+
 def p1_vision_with_websearch(key, prod, role) -> bool:
-    """P1：图片能与服务端内置 web_search 工具在同一个 Responses 请求里共存"""
-    payload = {
-        'model': role.model,
-        'input': [{'role': 'user', 'content': [
-            {'type': 'input_text', 'text': '这张图被平均分成四个方块。只用一行回答，'
-                                           '格式严格为：左上=颜色 右上=颜色 左下=颜色 右下=颜色'},
-            {'type': 'input_image', 'image_url': data_url()},
-        ]}],
-        'max_output_tokens': 300,
-        'tools': [{'type': 'web_search'}],
-        'stream': True,
-    }
-    status, text, _, _ = post(payload, key)
-    ok = status == 200 and all(c in text for c in ('红', '绿', '蓝'))
-    print('  HTTP {}  回复: {}'.format(status, text.strip()[:120] or '（空）'))
-    return ok
+    """P1：图片能与联网搜索工具在同一个请求里共存"""
+    params = production_params(prod, role, '这张图被平均分成四个方块。只用一行回答，'
+                                           '格式严格为：左上=颜色 右上=颜色 左下=颜色 右下=颜色',
+                               data_url())
+    params['max_tokens'] = 300
+    r = post(params, role)
+    print('  HTTP {}  挂了搜索工具: {}  回复: {}'.format(
+        r['status'], bool(params.get('tools')), r['text'].strip()[:120] or r['error'] or '（空）'))
+    return (r['status'] == 200 and bool(params.get('tools'))
+            and all(c in r['text'] for c in ('红', '绿', '蓝')))
 
 
 def _run_turns(key, prod, role, turns, extra_instructions=''):
@@ -237,20 +269,19 @@ def _run_turns(key, prod, role, turns, extra_instructions=''):
     for text, image in turns:
         messages = builder.build_messages(role, text, cm, image_data=image,
                                           hotwords=None, selection_text='')
-        params = p._build_responses_params(role, messages)
+        params = p._build_anthropic_params(role, messages)
         if extra_instructions:
-            params['instructions'] = params.get('instructions', '') + extra_instructions
-        params['stream'] = True
-        params['max_output_tokens'] = 600
+            params['system'] = params.get('system', '') + extra_instructions
+        params['max_tokens'] = 600
         summary = p._describe_messages(messages)
-        status, answer, _, _ = post(params, key)
-        answer = answer.strip()
+        r = post(params, role)
+        answer = r['text'].strip()
         user_content = messages[-1]['content']
         if isinstance(user_content, list):
             cm.demote_images(placeholder)
         cm.add_message('user', user_content)
         cm.add_message('assistant', answer)
-        out.append((status, answer, summary))
+        out.append((r['status'], answer, summary))
     return out
 
 
@@ -280,57 +311,96 @@ def p3_state_tags_across_turns(key, prod, role) -> bool:
     return ok
 
 
-def p4_thinking_disabled(key, prod, role) -> bool:
-    """DEV_NOTES「已知问题」记的是「接受但完全无效」。此处只报数，由人判断结论是否还成立
+def completed_reply(result: dict) -> bool:
+    """HTTP 200 仍可能包含流内错误；验证模型能力前先确认拿到了完整正文。"""
+    return (result['status'] == 200 and not result['error']
+            and result['stop_reason'] == 'end_turn' and bool(result['text'].strip()))
 
-    reasoning token 数天生抖动很大，单次对比说明不了问题，所以判定条件放得很松：
-    只要两边都产生了 reasoning，就说明「关不掉」这条结论没变。
+
+def p4_thinking_disabled(key, prod, role) -> bool:
+    """P4：Anthropic 接口上 thinking:disabled 应真的关掉思考
+
+    角色 enable_thinking=False 时生产请求带这个参数；DeepSeek 的 Responses API 上它被接受
+    但无效（DEV_NOTES），每次都先思考、首字慢约 0.5s。判据是有没有 thinking 块，
+    不比 token 数（天生抖动）。不带参数的那次只作对照，用来确认判据本身看得到思考
     """
     def once(disabled: bool):
-        payload = {
-            'model': role.model,
-            'input': [{'role': 'user', 'content': '用一句话说明什么是快速排序。'}],
-            'max_output_tokens': 400,
-            'stream': True,
-        }
-        if disabled:
-            payload['thinking'] = {'type': 'disabled'}
-        status, text, _, usage = post(payload, key)
-        return status, reasoning_tokens(usage), text.strip()
+        variant = dataclasses.replace(role, enable_thinking=not disabled, enable_web_search=False)
+        params = production_params(prod, variant, '用一句话说明什么是快速排序。')
+        params['max_tokens'] = 400
+        r = post(params, role)
+        return r, r['counts'].get('block_start[thinking]', 0), 'thinking' in params
 
-    st_off, r_off, _ = once(True)
-    st_on, r_on, _ = once(False)
-    print('  thinking:disabled -> HTTP {}  reasoning tokens = {}'.format(st_off, r_off))
-    print('  不带该参数        -> HTTP {}  reasoning tokens = {}'.format(st_on, r_on))
-    still_ineffective = st_off == 200 and r_off > 0
-    print('  {}'.format('结论未变：参数被接受但关不掉思考' if still_ineffective
-                        else '**结论可能变了**：disabled 时 reasoning 归零，值得复查 DEV_NOTES'))
-    return st_off == 200 and st_on == 200
+    off, t_off, sent_off = once(True)
+    on, t_on, _ = once(False)
+    print('  thinking:disabled（生产请求带: {}）-> HTTP {}  thinking 块 {} 个'.format(sent_off, off['status'], t_off))
+    print('  不带该参数（服务端默认）         -> HTTP {}  thinking 块 {} 个'.format(on['status'], t_on))
+    for label, result in (('关闭组', off), ('对照组', on)):
+        if not completed_reply(result):
+            print('  {}未得到完整正文：结束原因 {}，错误 {}'.format(
+                label, result['stop_reason'] or '?', result['error'] or '无'))
+    if t_on == 0:
+        print('  对照组也没有思考块：服务端默认可能改成了不思考，判据需要复查')
+    return (completed_reply(off) and completed_reply(on)
+            and sent_off and t_off == 0 and t_on > 0)
+
+
+# 工具调用被当成正文吐出时的痕迹（2026-10-07 在 Responses 接口上实测到的几种）
+TOOL_LEAK = re.compile(r'DSML|<tool_|invoke name=|function_calls|<ipython>|tool_call')
+
+
+def p5_web_search_executes(key, prod, role) -> bool:
+    """P5：问时效性问题，服务端必须真的执行搜索
+
+    2026-09 起 DeepSeek 的 Responses API 忽略 web_search，flash 把工具调用当正文吐出
+    （DSML 标记、<tool_result>、整段 Python 代码），客户端不会报任何错，Toast 也不再
+    显示「正在联网搜索」。判据：收到工具调用和无错误的搜索结果，正常生成完整正文，
+    且正文里没有工具调用痕迹
+    """
+    params = production_params(prod, role, '今天美元兑人民币汇率是多少？')
+    r = post(params, role)
+    searches = r['counts'].get('block_start[server_tool_use]', 0)
+    results = r['counts'].get('block_start[web_search_tool_result]', 0)
+    leaked = bool(TOOL_LEAK.search(r['text']))
+    print('  HTTP {}  server_tool_use {} 个  结束原因 {}  回复: {}'.format(
+        r['status'], searches, r['stop_reason'] or '?',
+        r['text'].strip().replace('\n', ' ')[:100] or r['error'] or '（空）'))
+    if leaked:
+        print('  **正文里出现了工具调用痕迹**：搜索没有被服务端执行')
+    if r['tool_errors']:
+        print('  搜索工具失败: {}'.format('、'.join(r['tool_errors'])))
+    return (completed_reply(r) and searches > 0 and results > 0
+            and not r['tool_errors'] and not leaked)
 
 
 PROBES = [
-    ('P1', '视觉 + web_search 共存（约定 21⑧）', p1_vision_with_websearch),
+    ('P1', '视觉 + 联网搜索共存（约定 21⑧）', p1_vision_with_websearch),
     ('P2', '历史里的图仍可见（生产链路两轮）', p2_image_in_history),
     ('P3', '情绪标签跨轮保持（约定 22，生产链路三轮）', p3_state_tags_across_turns),
-    ('P4', 'thinking:disabled 是否生效（DEV_NOTES 已知状态）', p4_thinking_disabled),
+    ('P4', 'thinking:disabled 在 Anthropic 接口上生效', p4_thinking_disabled),
+    ('P5', '联网搜索真的执行（工具调用没有被当成正文）', p5_web_search_executes),
 ]
 
 
 def main(argv) -> int:
     wanted = {a.upper() for a in argv} or {name for name, _, _ in PROBES}
+    prod = load_production()
     try:
-        from LLM.secrets import DEEPSEEK_API_KEY as key
+        from LLM.backends import resolve
+        # 角色文件可能改到别的后端，这里固定用 DeepSeek 那一套：探针测的就是它的行为
+        role = dataclasses.replace(load_role(prod), **resolve('deepseek'))
     except Exception as e:
-        print('[×] 无法读取密钥：{}'.format(e))
+        print('[×] 无法读取后端配置或密钥：{}'.format(e))
         return 2
-    if not key:
+    if not role.api_key:
         print('[×] DEEPSEEK_API_KEY 为空')
         return 2
-
-    prod = load_production()
-    role = load_role(prod)
-    print('角色 {}  model={}  history={}  vision={}  web_search={}'.format(
-        role.display_name, role.model, role.enable_history,
+    if role.api_format != 'anthropic':
+        print('[×] DeepSeek 后端不是 Anthropic 格式，本探针的请求与生产路径不符')
+        return 2
+    key = role.api_key
+    print('角色 {}  model={}  format={}  history={}  vision={}  web_search={}'.format(
+        role.display_name, role.model, role.api_format, role.enable_history,
         role.enable_vision, role.enable_web_search))
 
     verdicts = []
