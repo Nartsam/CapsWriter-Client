@@ -42,7 +42,7 @@ from . import logger
 # 状态标签的正则与剥离统一放在 llm_state_tags：本地 Toast / 打字两条路径也要用，
 # 让它们反向 import 这个 OpenMate 专用模块说不通（见该模块开头的说明）。
 # 这里再导出一次，原先从本模块 import 的调用方不必改。
-from .llm_state_tags import STATE_TAG_RE, strip_state_tags  # noqa: F401
+from .llm_state_tags import STATE_TAG_RE, StateTagFilter, strip_close_tags, strip_state_tags  # noqa: F401
 
 
 def build_emotion_prompt(states: list, default_state: str = '') -> str:
@@ -282,6 +282,8 @@ class OpenMateStreamSender:
         self._stream_id = None
         self._failed = False
         self._completed = False
+        # 开标签原样交给 OpenMate，只去掉它不认的结束标签（可能被切在两个分片之间）
+        self._close_filter = StateTagFilter(close_only=True)
         self._thread = threading.Thread(
             target=self._worker, daemon=True, name='OpenMateSender')
         self._thread.start()
@@ -324,6 +326,8 @@ class OpenMateStreamSender:
                     _set_typing_safe(self.client, True, payload)
                 continue
             if kind != 'delta':
+                if kind == 'complete':
+                    self._send_delta(self._close_filter.finish())
                 self._finalize(kind)
                 return
             parts = [payload]
@@ -338,7 +342,7 @@ class OpenMateStreamSender:
                 else:
                     pending = (nxt_kind, nxt_payload)
                     break
-            self._send_delta(''.join(parts))
+            self._send_delta(self._close_filter.feed(''.join(parts)))
 
     def _send_delta(self, text: str):
         if self._failed or not text:
@@ -471,7 +475,8 @@ class OpenMateSegmentSender:
         return segments
 
     def _prepare_segment(self, text: str) -> str:
-        text = text.strip()
+        # 段落已完整，直接去掉结束标签；只剩结束标签的段按空段丢弃
+        text = strip_close_tags(text).strip()
         if not text:
             return ''
         if not strip_state_tags(text).strip():

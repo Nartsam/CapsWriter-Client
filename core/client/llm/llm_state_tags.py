@@ -11,25 +11,39 @@ md 记录、UDP 广播都必须把它去掉。
 第一轮出现的根因——历史里的 assistant 消息永远不带标签，模型从第二轮起照抄自己
 上一条的形态，few-shot 漂移压过了 system 指令。修法是把剥离从记忆层移到展示层，
 于是本地两条输出路径也要用到它，再从 OpenMate 模块里反向导入就说不通了。
+
+模型偶尔会像写 XML 那样把正文包成 `<state:普通>…</state:普通>`。结束标签不带
+任何状态信息，OpenMate 也不认它，所以本地展示连同开标签一起剥掉，OpenMate 路径
+只去掉结束标签（`close_only`），开标签照常交给 OpenMate 驱动立绘。
 """
 
 import re
 
-# 与 OpenMate 文档 §4.4 的约束一致（非空、≤64 字符、无控制字符和嵌套 <）
-STATE_TAG_RE = re.compile(r'<(?:state|状态):[^<>\x00-\x1f]{1,64}>')
+_BODY = r'[^<>\x00-\x1f]{1,64}'
+# 开标签：与 OpenMate 文档 §4.4 的约束一致（非空、≤64 字符、无控制字符和嵌套 <）。
+# OpenMate 分段发送器靠它 findall 出要保留的状态事件，所以它只认开标签
+STATE_TAG_RE = re.compile(r'<(?:state|状态):' + _BODY + '>')
+# 结束标签：`</state:普通>`，也认不带状态名的 `</state>`
+STATE_CLOSE_TAG_RE = re.compile(r'</(?:state|状态)(?::' + _BODY + ')?>')
+_ANY_TAG_RE = re.compile(STATE_TAG_RE.pattern + '|' + STATE_CLOSE_TAG_RE.pattern)
 
 _TAG_HEADS = ('state:', '状态:')
 _MAX_BODY = 64
-# 暂存上限：'<' + 最长的头 + 正文上限。超过它就绝无可能再补成标签，必须放行，
+# 暂存上限：'</' + 最长的头 + 正文上限。超过它就绝无可能再补成标签，必须放行，
 # 否则模型输出一个孤立的 '<' 之后的正文会被无限缓冲
-_MAX_PENDING = 1 + max(len(h) for h in _TAG_HEADS) + _MAX_BODY
+_MAX_PENDING = 2 + max(len(h) for h in _TAG_HEADS) + _MAX_BODY
 _HEAD_PREFIXES = frozenset(h[:i] for h in _TAG_HEADS for i in range(len(h) + 1))
 _TAG_BREAKERS = re.compile(r'[<>\x00-\x1f]')
 
 
 def strip_state_tags(text: str) -> str:
-    """剥离状态标签。只适用于完整文本，流式分片请用 StateTagFilter"""
-    return STATE_TAG_RE.sub('', text) if text else text
+    """剥离开、结两种状态标签。只适用于完整文本，流式分片请用 StateTagFilter"""
+    return _ANY_TAG_RE.sub('', text) if text else text
+
+
+def strip_close_tags(text: str) -> str:
+    """只剥离结束标签，供 OpenMate 路径使用（开标签要留给 OpenMate）"""
+    return STATE_CLOSE_TAG_RE.sub('', text) if text else text
 
 
 class StateTagFilter:
@@ -45,16 +59,19 @@ class StateTagFilter:
         for chunk in stream:
             visible = f.feed(chunk)   # 可能是空串
         visible = f.finish()          # 冲掉残留
+
+    `close_only=True` 时只剥结束标签，开标签原样放行（OpenMate 流式路径）。
     """
 
-    def __init__(self):
+    def __init__(self, close_only: bool = False):
         self._pending = ''
+        self._pattern = STATE_CLOSE_TAG_RE if close_only else _ANY_TAG_RE
 
     def feed(self, chunk: str) -> str:
         """喂入一个分片，返回此刻可以安全放行的文本（可能为空串）"""
         if not chunk:
             return ''
-        buf = STATE_TAG_RE.sub('', self._pending + chunk)
+        buf = self._pattern.sub('', self._pending + chunk)
         cut = self._hold_from(buf)
         self._pending = buf[cut:]
         return buf[:cut]
@@ -82,6 +99,9 @@ class StateTagFilter:
         if len(tail) > _MAX_PENDING:
             return len(buf)
         body = tail[1:]
+        if body.startswith('/'):
+            # 结束标签按同样的头判断；`</state` 已在前缀集合里，补上 `>` 前会继续暂存
+            body = body[1:]
         if body in _HEAD_PREFIXES:
             return i
         for head in _TAG_HEADS:

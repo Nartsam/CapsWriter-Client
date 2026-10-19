@@ -114,6 +114,42 @@ for text in ('结尾有个尖括号<', '半截标签<state:微'):
 f = StateTagFilter()
 check(f.finish() == '' and f.finish() == '', 'finish 幂等且不产生残留')
 
+# ---------------------------------------------------------------- 7
+section('结束标签：本地展示全部剥掉，close_only 只剥结束标签')
+# 2026-10-19 实际出现过：模型把整段正文包成 <state:normal>…</state:normal>
+wrapped = '<state:normal>今天的新闻就这些。</state:normal>'
+check(strip_state_tags(wrapped) == '今天的新闻就这些。', '首尾成对的标签都剥掉')
+check(strip_state_tags('好的</state>') == '好的', '不带状态名的结束标签')
+check(strip_state_tags('好的</状态:微笑>') == '好的', '中文结束标签')
+check(mod.strip_close_tags(wrapped) == '<state:normal>今天的新闻就这些。',
+      'strip_close_tags 保留开标签')
+for t in ('</states:x>', '</state:a<b>', '</', '</state', '</state:', 'a</b>'):
+    check(strip_state_tags(t) == t, '相近但不是结束标签的文本不动: %r' % t)
+    check(run(t, range(len(t))) == t, '逐字喂入原样通过: %r' % t)
+
+bad = [(i, j) for i, j in itertools.combinations(range(len(wrapped) + 1), 2)
+       if run(wrapped, [i, j]) != '今天的新闻就这些。']
+check(not bad, '结束标签切点失败 %d 处，例如 %s' % (len(bad), bad[:3]))
+
+
+def run_close_only(text, cuts):
+    f = StateTagFilter(close_only=True)
+    out, prev = [], 0
+    for c in list(cuts) + [len(text)]:
+        out.append(f.feed(text[prev:c]))
+        prev = c
+    out.append(f.finish())
+    return ''.join(out)
+
+
+expect = '<state:normal>今天的新闻就这些。'
+bad = [(i, j) for i, j in itertools.combinations(range(len(wrapped) + 1), 2)
+       if run_close_only(wrapped, [i, j]) != expect]
+check(not bad, 'close_only 切点失败 %d 处，例如 %s' % (len(bad), bad[:3]))
+for t in ('<state:微笑>你好</state>，<状态:失落>再见</状态:失落>', '公式 a<b 与 c>d'):
+    check(run_close_only(t, range(len(t))) == mod.strip_close_tags(t),
+          'close_only 逐字喂入与整段结果一致: %r' % t)
+
 print()
 print('=' * 60)
 print('通过 %d 项，失败 %d 项' % (PASS, FAIL))

@@ -142,6 +142,25 @@ class SegmentTests(unittest.TestCase):
                 sender, client = self.send(list(text))
                 self.assert_segments(client, [text])
 
+    def test_close_tags_are_dropped_but_open_tags_kept(self):
+        text = '<state:normal>第一条\n第二条</state:normal>\n</state>'
+        for cut in range(len(text) + 1):
+            with self.subTest(cut=cut):
+                sender, client = self.send([text[:cut], text[cut:]])
+                self.assert_segments(client, ['<state:normal>第一条', '第二条'])
+
+    def test_stream_sender_drops_split_close_tag(self):
+        text = '<state:normal>正文</state:normal>'
+        for cut in range(len(text) + 1):
+            with self.subTest(cut=cut):
+                client = CaptureClient()
+                sender = openmate.OpenMateStreamSender(client, '角色甲')
+                sender.push(text[:cut])
+                sender.push(text[cut:])
+                self.assertTrue(sender.finish())
+                self.assertEqual(''.join(body.get('delta', '') for _, _, body in client.calls if body),
+                                 '<state:normal>正文')
+
     def test_plain_lines_and_custom_delimiter_keep_existing_split(self):
         sender, client = self.send(['\n \n第一条\n\n第二条\n'])
         self.assert_segments(client, ['第一条', '第二条'])
