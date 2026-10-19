@@ -97,7 +97,7 @@ CapsWriter 离线语音输入的**客户端**（Windows）。上游 [HaujetZhao/
 | `llm_memory.py` | 记忆文件：`logs/llm_memory/<角色 .py 文件名>.json`，先写临时文件再替换；读不了的改名为 `.bad-时间.json` 保留；图片落盘为占位符（由 `ContextManager` 转换） |
 | `llm_processor.py`、`llm_client_pool.py` | 四条流式路径：Ollama 原生、Anthropic Messages（`api_format='anthropic'`）、Chat Completions、Responses（OpenAI 格式且 `enable_web_search` 时）；工具事件 → `used_tools`；空回复/截断/拒答诊断；Anthropic 流内错误进入统一响应错误处理，本轮不写记忆；每次请求 INFO 一行「请求构成」 |
 | `llm_anthropic.py` | Anthropic 格式：内部 Chat 口味消息的转换，及基于 httpx 的极简客户端（SSE 解析、HTTP 状态映射到与 openai 路径相同的包装异常）；请求重试策略见 [DEV_NOTES 的有效决策](docs/DEV_NOTES.md#仍然有效的决策) |
-| `llm_output_typing.py`、`llm_output_toast.py`、`llm_output_openmate.py` | 三种输出：打字/粘贴；本地 Toast（以「正在思考…」占位弹出，工具状态与正文整段取代它）；OpenMate 看板（探测 `/health`，本机地址先查端口监听表、没开就不等超时；情绪指令注入、流式或分段队列、typing 指示、失败回退本地 Toast） |
+| `llm_output_typing.py`、`llm_output_toast.py`、`llm_output_openmate.py` | 三种输出：打字/粘贴；本地 Toast（以「正在思考…」占位弹出，工具状态与正文整段取代它）；OpenMate 看板（探测 `/health`，本机端口预查；情绪指令注入、流式或分段队列、typing 指示与工具状态文案，状态和正文共用发送线程；失败回退本地 Toast） |
 | `llm_state_tags.py` | `<state:…>` 情绪标签的识别与剥离；流式用 `StateTagFilter` |
 | `llm_stop_monitor.py` | OpenMate / typing 的全局中断键两层闸门；本地 Toast 使用独立 `ToastRequest`，跨线程共享取消状态、互斥确定完成与取消 |
 | `llm_get_selection.py` | 按 `selection_mode` 获取选区，`SelectionContext` 区分本轮附加文字与终端预览，按角色相邻轮次去重 |

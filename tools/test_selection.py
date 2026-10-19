@@ -620,6 +620,27 @@ class RequestTests(unittest.IsolatedAsyncioTestCase):
         self.capture.assert_not_called()
         self.assertEqual(self.handler.message_builder.build_messages.call_args.kwargs['selection_text'], '选择内容')
 
+    async def test_openmate_status_does_not_arm_escape_before_body(self):
+        stop = load('core.client.llm.llm_stop_monitor', 'core/client/llm/llm_stop_monitor.py')
+        monitor = self.handler.monitor = stop.StopMonitor()
+        monitor.begin_request()
+        statuses = []
+
+        def process(**kwargs):
+            kwargs['status_callback']('检索提示')
+            monitor.on_stop_pressed()
+            self.assertFalse(monitor.should_stop())
+            kwargs['callback']('正文')
+            monitor.on_stop_pressed()
+            self.assertTrue(monitor.should_stop())
+            return '正文', 1, 0.1
+
+        self.handler.processor.process.side_effect = process
+        self.namespace['process'](self.handler, self.role, '问题', selection=self.preview,
+                                  status_callback=statuses.append)
+        self.assertEqual(statuses, ['检索提示'])
+        monitor.end_request()
+
     async def test_cancelled_toast_does_not_mark_selection_as_used(self):
         stop = load('core.client.llm.llm_stop_monitor', 'core/client/llm/llm_stop_monitor.py')
         request = stop.ToastRequest(lambda: None)
@@ -811,6 +832,9 @@ class DispatchTests(unittest.IsolatedAsyncioTestCase):
                                                               'image', self.snapshot)
                 self.assertEqual(result[0], '正文')
                 self.check_forwarding()
+                sender.push_status.reset_mock()
+                self.calls[0]['status_callback']('检索提示')
+                sender.push_status.assert_called_once_with('检索提示')
 
 
 if __name__ == '__main__':

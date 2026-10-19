@@ -245,11 +245,9 @@ class LLMHandler:
                 callback(chunk)
 
         def marking_status(status: str):
-            # 工具状态占位（如「正在联网搜索」）同样是用户看得见的东西
+            # 搜索提示只更新显示；OpenMate 仍等正文到达才武装全局 Esc。
             if toast_request is not None and should_stop_check():
                 return
-            if toast_request is None:
-                monitor.mark_output_started()
             status_callback(status)
 
         # 获取处理后的角色名称（空字符串 -> '默认'）

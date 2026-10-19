@@ -1,12 +1,14 @@
 # coding: utf-8
-"""OpenMate 分段发送回归：使用真实发送线程和请求构造，HTTP 仅在内存中收集。"""
+"""OpenMate 分段与状态发送回归：使用真实发送线程和请求构造，HTTP 仅在内存中收集。"""
 import importlib
 import logging
 from pathlib import Path
 import queue
 import sys
+import threading
 import types
 import unittest
+from unittest.mock import patch
 
 sys.dont_write_bytecode = True
 ROOT = Path(__file__).resolve().parents[1]
@@ -23,15 +25,18 @@ openmate = importlib.import_module('core.client.llm.llm_output_openmate')
 
 
 class CaptureClient(openmate.OpenMateClient):
-    def __init__(self, fail_method=''):
+    def __init__(self, fail_method='', reject_status=False):
         super().__init__('http://offline.invalid')
         self.calls = []
         self.arrivals = queue.Queue()
         self.fail_method = fail_method
+        self.reject_status = reject_status
 
     def _request(self, method, path, body=None, timeout=None):
         self.calls.append((method, path, body))
         self.arrivals.put((method, path, body))
+        if self.reject_status and path == '/v1/presentation/typing' and 'text' in body:
+            raise openmate.urllib.error.HTTPError(self.base_url, 400, 'invalid_request', {}, None)
         if method == self.fail_method:
             raise OSError('模拟发送失败')
         return {'id': 'captured-message'}
@@ -39,7 +44,7 @@ class CaptureClient(openmate.OpenMateClient):
     def segments(self):
         result = []
         for method, path, body in self.calls:
-            if body:
+            if body and path.startswith('/v1/messages'):
                 result.extend(body.get('segments', []))
                 result.extend(body.get('appendSegments', []))
                 if 'text' in body:
@@ -169,6 +174,80 @@ class SegmentTests(unittest.TestCase):
         self.assertFalse(sender.finish())
         self.assertTrue(sender.failed)
         self.assertEqual(client.calls[-1], ('DELETE', '/v1/messages/captured-message', None))
+
+    def test_status_is_ordered_with_body_and_does_not_block_producer(self):
+        for sender_type in (openmate.OpenMateStreamSender, openmate.OpenMateSegmentSender):
+            with self.subTest(sender=sender_type.__name__):
+                client = CaptureClient()
+                client.set_typing(True)
+                entered, release = threading.Event(), threading.Event()
+                self.addCleanup(release.set)
+                request = client._request
+
+                def blocked_request(method, path, body=None, timeout=None):
+                    if body and body.get('text') == '检索提示':
+                        entered.set()
+                        if not release.wait(2):
+                            raise TimeoutError('状态请求未被测试释放')
+                    return request(method, path, body, timeout)
+
+                with patch.object(client, '_request', side_effect=blocked_request):
+                    sender = sender_type(client)
+                    sender.push_status('检索提示')
+                    self.assertTrue(entered.wait(2))
+                    # 状态 HTTP 尚未返回时继续入队；积压正文中的状态也不能截断发送器。
+                    sender.push('第一段\n\n')
+                    sender.push_status('正文后的提示')
+                    sender.push('第二段')
+                    release.set()
+                    self.assertTrue(sender.finish())
+                client.set_typing(False)
+                self.assertFalse(sender.failed)
+                self.assertFalse(sender._thread.is_alive())
+                self.assertEqual(client.calls[:2], [
+                    ('PUT', '/v1/presentation/typing', {'active': True}),
+                    ('PUT', '/v1/presentation/typing', {'active': True, 'text': '检索提示'}),
+                ])
+                self.assertEqual(client.calls[-1], ('PUT', '/v1/presentation/typing', {'active': False}))
+                self.assertEqual(sum(method == 'PUT' for method, _, _ in client.calls), 3)
+                if sender_type is openmate.OpenMateStreamSender:
+                    self.assertEqual(''.join(body.get('delta', '') for _, _, body in client.calls if body),
+                                     '第一段\n\n第二段')
+                else:
+                    self.assert_segments(client, ['第一段', '第二段'])
+
+    def test_old_openmate_rejecting_status_still_receives_reply(self):
+        for sender_type in (openmate.OpenMateStreamSender, openmate.OpenMateSegmentSender):
+            with self.subTest(sender=sender_type.__name__):
+                client = CaptureClient(reject_status=True)
+                client.set_typing(True)
+                sender = sender_type(client)
+                sender.push_status('检索提示')
+                sender.push('正文')
+                self.assertTrue(sender.finish())
+                self.assertFalse(sender.failed)
+                self.assertTrue(sender.delivered)
+                self.assertEqual(sum(method == 'PUT' for method, _, _ in client.calls), 2)
+                if sender_type is openmate.OpenMateStreamSender:
+                    self.assertIn(('PATCH', '/v1/streams/captured-message', {'delta': '正文'}), client.calls)
+                else:
+                    self.assert_segments(client, ['正文'])
+
+    def test_status_only_finish_or_abort_does_not_create_a_message(self):
+        for sender_type in (openmate.OpenMateStreamSender, openmate.OpenMateSegmentSender):
+            for action in ('finish', 'abort'):
+                with self.subTest(sender=sender_type.__name__, action=action):
+                    client = CaptureClient()
+                    sender = sender_type(client)
+                    sender.push_status('检索提示')
+                    getattr(sender, action)()
+                    client.set_typing(False)
+                    self.assertFalse(sender.delivered)
+                    self.assertFalse(sender._thread.is_alive())
+                    self.assertEqual(client.calls, [
+                        ('PUT', '/v1/presentation/typing', {'active': True, 'text': '检索提示'}),
+                        ('PUT', '/v1/presentation/typing', {'active': False}),
+                    ])
 
 
 if __name__ == '__main__':

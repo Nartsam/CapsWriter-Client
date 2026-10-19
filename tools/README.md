@@ -25,7 +25,7 @@ python tools/run_tests.py
 | `undefined_baseline.txt` | 上面那个检查器的已知豁免清单 |
 | `test_vision.py` | 视觉输入：剪贴板解码、DIB→BMP、待挂图片状态机、时效判定、带图消息构建 |
 | `test_state_tags.py` | `StateTagFilter`。重点是**穷举分片切割位置**——标签被切在任意一处都必须被完整吃掉 |
-| `test_openmate_segments.py` | OpenMate 分段发送：纯标签段随下一段正文发送、尾部标签丢弃、跨分片一致性、首段及时交付、取消与失败回退；真实发送线程和请求构造，HTTP 在内存中收集 |
+| `test_openmate_segments.py` | OpenMate 分段与状态发送：纯标签段合并、跨分片一致性、首段及时交付、取消与失败回退；流式/分段状态与正文顺序、状态不入正文及旧端拒绝状态后的交付；真实发送线程和请求构造，HTTP 在内存中收集 |
 | `test_history_payload.py` | 对话历史的上行载荷：不带 `timestamp`、不交出活引用、assistant 保留状态标签、旧图降级 |
 | `test_llm_memory.py` | 角色记忆落盘：保存与读回、图片落盘为占位符、容量调小后读回裁剪、损坏文件改名保留、空回复不写入、按 `.py` 文件名区分（改显示名不丢）、热重载沿用同一对象、清除记忆删全部文件、角色表的恢复提示（无提示时行与以前逐字相同）、显示名重复告警。在 `tools/` 下的临时目录里读写，跑完删除 |
 | `test_selection.py` | 选区捕获：默认不发键/不碰剪贴板、回退条件、焦点与超时、Scintilla 范围/编码/标量消息边界、历史去重预览、typing/toast/openmate 单次快照转发、终端输出顺序；所有输入与外部接口均为桩 |

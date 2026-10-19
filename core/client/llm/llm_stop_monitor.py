@@ -90,7 +90,7 @@ class StopMonitor:
         self.reset()
 
     def mark_output_started(self):
-        """本次请求已经产出第一段正文（或第一条工具状态占位）
+        """本次请求已经产出第一段正文
 
         由 LLMHandler.process 为 OpenMate / typing 包装回调后触发，粘贴模式也覆盖到。
         本地 Toast 使用自己的取消状态，不武装全局中断键。
@@ -116,7 +116,7 @@ class StopMonitor:
         """用户按下中断键时的回调
 
         本地 Toast 只接受已点击且仍有焦点的窗口内 Esc，全局热键在此直接忽略。
-        OpenMate / typing 保留 2026-09-12 的两层闸门：有请求且已产出正文或工具状态
+        OpenMate / typing 保留 2026-09-12 的两层闸门：有请求且已产出正文
         才允许中断，避免在其他程序里按 Esc 让尚未显示的回答无声消失。提醒分析不武装。
         """
         with self._state_lock:

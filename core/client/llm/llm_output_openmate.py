@@ -23,7 +23,8 @@ LLM OpenMate 输出模式
    剥离标签后回退本地 Toast 展示，不丢内容
 6. 接管确认后本地「正在处理结果」悬浮提示移交为 OpenMate 的 typing 指示
    （PUT /v1/presentation/typing）：首条消息/分片到达自动熄灭，失败路径
-   显式关闭；typing 开启失败则保留本地提示（兼容旧版 OpenMate）
+   显式关闭；搜索状态通过可选 text 字段更新文案，旧端拒绝时不影响正文；
+   typing 开启失败则保留本地提示（兼容旧版 OpenMate）
 """
 import json
 import queue
@@ -169,9 +170,12 @@ class OpenMateClient:
         """取消分段队列：剩余段停止展示、按 interrupted 入库"""
         self._request('DELETE', f'/v1/messages/{urllib.parse.quote(message_id, safe="")}')
 
-    def set_typing(self, active: bool):
+    def set_typing(self, active: bool, text: str = ''):
         """开关「正在输入」指示（纯视觉：消息/流到达自动熄灭，30s 超时兜底）"""
-        self._request('PUT', '/v1/presentation/typing', {'active': active})
+        body = {'active': active}
+        if text:
+            body['text'] = text
+        self._request('PUT', '/v1/presentation/typing', body)
 
     def create_stream(self, character: str = '', preempt: bool = True) -> str:
         # preempt=True：新对话抢占残留的旧活动流，与本地新 Toast 顶掉旧窗口的行为一致
@@ -295,6 +299,10 @@ class OpenMateStreamSender:
         """LLM 流式回调入口（任意线程可调用）"""
         self._queue.put(('delta', chunk))
 
+    def push_status(self, text: str):
+        # 与正文共用发送线程，避免状态 HTTP 阻塞模型读取或迟到后覆盖正文。
+        self._queue.put(('status', text))
+
     def finish(self, timeout: float = 10.0) -> bool:
         """完成流（写入 OpenMate 历史）。返回内容是否已成功交给 OpenMate 展示"""
         self._queue.put(('complete', None))
@@ -307,29 +315,30 @@ class OpenMateStreamSender:
         self._thread.join(timeout)
 
     def _worker(self):
-        pending = []
+        pending = None
         while True:
-            kind, payload = self._queue.get()
+            kind, payload = pending if pending is not None else self._queue.get()
+            pending = None
+            if kind == 'status':
+                if not self.delivered and not self._failed:
+                    _set_typing_safe(self.client, True, payload)
+                continue
             if kind != 'delta':
                 self._finalize(kind)
                 return
-            pending.append(payload)
-            # 聚合队列中积压的分片；若中途遇到控制命令，先送出文本再收尾
-            control = None
-            while control is None:
+            parts = [payload]
+            # 非正文事件留到下一轮处理，先交付它之前的分片，保持队列顺序。
+            while True:
                 try:
                     nxt_kind, nxt_payload = self._queue.get_nowait()
                 except queue.Empty:
                     break
                 if nxt_kind == 'delta':
-                    pending.append(nxt_payload)
+                    parts.append(nxt_payload)
                 else:
-                    control = nxt_kind
-            self._send_delta(''.join(pending))
-            pending.clear()
-            if control is not None:
-                self._finalize(control)
-                return
+                    pending = (nxt_kind, nxt_payload)
+                    break
+            self._send_delta(''.join(parts))
 
     def _send_delta(self, text: str):
         if self._failed or not text:
@@ -410,6 +419,9 @@ class OpenMateSegmentSender:
         """LLM 流式回调入口（任意线程可调用）"""
         self._queue.put(('delta', chunk))
 
+    def push_status(self, text: str):
+        self._queue.put(('status', text))
+
     def finish(self, timeout: float = 10.0) -> bool:
         """封口队列。返回内容是否已成功交给 OpenMate 展示"""
         self._queue.put(('complete', None))
@@ -423,14 +435,19 @@ class OpenMateSegmentSender:
 
     def _worker(self):
         # 与 OpenMateStreamSender 相同的聚合模式：合并积压分片后统一切分发送
+        pending = None
         while True:
-            kind, payload = self._queue.get()
+            kind, payload = pending if pending is not None else self._queue.get()
+            pending = None
+            if kind == 'status':
+                if not self.delivered and not self._failed:
+                    _set_typing_safe(self.client, True, payload)
+                continue
             if kind != 'delta':
                 self._finalize(kind)
                 return
             parts = [payload]
-            control = None
-            while control is None:
+            while True:
                 try:
                     nxt_kind, nxt_payload = self._queue.get_nowait()
                 except queue.Empty:
@@ -438,12 +455,10 @@ class OpenMateSegmentSender:
                 if nxt_kind == 'delta':
                     parts.append(nxt_payload)
                 else:
-                    control = nxt_kind
+                    pending = (nxt_kind, nxt_payload)
+                    break
             self._buffer += ''.join(parts)
             self._dispatch(self._cut_segments())
-            if control is not None:
-                self._finalize(control)
-                return
 
     def _cut_segments(self) -> list:
         """从缓冲切出带正文的完整段落，独立状态标签留给后续正文"""
@@ -526,14 +541,15 @@ def _make_client() -> OpenMateClient:
     return OpenMateClient(Config.openmate_url, Config.openmate_token)
 
 
-def _set_typing_safe(client: OpenMateClient, active: bool) -> bool:
+def _set_typing_safe(client: OpenMateClient, active: bool, text: str = '') -> bool:
     """尽力开关 typing 指示：纯视觉锦上添花，失败不影响主流程
 
     返回是否成功，供调用方决定是否隐藏本地提示（旧版 OpenMate 无此端点时
-    保留本地「正在处理结果」悬浮窗，行为向后兼容）
+    保留本地「正在处理结果」悬浮窗，行为向后兼容）。旧端拒绝 text 时保留
+    已开启的等待提示，不把状态更新失败升级为正文发送失败。
     """
     try:
-        client.set_typing(active)
+        client.set_typing(active, text)
         return True
     except Exception as e:
         logger.debug(f'OpenMate typing 指示设置失败（忽略）: {e}')
@@ -604,7 +620,7 @@ async def _handle_openmate_mode(handler, client, role_config, content, matched_h
         sender = OpenMateStreamSender(client, target_character)
     try:
         polished_text, token_count, gen_time = await to_thread(
-            handler.process, llm_config, content, matched_hotwords, sender.push, None, used_tools,
+            handler.process, llm_config, content, matched_hotwords, sender.push, sender.push_status, used_tools,
             image_data, selection
         )
 
