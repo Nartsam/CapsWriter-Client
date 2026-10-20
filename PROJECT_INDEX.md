@@ -13,7 +13,7 @@ CapsWriter 离线语音输入的**客户端**（Windows）。上游 [HaujetZhao/
 
 **便携性是硬约束**：新增代码、依赖、配置与辅助工具都留在本目录内，不修改外部环境——不靠给目标程序装扩展、改它的设置或启动参数、装全局依赖或注册系统服务来解决兼容性问题（选区读取同样适用）。
 
-相对上游的本地功能：流式上屏、录音悬浮指示器、录音打断、连续对话、视觉输入、一次性提醒、选区只读获取、服务端多候选、Companion 服务器；LLM 角色的 OpenMate 展示（情绪立绘、分段、typing 指示）、联网搜索与工具标签、后端切换、Toast 自适应宽度与智能时长、空回复诊断；`tools/` 离线验证。
+相对上游的本地功能：流式上屏、录音悬浮指示器（含音量声波条）、录音打断、连续对话、视觉输入、一次性提醒、选区只读获取、服务端多候选、Companion 服务器；LLM 角色的 OpenMate 展示（情绪立绘、分段、typing 指示）、联网搜索与工具标签、后端切换、Toast 自适应宽度与智能时长、空回复诊断；`tools/` 离线验证。
 
 ---
 
@@ -47,7 +47,7 @@ CapsWriter 离线语音输入的**客户端**（Windows）。上游 [HaujetZhao/
 | 主线程 | asyncio 事件循环：ResultProcessor 收结果、AudioRecorder 发音频、WebSocket、Companion 服务器、提醒调度 |
 | pynput 键盘/鼠标 Listener | `ShortcutManager` 的 `win32_event_filter`（低级钩子：录音键、打断键、连续对话切换键） |
 | GlobalHotKeys Listener（单例） | `llm_stop_key`（StopMonitor）与 `vision_capture_key`（VisionManager）共用 |
-| sounddevice 回调 | 48kHz 采集，块数据投进 `state.queue_in`；AudioRecorder 降采样到 16kHz |
+| sounddevice 回调 | 48kHz 采集，块数据投进 `state.queue_in`；AudioRecorder 降采样到 16kHz。录音时每块另算一次电平喂给悬浮指示器的声波条（只做一次赋值，不经命令队列） |
 | Tk 线程（各自一个解释器） | 录音悬浮指示器、Toast 管理器、托盘菜单打开的上下文对话框 |
 | 其他 | 托盘（pystray）、快捷键线程池（补发按键、打断收尾）、LLM 请求（`to_thread`）、视觉单线程 executor、OpenMate 发送线程、选区读取线程、剪贴板序号轮询、watchdog（热词文件、`LLM/` 目录） |
 
@@ -85,7 +85,7 @@ CapsWriter 离线语音输入的**客户端**（Windows）。上游 [HaujetZhao/
 | `diary/diary_writer.py`、`llm/llm_write_md.py` | `年/月/日.md` 听写日记（`save_audio` 开启时写）；`年/月/日-角色.md` 角色对话记录 |
 | `transcribe/` | 文件转录：FFmpeg 解码 → 分段发送 → 收 tokens/timestamps → 存 srt/txt/json；SrtAdjuster 用 json 时间戳重对齐改过的 txt |
 | `udp/`、`companion/` | UDP 控制录音（START/STOP）与结果广播；Companion WebSocket 服务器（默认 6019，事件 `recording_start/end/cancel`、`user_message`）。Companion 目前没有已知的对端应用 |
-| `ui/recording_indicator.py`、`ui/tips.py` | 悬浮指示器（Tk 单例；录音/等待/进度/处理/打断/错误态，连续对话底色、挂图描边）；启动时的控制台提示 |
+| `ui/recording_indicator.py`、`ui/tips.py` | 悬浮指示器（Tk 单例；录音/等待/进度/处理/打断/错误态，连续对话底色、挂图描边）；左侧声波条录音时随音量起伏、松手后变加载波浪，独立约 30 帧/秒的动画循环，音量由 `LevelNormalizer` 按底噪线与说话峰值线自适应换算（不同麦克风电平差 20 dB 也一致）；启动时的控制台提示 |
 
 ### LLM 角色（`core/client/llm/`）
 
@@ -179,7 +179,7 @@ CapsWriter 离线语音输入的**客户端**（Windows）。上游 [HaujetZhao/
 - 系统 Python 没有项目依赖（rich、pynput、sounddevice…），`import core` 会在包 `__init__` 里失败，不要直接导入或运行客户端。测试的做法是预注入 `sys.modules` 桩模块，再用 `importlib` 按文件路径加载目标模块。
 - 验证从轻到重：`ast.parse` 语法检查 → 未定义名字检查 → 桩模块单测 → `start_client.exe` 实机。前三步是 **`python tools/run_tests.py`**（离线、零依赖、不花额度），改完代码提交前跑一遍。
 - `ast.parse` 抓不到 `NameError`，而逐层转发参数改错函数这类错误常要开着某个外部程序（如 OpenMate）才走得到，由 `tools/check_undefined.py` 补救（看的是有没有新增，已知豁免在 `tools/undefined_baseline.txt`）。
-- 不进流水线的脚本：`tools/test_toast_padding.py` 与 `test_toast_scaling.py`（真建 Tk 窗口）、`test_selection_native.py`（真实 UIA）、`probe_selection.py`（诊断前台窗口选区）、`probe_keys.py`（诊断按键、钩子拦截与 Scintilla 选区的时序）、`probe_llm_live.py` 与 `probe_role_segments.py`（真发请求、消耗额度）。用法见 [tools/README.md](tools/README.md)。
+- 不进流水线的脚本：`tools/test_toast_padding.py` 与 `test_toast_scaling.py`（真建 Tk 窗口）、`test_selection_native.py`（真实 UIA）、`probe_selection.py`（诊断前台窗口选区）、`probe_keys.py`（诊断按键、钩子拦截与 Scintilla 选区的时序）、`preview_indicator.py`（真建 Tk，用已保存的录音驱动声波条，会出声）、`probe_llm_live.py` 与 `probe_role_segments.py`（真发请求、消耗额度）。用法见 [tools/README.md](tools/README.md)。
 - 不要提交 `__pycache__`/`.pyc`；语法检查用 `ast.parse` 而不是 `py_compile`。
 
 ---
@@ -209,7 +209,7 @@ CapsWriter 离线语音输入的**客户端**（Windows）。上游 [HaujetZhao/
 | 情绪标签剥离 | `llm_state_tags.py` |
 | 一次性提醒 | `reminder_*` 配置；`core/client/reminder/`、`core/ui/toast_reminder.py`；同步 [docs/提醒功能如何使用.md](docs/提醒功能如何使用.md)；验证 `tools/test_reminders.py` |
 | Toast 弹窗 | `core/ui/toast_*.py`；顶部留白 `toast_constants.py`；改完跑 `tools/test_toast_padding.py`、`test_toast_scaling.py` 并实机弹一次窗口（构造失败是静默的）；LLM 白框的占位流程验证 `tools/test_toast_status.py` |
-| 悬浮指示器 | `core/client/ui/recording_indicator.py` |
+| 悬浮指示器 | `core/client/ui/recording_indicator.py`；声波条的尺寸、配色（`BAR_COLOR_MODE`）、动画与音量换算参数都是文件头常量，电平来自 `audio/stream.py` 的 `_audio_callback`；看效果 `tools/preview_indicator.py`，换算与竖条高度验证 `tools/test_level_meter.py` |
 | 托盘 | `core/ui/tray.py`、`core/client/manager/tray_manager.py` |
 | Companion | `companion_*` 配置；`core/client/companion/` |
 | C/S 协议 | `core/protocol.py` + 两端收发代码（**服务端仓库同步修改**） |

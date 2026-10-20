@@ -4,11 +4,14 @@
 
 在录音和等待识别结果期间，在输入光标附近显示一个轻量置顶小组件。
 布局使用固定尺寸和像素级截断，避免文字挤压、错位或越界。
+左侧的声波条在录音时随麦克风音量起伏（电平由音频回调线程经 update_level 喂入），
+松手后变成加载波浪，打断或出错时压平。
 """
 
 from __future__ import annotations
 
 import ctypes
+import math
 import queue
 import threading
 import time
@@ -16,7 +19,7 @@ import tkinter as tk
 from ctypes import wintypes
 from dataclasses import dataclass
 from tkinter import font as tkfont
-from typing import Optional, Tuple
+from typing import List, Optional, Tuple
 
 from .. import logger
 
@@ -45,16 +48,19 @@ ERROR_ACCENT = "#dc2626"
 # 手动打断是用户主动行为而非故障，用提亮的浅蓝而不是错误红。
 CANCEL_ACCENT = "#7FB9E8"
 
-# 连续对话的面板配色。只换底色不换圆点：底色已经是足够强的状态指示，
-# 圆点再跟着变会让同一个信息重复两遍。
+# 连续对话的面板配色。只换底色不换声波条的颜色：底色已经是足够强的状态指示，
+# 声波条再跟着变会让同一个信息重复两遍。
+# 看到的主要是内层磨砂色（*_FROST），底色只露出外圈 3px。窗口有 0.8 的透明度，压在深色
+# 窗口上会发灰，调浓淡时白底、深色底都要看；黄色也不要往柠檬黄偏，压在深色上会发绿，
+# 和连续对话中的浅绿分不开。
 # 浅黄 = 本次录音正在改变连续对话状态（进入或退出，松手才生效，再按一次可反悔）。
-CONTINUOUS_PENDING_BG = "#FFF8E1"
-CONTINUOUS_PENDING_FROST = "#FFFCF0"
-CONTINUOUS_PENDING_BORDER = "#E8DCB0"
+CONTINUOUS_PENDING_BG = "#FFF2C2"
+CONTINUOUS_PENDING_FROST = "#FFF8DA"
+CONTINUOUS_PENDING_BORDER = "#E2CF8A"
 # 浅绿 = 已处在连续对话中。这是防「忘了自己在连续对话里」的主要视觉信号。
-CONTINUOUS_ACTIVE_BG = "#E8F5E9"
-CONTINUOUS_ACTIVE_FROST = "#F1FAF2"
-CONTINUOUS_ACTIVE_BORDER = "#BFDFC4"
+CONTINUOUS_ACTIVE_BG = "#D6EED9"
+CONTINUOUS_ACTIVE_FROST = "#E4F5E6"
+CONTINUOUS_ACTIVE_BORDER = "#A9D3B0"
 
 # 本次录音挂着待上传的图片：在面板内侧单独画一圈描边，与连续对话的底色
 # 完全正交，两个信号可以同时出现（例：浅绿底 + 彩圈）。
@@ -70,21 +76,25 @@ IMAGE_BORDER_INSET = 2
 
 # 面板尺寸：布局仍是像素级固定，只有宽度会按标题内容加宽。
 # PANEL_W 是最小宽度而非固定宽度——面板宽度是物理像素、不随 DPI 放大，而字体是
-# 磅值、会随 DPI 放大，200% 缩放下 450px 的盒子只有设计意图的一半宽，长标题必然溢出。
+# 磅值、会随 DPI 放大，200% 缩放下这个盒子只有设计意图的一半宽，长标题必然溢出。
 # 降字号治不了（要降到比详情行还小）；整个面板按 DPI 等比放大才是根因修法，但会让
 # 悬浮框物理尺寸翻倍，暂不做。
+# 声波条比原来的圆点宽，文字起点右移了 29px，最小宽度同步加 29px，文字可用宽度不变：
+# 出错、打断时最长的说明只比它窄 5px，再窄就会被截成省略号。
 MARGIN = 0
-PANEL_W = 450
+PANEL_W = 479
 PANEL_H = 140
 CANVAS_W = PANEL_W + MARGIN * 2
 CANVAS_H = PANEL_H + MARGIN * 2
 RADIUS = 34
-DOT_R = 6
 
 # 加宽上限占屏幕宽度的比例，超过就交给 _fit_text 截断兜底。
 PANEL_MAX_W_RATIO = 0.9
-# 文字右侧留白。
+# 文字右侧留白：截断文字和最小宽度按 PADDING_RIGHT 算；面板被标题撑宽时（连续对话的
+# 长标题），标题右侧留 TITLE_PADDING_RIGHT。左边到文字有 91px，粗体标题右侧只留 32 时
+# 实测偏挤；但两者合成一个数，最小宽度就得跟着加，普通录音的面板右侧会空出一大块。
 PADDING_RIGHT = 32
+TITLE_PADDING_RIGHT = 50
 
 TITLE_FONT_SIZE     = 14
 DETAIL_FONT_SIZE    = 10
@@ -92,10 +102,77 @@ DETAIL_FONT_SIZE    = 10
 # Canvas 内部布局坐标。TITLE_Y 和 DETAIL_Y 是两行文字的基线位置。
 PANEL_X = MARGIN
 PANEL_Y = MARGIN
-DOT_X = PANEL_X + 38
-TITLE_X = DOT_X + 24
 TITLE_Y = PANEL_Y + 45
 DETAIL_Y = PANEL_Y + 99
+
+# ---- 声波条 ----
+# 用横平竖直的线段画：Tk 画圆和斜线没有抗锯齿，窗口外圈又是透明色抠图（画不了半透明），
+# 光晕、圆环这类效果画出来都是锯齿，竖条是边缘最干净的形态。
+BAR_COUNT = 5
+BAR_W = 5
+BAR_GAP = 4
+BAR_X = PANEL_X + 28                    # 第一根竖条的左边缘
+BAR_CY = (TITLE_Y + DETAIL_Y) // 2      # 横跨两行：以两行文字之间的中线为轴上下伸缩
+BAR_MIN_H = 8
+BAR_MAX_H = 88
+# 'round' 圆端头；Tk 的圆端头同样没有抗锯齿，看着发毛就改 'butt'（直角）
+BAR_CAPSTYLE = "round"
+# 每根相对整体音量的比例：中间高、两边低（中间 1.0，最外侧 BAR_EDGE_RATIO）
+BAR_EDGE_RATIO = 0.55
+# 每根各自的小幅抖动幅度（相对值）：整组不会像一块板一起升降
+BAR_JITTER = 0.18
+
+# 录音中没有声音时，所有竖条一起缓慢呼吸，说明录音仍在进行
+IDLE_PERIOD_S = 2.4
+IDLE_AMP_H = 6
+# 松手后（等待 / 识别中 / 处理中）的加载波浪：与音量无关，波峰从左到右循环移动
+WAVE_PERIOD_S = 1.4
+WAVE_AMP_H = 28
+WAVE_WIDTH = 1.5                        # 波峰半宽，以竖条根数计
+
+# 竖条配色：'height' 每根按自身高度在灰蓝与强调蓝之间取色（越高越饱和，静音时整体偏灰，
+# 加载波浪的波峰随之变亮）；'gradient' 固定的蓝→青渐变。打断、出错时一律用状态色
+BAR_COLOR_MODE = "height"
+BAR_COLOR_LOW = "#9DB4CC"
+BAR_COLOR_HIGH = ACCENT
+BAR_GRADIENT = (ACCENT, "#0096C7")
+
+# 动画帧间隔：独立于 100ms 的文案刷新，每帧只改竖条的坐标和颜色
+ANIM_INTERVAL_MS = 33
+# 音量包络（指数平滑的时间常数，秒）：起音快、回落慢。音频每 50ms 才来一块，靠它插值
+LEVEL_ATTACK_S = 0.06
+LEVEL_RELEASE_S = 0.25
+# 竖条高度追随目标的时间常数：录音时要跟得上音量；切换状态时要看得出过渡
+BAR_FOLLOW_S = 0.04
+BAR_MORPH_S = 0.12
+# 超过这么久没收到电平（音频流中断）就按静音处理，竖条不停在最后一帧
+LEVEL_STALE_S = 0.3
+
+# 音量换算（LevelNormalizer）。不同电脑的麦克风电平能差 20 dB 以上：实测一台说话约
+# −55～−42 dBFS、不说话时被降噪压到 −98；另一台说话约 −32～−22、底噪约 −70。固定范围
+# 在前一台上看不出起伏、在后一台上一直顶满，所以满格和「空」两头都跟着麦克风走：
+# 底噪线与说话峰值线，竖条高度在两线之间按 dB 线性换算。
+LEVEL_FLOOR_INIT_DB = -70               # 偏高一点：底噪线下降快、上升慢，起点高了很快就能降下来
+LEVEL_FLOOR_FALL = 0.5                  # 遇到更低的电平，每块靠拢差值的这个比例（快）
+LEVEL_FLOOR_RISE_DB_S = 6.0             # 遇到更高的电平，每秒最多升这么多（慢，说话顶不上去）
+LEVEL_FLOOR_MARGIN_DB = 6               # 高出底噪线这么多才开始有高度
+LEVEL_VOICE_GATE_DB = 12                # 高出底噪线这么多才算有声音，才参与峰值估计
+LEVEL_PEAK_INIT_DB = -50
+LEVEL_PEAK_MIN_DB = -60                 # 满格参考的下限：防止把底噪放大成满格
+# 峰值线：有声音的块高于它就上调、低于就下调，步长 9:1，收敛到有声音时电平的第 90 百分位。
+# 每块最多动 0.9 dB，咳嗽、敲键盘这种一两块的瞬态带不动它（指数跟随会被一下拉高几 dB，
+# 之后几秒说话都显得很小）
+LEVEL_PEAK_UP_DB = 0.9
+LEVEL_PEAK_DOWN_DB = 0.1
+# 启动后前这么多个有声音的块改用指数快速跟随：第一次开口，第一个音节就能跟上
+LEVEL_WARMUP_BLOCKS = 20
+LEVEL_WARMUP_ATTACK = 0.5
+LEVEL_MIN_SPAN_DB = 20                  # 满格至少高出底噪线这么多：只有底噪时不会被放大成满格
+LEVEL_MAX_SPAN_DB = 35                  # 满格以下这么多 dB 算空
+
+# 声波条与文字的间距：比面板左边到声波条（28px）略小，太窄会显得声波条挤着文字
+BAR_TEXT_GAP = 22
+TITLE_X = BAR_X + BAR_COUNT * BAR_W + (BAR_COUNT - 1) * BAR_GAP + BAR_TEXT_GAP
 # 最小宽度下的可用文字宽度；实际每次渲染按当前面板宽度重算（_text_max_w）。
 TEXT_MAX_W = PANEL_W - (TITLE_X - PANEL_X) - PADDING_RIGHT
 
@@ -134,6 +211,70 @@ class GUITHREADINFO(ctypes.Structure):
         ("hwndCaret", wintypes.HWND),
         ("rcCaret", RECT),
     ]
+
+
+def _mix_color(low: str, high: str, t: float) -> str:
+    """两个 #RRGGBB 颜色按 t（0～1）线性混合。"""
+    a = [int(low[i:i + 2], 16) for i in (1, 3, 5)]
+    b = [int(high[i:i + 2], 16) for i in (1, 3, 5)]
+    return "#" + "".join(f"{round(x + (y - x) * t):02X}" for x, y in zip(a, b))
+
+
+# 按高度取色的色阶，预先算好：每帧只查表，颜色没变就不 itemconfigure
+_BAR_PALETTE = [_mix_color(BAR_COLOR_LOW, BAR_COLOR_HIGH, k / 31) for k in range(32)]
+_BAR_GRADIENT_COLORS = [
+    _mix_color(BAR_GRADIENT[0], BAR_GRADIENT[1], i / max(1, BAR_COUNT - 1)) for i in range(BAR_COUNT)
+]
+# 中间高、两边低的轮廓（余弦拱形）
+_BAR_PROFILE = [
+    BAR_EDGE_RATIO + (1 - BAR_EDGE_RATIO) * math.cos(math.pi / 2 * (i - (BAR_COUNT - 1) / 2) / max(1, (BAR_COUNT - 1) / 2))
+    for i in range(BAR_COUNT)
+]
+# 每根两组正弦抖动的频率（Hz）与相位：用黄金分割错开，各根互不同步，又每次启动都一样
+_BAR_JITTER_PARAMS = [
+    (1.5 + 2.5 * ((i * 0.618 + 0.1) % 1), 1.2 + 2.0 * ((i * 0.382 + 0.6) % 1),
+     2 * math.pi * ((i * 0.755) % 1), 2 * math.pi * ((i * 0.569 + 0.3) % 1))
+    for i in range(BAR_COUNT)
+]
+
+
+class LevelNormalizer:
+    """把每个音频块的电平（dBFS）换算成声波条高度 0～1，满格与「空」都随麦克风自适应。
+
+    底噪线遇低快降、遇高慢升；说话峰值线估计有声音时电平的第 90 百分位（见文件头的
+    LEVEL_* 常量）。只由一个线程调用（客户端里是 sounddevice 的回调线程），不加锁。
+    两条线在客户端运行期间跨录音保留，静音时峰值线不动：句间停顿和两次录音之间
+    都不会回落，每次开口不必重新适应。
+    """
+
+    def __init__(self) -> None:
+        self.floor_db = float(LEVEL_FLOOR_INIT_DB)
+        self.peak_db = float(LEVEL_PEAK_INIT_DB)
+        self._voiced_blocks = 0
+
+    def update(self, db: float, duration: float) -> float:
+        """喂入一个块的电平，返回 0～1 的高度。duration 是这个块的时长（秒）。"""
+        db = min(0.0, max(-120.0, db))
+
+        if db < self.floor_db:
+            self.floor_db += (db - self.floor_db) * LEVEL_FLOOR_FALL
+        else:
+            self.floor_db += min(db - self.floor_db, LEVEL_FLOOR_RISE_DB_S * duration)
+
+        if db > self.floor_db + LEVEL_VOICE_GATE_DB:
+            if db > self.peak_db:
+                if self._voiced_blocks < LEVEL_WARMUP_BLOCKS:
+                    self.peak_db += (db - self.peak_db) * LEVEL_WARMUP_ATTACK
+                else:
+                    self.peak_db += min(LEVEL_PEAK_UP_DB, db - self.peak_db)
+            else:
+                self.peak_db -= LEVEL_PEAK_DOWN_DB
+            self.peak_db = max(self.peak_db, float(LEVEL_PEAK_MIN_DB))
+            self._voiced_blocks += 1
+
+        hi = max(self.peak_db, self.floor_db + LEVEL_MIN_SPAN_DB)
+        lo = max(self.floor_db + LEVEL_FLOOR_MARGIN_DB, hi - LEVEL_MAX_SPAN_DB)
+        return min(1.0, max(0.0, (db - lo) / (hi - lo)))
 
 
 @dataclass
@@ -213,9 +354,31 @@ class RecordingIndicator:
         # 当前面板宽度。按标题内容可增可减（见 _fit_panel_to_title），每次新录音复位。
         self._panel_w = PANEL_W
 
+        # 声波条。音频线程写 _level_sample（0～1 高度, monotonic 时间戳），Tk 线程每帧读：
+        # 整个元组一次赋值，读写都是原子的，不加锁。_normalizer 只由音频线程使用
+        self._normalizer = LevelNormalizer()
+        self._level_sample: Tuple[float, float] = (0.0, 0.0)
+        # 以下只在 Tk 线程中使用：平滑后的音量包络、各竖条当前高度与已画颜色、动画调度
+        self._level_env = 0.0
+        self._bar_heights: List[float] = [float(BAR_MIN_H)] * BAR_COUNT
+        self._bar_items: List[int] = []
+        self._bar_colors: List[str] = [""] * BAR_COUNT
+        self._anim_job: Optional[str] = None
+        self._anim_last = 0.0
+        # 呼吸与加载波浪的相位起点：从这一刻起算，开始时竖条在最低处、波峰从最左边进入
+        self._phase_epoch = 0.0
+
     # ------------------------------------------------------------------
     # 对外命令
     # ------------------------------------------------------------------
+
+    def update_level(self, db: float, duration: float) -> None:
+        """喂入一个音频块的电平（dBFS），duration 是块时长（秒）。
+
+        在音频回调线程里每 50ms 调用一次：只做换算和一次赋值，不经过命令队列，也不会
+        拉起 Tk 线程。
+        """
+        self._level_sample = (self._normalizer.update(db, duration), time.monotonic())
 
     def show_recording(
         self,
@@ -227,6 +390,9 @@ class RecordingIndicator:
         streaming: bool = False,
     ) -> None:
         """显示录音状态。"""
+        # 清掉上一次录音留下的最后一个电平，免得新录音开头先跳一下；
+        # 本次录音的第一块可能已经写进来又被清掉，50ms 后下一块就到了
+        self._level_sample = (0.0, 0.0)
         self._post(
             "recording",
             start_time=start_time or time.time(),
@@ -353,10 +519,12 @@ class RecordingIndicator:
             return
 
         self._ensure_window()
+        previous_mode = self.state.mode
 
         if action == "recording":
             # 新一次听写开始，面板宽度复位，避免上一句的长角色名一直把窗口撑着。
             self._panel_w = PANEL_W
+            self._level_env = 0.0
             # 按下快捷键时锁定锚点，避免提示框在录音过程中跳动。
             anchor, source = self._get_anchor()
             self.state = IndicatorState(
@@ -417,6 +585,12 @@ class RecordingIndicator:
             self.state.mode = "error"
             self.state.preview_text = payload.get("text", "")
             self.state.auto_hide_at = time.time() + payload.get("duration_ms", 2000) / 1000
+
+        # 进入录音、或从其他状态进入加载波浪时重置相位：呼吸从最低处开始，波峰从最左边
+        # 进入。等待 → 识别中 → 处理中之间不重置，波浪连续地走
+        wave_modes = ("waiting", "progress", "processing")
+        if action == "recording" or (self.state.mode in wave_modes and previous_mode not in wave_modes):
+            self._phase_epoch = time.monotonic()
 
         self._render()
         self._show_now()
@@ -523,12 +697,22 @@ class RecordingIndicator:
         self._place_window()
         self.window.deiconify()
         self._set_topmost_without_activate()
+        self._ensure_animation()
 
     def _hide_now(self) -> None:
         if self.window and self._window_exists():
             self.window.withdraw()
         self.state = IndicatorState()
         self._panel_w = PANEL_W
+        # 隐藏期间不跑动画；下次出现时竖条从最低处长出来
+        if self._anim_job and self.root:
+            try:
+                self.root.after_cancel(self._anim_job)
+            except tk.TclError:
+                pass
+        self._anim_job = None
+        self._level_env = 0.0
+        self._bar_heights = [float(BAR_MIN_H)] * BAR_COUNT
 
     def _set_topmost_without_activate(self) -> None:
         if not self.window:
@@ -568,8 +752,8 @@ class RecordingIndicator:
             return
 
         # 先生成文案，把面板调整到刚好容纳标题，再按像素宽度截断兜底。
-        title, detail, accent = self._compose_text()
-        stable_title, _, _ = self._compose_text(stable=True)
+        title, detail = self._compose_text()
+        stable_title, _ = self._compose_text(stable=True)
         resized = self._fit_panel_to_title(stable_title)
         panel_w = self._panel_w
         max_w = self._text_max_w(panel_w)
@@ -597,15 +781,14 @@ class RecordingIndicator:
                 fill="", outline=IMAGE_BORDER, width=IMAGE_BORDER_WIDTH,
             )
 
-        # 圆点和标题共用 TITLE_Y 基线，保证视觉中心对齐。
-        self.canvas.create_oval(
-            DOT_X - DOT_R,
-            TITLE_Y - DOT_R,
-            DOT_X + DOT_R,
-            TITLE_Y + DOT_R,
-            fill=accent,
-            outline=accent,
-        )
+        # 声波条：整块画布每次都会清空重画，这里按当前高度重建；之后每帧只改坐标和颜色
+        self._bar_items = [
+            self.canvas.create_line(0, 0, 0, 0, width=BAR_W, capstyle=BAR_CAPSTYLE)
+            for _ in range(BAR_COUNT)
+        ]
+        self._bar_colors = [""] * BAR_COUNT
+        self._draw_bars()
+
         self.canvas.create_text(
             TITLE_X,
             TITLE_Y,
@@ -646,7 +829,7 @@ class RecordingIndicator:
         if not self.title_font:
             return False
 
-        needed = (TITLE_X - PANEL_X) + self.title_font.measure(stable_title) + PADDING_RIGHT
+        needed = (TITLE_X - PANEL_X) + self.title_font.measure(stable_title) + TITLE_PADDING_RIGHT
 
         cap = PANEL_W
         try:
@@ -720,8 +903,8 @@ class RecordingIndicator:
             return bg, frost, border
         return PANEL_BG, FROST_MID, BORDER
 
-    def _compose_text(self, stable: bool = False) -> Tuple[str, str, str]:
-        """生成当前状态的文案。
+    def _compose_text(self, stable: bool = False) -> Tuple[str, str]:
+        """生成当前状态的两行文案（标题, 说明）。
 
         Args:
             stable: 用于测量面板宽度时置 True，把省略号动画固定成最长的三个点。
@@ -740,20 +923,20 @@ class RecordingIndicator:
                 detail = f"松开{shortcut_name}后开始识别"
             mode = self.state.continuous_mode
             if mode == "armed":
-                return f"即将开始连续对话 {elapsed:.1f}s", detail, ACCENT
+                return f"即将开始连续对话 {elapsed:.1f}s", detail
             if mode == "active" and self.state.continuous_role:
                 # 角色名加引号，避免「正在与助理连续对话」读起来断不开词
-                return f"正在与“{self.state.continuous_role}”连续对话 {elapsed:.1f}s", detail, ACCENT
+                return f"正在与“{self.state.continuous_role}”连续对话 {elapsed:.1f}s", detail
             if mode == "exited":
                 # 按下切换键的那一刻这句话就已经改回正常角色检测了，所以是「已结束」
-                return f"已结束连续对话 {elapsed:.1f}s", detail, ACCENT
-            return f"正在录音 {elapsed:.1f}s", detail, ACCENT
+                return f"已结束连续对话 {elapsed:.1f}s", detail
+            return f"正在录音 {elapsed:.1f}s", detail
 
         if self.state.mode == "waiting":
             detail = "等待服务端返回最终结果"
             if self.state.recorded_duration > 0:
                 detail = f"已录音 {self.state.recorded_duration:.1f}s | {detail}"
-            return f"等待识别结果{dots}", detail, ACCENT
+            return f"等待识别结果{dots}", detail
 
         if self.state.mode == "progress":
             detail = "服务端正在处理音频"
@@ -762,20 +945,119 @@ class RecordingIndicator:
             if self.state.preview_text:
                 preview = self.state.preview_text.replace("\n", " ")
                 detail = f"{detail} | {preview}"
-            return f"识别进行中{dots}", detail, ACCENT
+            return f"识别进行中{dots}", detail
 
         if self.state.mode == "processing":
-            return f"正在处理结果{dots}", "即将输出到当前窗口", ACCENT
+            return f"正在处理结果{dots}", "即将输出到当前窗口"
 
         if self.state.mode == "cancelled":
             cancel_name = self._format_shortcut_name(self.state.cancel_key)
             detail = "已上屏的文字保留，其余丢弃" if self.state.cancel_partial else "识别结果已丢弃"
-            return f"已按 {cancel_name}手动打断", detail, CANCEL_ACCENT
+            return f"已按 {cancel_name}手动打断", detail
 
         if self.state.mode == "error":
-            return "识别未发送", self.state.preview_text or "服务端未连接", ERROR_ACCENT
+            return "识别未发送", self.state.preview_text or "服务端未连接"
 
-        return "", "", ACCENT
+        return "", ""
+
+    # ------------------------------------------------------------------
+    # 声波条动画
+    # ------------------------------------------------------------------
+
+    def _ensure_animation(self) -> None:
+        # 窗口显示期间才跑；_hide_now 负责取消，_animate 发现已隐藏也会自行停下。
+        if self._anim_job is None and self.root:
+            self._anim_last = time.monotonic()
+            self._anim_job = self.root.after(ANIM_INTERVAL_MS, self._animate)
+
+    def _animate(self) -> None:
+        self._anim_job = None
+        if self.state.mode == "hidden" or not self.root:
+            return
+        try:
+            now = time.monotonic()
+            # 卡顿后不要一步跳太远，过渡仍然看得出来
+            dt = min(0.1, max(0.0, now - self._anim_last))
+            self._anim_last = now
+            self._step_bars(now, dt)
+            self._draw_bars()
+        except Exception as e:
+            logger.debug(f"录音悬浮指示器声波条刷新失败: {e}")
+        if self.root:
+            self._anim_job = self.root.after(ANIM_INTERVAL_MS, self._animate)
+
+    def _step_bars(self, now: float, dt: float) -> None:
+        """平滑音量包络，并让各竖条高度向本帧目标靠拢。"""
+        level = 0.0
+        if self.state.mode == "recording":
+            level, stamp = self._level_sample
+            if now - stamp > LEVEL_STALE_S:
+                level = 0.0
+        tau = LEVEL_ATTACK_S if level > self._level_env else LEVEL_RELEASE_S
+        self._level_env += (level - self._level_env) * (1 - math.exp(-dt / tau))
+
+        follow = BAR_FOLLOW_S if self.state.mode == "recording" else BAR_MORPH_S
+        k = 1 - math.exp(-dt / follow)
+        targets = self._bar_targets(now - self._phase_epoch)
+        for i, target in enumerate(targets):
+            self._bar_heights[i] += (target - self._bar_heights[i]) * k
+
+    def _bar_targets(self, t: float) -> List[float]:
+        """各竖条在相位时刻 t（秒）的目标高度（像素）。"""
+        mode = self.state.mode
+        if mode == "recording":
+            # 呼吸是底，音量叠加在上面：静音时只剩呼吸，一开口就平滑接管
+            idle = BAR_MIN_H + IDLE_AMP_H * (0.5 - 0.5 * math.cos(2 * math.pi * t / IDLE_PERIOD_S))
+            targets = []
+            for i in range(BAR_COUNT):
+                f1, f2, p1, p2 = _BAR_JITTER_PARAMS[i]
+                jitter = 1 + BAR_JITTER * (0.6 * math.sin(2 * math.pi * f1 * t + p1)
+                                           + 0.4 * math.sin(2 * math.pi * f2 * t + p2))
+                amount = min(1.0, self._level_env * _BAR_PROFILE[i] * jitter)
+                targets.append(idle + (BAR_MAX_H - idle) * amount)
+            return targets
+        if mode in ("waiting", "progress", "processing"):
+            # 波峰中心从最左一根之外移到最右一根之外，再从头开始
+            span = BAR_COUNT - 1 + 2 * WAVE_WIDTH
+            center = (t / WAVE_PERIOD_S) % 1.0 * span - WAVE_WIDTH
+            targets = []
+            for i in range(BAR_COUNT):
+                d = abs(i - center)
+                bump = 0.5 + 0.5 * math.cos(math.pi * d / WAVE_WIDTH) if d < WAVE_WIDTH else 0.0
+                targets.append(BAR_MIN_H + WAVE_AMP_H * bump)
+            return targets
+        # 打断、出错：压平
+        return [float(BAR_MIN_H)] * BAR_COUNT
+
+    def _draw_bars(self) -> None:
+        if not self.canvas or len(self._bar_items) != BAR_COUNT:
+            return
+        if self.state.mode == "cancelled":
+            status_color: Optional[str] = CANCEL_ACCENT
+        elif self.state.mode == "error":
+            status_color = ERROR_ACCENT
+        else:
+            status_color = None
+        # 圆端头会在线段两端各多出半个线宽，先扣掉，看到的高度才是 h；
+        # 长度为 0 的线段 Tk 不画，至少留 1px
+        cap = BAR_W if BAR_CAPSTYLE == "round" else 0
+        for i, item in enumerate(self._bar_items):
+            h = self._bar_heights[i]
+            x = BAR_X + i * (BAR_W + BAR_GAP) + BAR_W // 2
+            half = max(0.5, (h - cap) / 2)
+            self.canvas.coords(item, x, BAR_CY - half, x, BAR_CY + half)
+            color = status_color or self._bar_color(i, h)
+            if color != self._bar_colors[i]:
+                self.canvas.itemconfigure(item, fill=color)
+                self._bar_colors[i] = color
+
+    @staticmethod
+    def _bar_color(index: int, height: float) -> str:
+        if BAR_COLOR_MODE == "gradient":
+            return _BAR_GRADIENT_COLORS[index]
+        t = min(1.0, max(0.0, (height - BAR_MIN_H) / (BAR_MAX_H - BAR_MIN_H)))
+        # 开方让矮的竖条也有颜色变化：呼吸和加载波浪都只有满格的一小部分高
+        return _BAR_PALETTE[round(math.sqrt(t) * (len(_BAR_PALETTE) - 1))]
 
     # ------------------------------------------------------------------
     # 位置
@@ -915,6 +1197,10 @@ def show_recording_indicator(
     RecordingIndicator().show_recording(
         start_time, shortcut_key, continuous_mode, continuous_role, has_image, streaming
     )
+
+
+def update_recording_indicator_level(db: float, duration: float) -> None:
+    RecordingIndicator().update_level(db, duration)
 
 
 def update_recording_indicator_stream_note(note: str) -> None:

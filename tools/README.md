@@ -37,8 +37,10 @@ python tools/run_tests.py
 | `test_backends.py` | LLM 后端切换（`LLM/backends.py`）：两套 profile 的接线与协议约束（DeepSeek 走 Anthropic 接口、网关按 OpenAI 格式带 `/v1`、超时大于 0）、未知名字回退、`backends.py` 排在所有引用它的角色文件之前（热切换的前提）、写了 `backend` 的角色六个字段都取自同一套 profile。不检查各角色当前的参数取值 |
 | `test_toast_status.py` | LLM 角色 Toast：占位替换与空回复收尾；取消立即结束本地等待，旧线程的迟到正文/错误不影响下一轮；完成后关窗保留结果；取消跳过角色归档与自动回车。窗口焦点和实际显示由 `test_toast_padding.py` 用真 Tk 验证 |
 | `test_anthropic_path.py` | Anthropic 格式（DeepSeek 后端）：消息转换、请求参数、流解析、错误处理与记忆隔离、路由、客户端缓存及重试；另覆盖 P4/P5 探针的成功判据、读取失败时释放响应与清理分段发送器、失败请求不影响后续实验。生产请求和探针共用模块加载与 HTTP 替身，不读取角色或凭证 |
+| `test_level_meter.py` | 录音悬浮指示器的声波条：音量换算（按两台机器实测电平特征合成信号，换算后说话高度相近、静音贴底、瞬态冲高不压低之后的说话、持续底噪不放大成满格、第一次开口很快跟上、长停顿后不必重新适应）；竖条轮廓、加载波浪方向、打断/出错压平、按高度取色与渐变配色、电平中断时回落。不建窗口 |
 | `test_toast_padding.py` | Toast 顶部留白、画布坐标和窗口几何、提醒窗口、占位替换与续写；另验证点击后且有焦点才接受 Esc、切换 Markdown 控件后保持焦点、完成后关闭不触发取消（Markdown 控件用真 Tk Text 替身）。**真构造 Tk 窗口、会闪窗**，不进流水线，见下 |
 | `test_toast_scaling.py` | Toast 线程的 `tk scaling` 被显示配置变更改掉后能自动恢复：启动真实的 `ToastMessageManager`，只向本进程的 Toast 线程发 `WM_DISPLAYCHANGE`；先关掉修复确认能触发字号放大，再验证恢复、日志与「先恢复再构造窗口」。**会闪窗**，不进流水线 |
+| `preview_indicator.py` | 录音悬浮指示器预览：用真实指示器代码弹窗，按已保存录音每 50ms 的电平驱动声波条并同步播放，依次演示等待、识别中、处理、打断 / 出错，结束时打印换算结果。`--root` 换别的机器的录音目录、`--color` 切配色、`--chat` / `--image` 叠加连续对话底色与挂图描边、`--fresh` 模拟刚启动、`--mute` 静音。需要 FFmpeg 与桌面会话，**会弹窗、会出声**，不进流水线 |
 | `probe_llm_live.py` | **真发请求、消耗额度**，单独跑。见下 |
 | `probe_role_segments.py` | **真发请求、消耗额度**。用当前两套后端检查雾切响子或新岛真的分条和语气；默认仅测当前提示词，`--baseline` 可读归档提示词复现对照。生产发送器只在内存中收集消息，不向 OpenMate 投递；单次请求读取失败时清理发送器、记录无效样本，继续整批实验。2026-09-13 调整前的原提示词归档在 git 历史里（提交 521f482 的 `docs/experiments/*.json`），做改前/改后对照时用 `git show` 取到仓库内的新文件（如 `logs/` 下）再传给 `--baseline`；输出目录必须为空 |
 

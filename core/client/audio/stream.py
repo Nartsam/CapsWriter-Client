@@ -8,6 +8,7 @@
 
 from __future__ import annotations
 
+import math
 import sys
 import time
 import threading
@@ -17,11 +18,19 @@ import numpy as np
 import sounddevice as sd
 
 from core.client.state import console
+from core.client.ui import update_recording_indicator_level
 from . import logger
 
 if TYPE_CHECKING:
     from core.client.state import ClientState
     from ..app import CapsWriterClient
+
+
+def _block_dbfs(indata: np.ndarray) -> float:
+    """一个采集块的电平（dBFS）。多声道先取平均，与发给服务端的单声道一致"""
+    mono = indata.mean(axis=1) if indata.ndim > 1 else indata
+    power = float(np.dot(mono, mono)) / max(len(mono), 1)
+    return 10 * math.log10(power) if power > 1e-12 else -120.0
 
 
 
@@ -75,7 +84,14 @@ class AudioStreamManager:
         # 只在录音状态时处理数据
         if not self.state.recording:
             return
-        
+
+        # 悬浮指示器的声波条：每块算一次电平，换算与动画在指示器里做。回调里没接住的
+        # 异常会让 sounddevice 中止整条音频流，所以这里出任何错都只能吞掉
+        try:
+            update_recording_indicator_level(_block_dbfs(indata), frames / self.SAMPLE_RATE)
+        except Exception:
+            pass
+
         import asyncio
         
         # 将数据放入队列
