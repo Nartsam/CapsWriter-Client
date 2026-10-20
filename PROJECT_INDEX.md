@@ -67,7 +67,8 @@ CapsWriter 离线语音输入的**客户端**（Windows）。上游 [HaujetZhao/
 | `manager/mic_runner.py` | 启动顺序：托盘 → 启动提示 → 音频流 → 快捷键 → UDP 控制 → 热词 → LLM → 视觉输入 → Companion → 提醒恢复 → ResultProcessor |
 | `manager/file_runner.py` | 媒体文件走 FileTranscriber；`.txt/.json/.srt/.vtt` 走 SrtAdjuster 按字级时间戳重生成字幕 |
 | `manager/tray_manager.py`、`core/ui/tray.py` | 托盘菜单：复制结果、上下文（编辑发给服务端的 `context`）、热词（打开 hot.txt）、清除记忆、重开音频、显示/隐藏、重启、退出 |
-| `state.py` | `ClientState`：音频队列、连接、录音状态；打断用的 `pending_task_id`/`cancelled_task_ids`；连续对话与图片的每句话路由快照 |
+| `state.py` | `ClientState`：音频队列、连接、录音状态；打断用的 `pending_task_id`/`cancelled_task_ids`；连续对话与图片的每句话路由快照；等待结果的任务登记（`awaiting_results`，转交录音时长） |
+| `task_line.py`、`core/tools/task_id.py` | 麦克风任务在控制台的第一行（任务标识、录音时长、时延，或打断/出错说明）；任务标识 `8 位随机十六进制数_月-日_时-分-秒`，三种任务共用（格式约束见其文件头） |
 | `shortcut/shortcut_manager.py` | 低级钩子入口：防自捕获、录音键分发、打断键（`_handle_cancel_key`）、连续对话切换键（`_handle_chat_key`，配置校验在 `_resolve_chat_key`） |
 | `shortcut/event_handler.py`、`task.py` | 长按/单击两种模式；`ShortcutTask.launch/finish/cancel/abort`（建立快照、显示指示器、驱动 AudioRecorder、作废回滚） |
 | `shortcut/emulator.py`、`key_mapper.py` | 补发被拦截的按键、修饰键释放（为何要补发见 `MODIFIER_KEYS` 上方注释）；VK 码与按键名互转 |
@@ -160,6 +161,7 @@ CapsWriter 离线语音输入的**客户端**（Windows）。上游 [HaujetZhao/
 12. **配置读取**：本地新增的 `ClientConfig` 项在代码里用 `getattr(Config, 名, 默认值)` 读取（多数还会校验取值、非法时回退默认），缺项时照常运行；新增配置照此办理。角色文件未写的字段取 `RoleConfig` 默认值。
 13. **联网搜索**：`enable_web_search` 挂服务端内置搜索工具，是否检索由模型决定：① 工具随请求格式而定——`api_format='anthropic'` 挂 `web_search_20250305`（工具事件是 `server_tool_use` 块），OpenAI 格式改走 Responses API 挂 `web_search`（事件是 `<工具>_call`）；DeepSeek 的 Responses API 忽略 `web_search`，所以 DeepSeek 必须走 Anthropic 格式（`tools/test_backends.py` 钉住）；② 检索期数秒无正文，必须设 `request_timeout`（两套后端均由 `backends.py` 给 60s）；③ 各格式的参数差异分别在 `_build_responses_params`（`instructions`/`input`/`max_output_tokens`，无 `stop`）与 `_build_anthropic_params`（`system` 顶层、`max_tokens` 必填、`stop_sequences`）收敛。
 14. **本地 Toast 取消隔离**：`toast_request` 从输出层经 Handler 传到 Processor；线程认领完成后才提交记忆，取消后不再更新窗口、选区去重或历史。输出层立即结束本地等待，底层网络线程收尾只读自己那一轮的状态；`LLMResult.cancelled` 让 ResultProcessor 跳过角色归档和自动回车。点击与 Esc 的用户行为见 [角色功能说明](docs/角色功能如何使用.md#toast-模式)。
+15. **一个任务的控制台输出排在一起**：麦克风任务的全部输出只在结果处理里打印（接收循环逐条 `await _handle_message`，含 LLM 回复，天然串行），录音协程松手和打断时只登记 `awaiting_results`，不打印；被打断的任务在丢弃回包处打一行。例外是确定等不到结果的任务：未连接、发送失败由录音协程当场打，等待中断线由 `_cleanup` 补打，登记表谁取出谁打印。新增任务相关的控制台输出放进结果处理的流程里；不属于任何任务的提示（挂图、热重载、连接状态、警告日志）照旧当场打印。
 
 > 旧编号对照：`LLM/backends.py` 注释与 `tools/probe_llm_live.py` 输出文字里仍有「约定 15/21/22」，分别指本节第 13 条、视觉输入（`core/client/vision/`）、第 9 条。
 
@@ -196,6 +198,7 @@ CapsWriter 离线语音输入的**客户端**（Windows）。上游 [HaujetZhao/
 | 服务端地址 / 多候选 | `addr`、`port`、`addr_probe_timeout(_lan)`；`websocket_manager.py`；启动提示 `ui/tips.py` |
 | 录音与发送 | `audio/recorder.py`、`audio/stream.py` |
 | 结果处理 / 输出方式 | `output/result_processor.py`、`output/text_output.py` |
+| 控制台的任务行 / 任务标识 | 照「跨模块约定」第 15 条；`task_line.py`、`core/tools/task_id.py`、`state` 的 `awaiting_results`；登记在 `audio/recorder.py`，打印在 `result_processor`（`_print_task_line`、打断丢弃处、`_cleanup`）；验证 `tools/test_task_line.py`、`test_stream_output.py` |
 | 流式上屏 | 开关：`shortcuts` 的 `streaming`；是否流式 `shortcut/task.py` 的 `_want_streaming`；逐句上屏与角色回退 `result_processor` 的 `_on_stream_delta` / `_decide_stream_mode` / `_finish_stream`、`output/stream_output.py`；指示器文案 `recording_indicator` 的 `streaming` / `stream_note`；同步 [docs/流式上屏如何使用.md](docs/流式上屏如何使用.md)；验证 `tools/test_stream_output.py`。切句参数在服务端 |
 | 热词匹配 | `hotword/hot_phoneme.py`、`hot_rule.py` |
 | 新增或修改角色 | `LLM/` 下新建/编辑 .py（热重载）；字段见 `llm_role_config.py` |

@@ -29,7 +29,8 @@ python tools/run_tests.py
 | `test_history_payload.py` | 对话历史的上行载荷：不带 `timestamp`、不交出活引用、assistant 保留状态标签、旧图降级 |
 | `test_llm_memory.py` | 角色记忆落盘：保存与读回、图片落盘为占位符、容量调小后读回裁剪、损坏文件改名保留、空回复不写入、按 `.py` 文件名区分（改显示名不丢）、热重载沿用同一对象、清除记忆删全部文件、角色表的恢复提示（无提示时行与以前逐字相同）、显示名重复告警。在 `tools/` 下的临时目录里读写，跑完删除 |
 | `test_selection.py` | 选区捕获：默认不发键/不碰剪贴板、回退条件、焦点与超时、Scintilla 范围/编码/标量消息边界、历史去重预览、typing/toast/openmate 单次快照转发、终端输出顺序；所有输入与外部接口均为桩 |
-| `test_stream_output.py` | 流式上屏：逐句打字与热词、开头角色名改为松手后处理、角色名被切开时等下一句、打断后不再打字、旧服务端（无 `delta`）按整段处理、去末尾标点只作用于最后一句；另含角色文件导入失败的日志（出自 secrets.py 时不记异常信息）。ResultProcessor 等的真实方法绑到桩对象上运行 |
+| `test_stream_output.py` | 流式上屏：逐句打字与热词、开头角色名改为松手后处理、角色名被切开时等下一句、打断后不再打字、旧服务端（无 `delta`）按整段处理、去末尾标点只作用于最后一句；任务的控制台第一行（结果到达才打、排在本任务输出最前、每个任务一行，打断与断线清理同样一行）；另含角色文件导入失败的日志（出自 secrets.py 时不记异常信息）。ResultProcessor 等的真实方法绑到桩对象上运行 |
+| `test_task_line.py` | 任务标识（后缀是创建时间、前 8 位各不相同、带它的挂图归档仍会被清理）；录音协程松手与打断时只登记不打印，未连接/发送失败当场打一行且与断线清理不重复。AudioRecorder 的真实方法绑到桩对象上运行，ClientState 用真实代码 |
 | `test_shortcut_keys.py` | 快捷键钩子：打断键按住连发不放行；按住右 Ctrl 录音时远控软件注入的左 Ctrl 按下被拦截、松开放行，打断后到松开录音键前同样拦截，单击模式不拦。按键序列取自 `probe_keys.py` 在 RayLink 下的实录；真实的过滤函数、事件处理器与 `abort` 绑到桩对象上运行 |
 | `test_selection_native.py` | 原生 Windows 冒烟：自有隐藏 Edit 真实 UIA 读取，加自有 Scintilla 协议窗口验证只读 Win32 消息链路；后者不是真实 Scintilla 库。覆盖 Unicode、长度上限、空光标和剪贴板序号不变；仅替换焦点定位，无键盘输入或剪贴板写入。需 Windows 会话，不进流水线，不能替代 Notepad4 / Windows Terminal/TUI 验收 |
 | `probe_selection.py` | 只读诊断真实前台 UIA 父链、控件类型、进程号与选区长度；不打印选区正文，不发送输入或读写剪贴板。`--wait 10` 留出手动选择时间，`--depth 16` 可复现旧上限，`--all-patterns` 检查各祖先的选区长度（该模式最后的 status 不代表捕获结果）；`--samples 23 --interval 2` 可连续观察焦点/选区变化，控件 Name 仅按编辑器/终端标签分类，不输出原文。需要用户桌面访问，沙箱隔离桌面可能返回 HWND=0 |

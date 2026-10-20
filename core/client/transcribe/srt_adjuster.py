@@ -7,11 +7,11 @@ SRT 调整模块
 
 from __future__ import annotations
 
-import uuid
 from pathlib import Path
 
 from core.client.state import console
 from core.tools import srt_from_txt
+from core.tools.task_id import new_task_id
 from . import logger
 
 
@@ -30,7 +30,7 @@ class SrtAdjuster:
         Args:
             file: 文本文件路径
         """
-        task_id = str(uuid.uuid1())
+        task_id = new_task_id()
         console.print(f'\n任务标识：{task_id}')
         console.print(f'    处理文件：{file}')
         

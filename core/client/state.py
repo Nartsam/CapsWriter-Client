@@ -13,7 +13,7 @@ import time
 from collections import deque
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Deque, Optional, Dict, Any
+from typing import TYPE_CHECKING, Deque, Optional, Dict, Any, List, Tuple
 
 if TYPE_CHECKING:
     import sounddevice as sd
@@ -134,6 +134,11 @@ class ClientState:
     # 流式上屏已经打出过文字的任务 ID。打断只能丢弃还没上屏的部分，打断提示据此改口
     streamed_task_ids: Deque[str] = field(default_factory=lambda: deque(maxlen=8))
 
+    # 已发出最终包、还没打印控制台第一行的任务：task_id → 录音时长。这一行要等结果到达
+    # 才打（原因见 core/client/task_line.py），录音时长经这里转交。结果到达、确定等不到
+    # 或断线清理时取出，取出的一方负责打印，所以每个任务只打一次。只在事件循环线程读写
+    awaiting_results: Dict[str, float] = field(default_factory=dict)
+
     # 连续对话中的粘滞角色名（RoleConfig.display_name）；None 表示不在连续对话中。
     # 只在「录音正常结束」和「结果确认命中具名角色」两个时刻变更，其余一律回滚
     continuous_role: Optional[str] = None
@@ -195,6 +200,7 @@ class ClientState:
         self.pending_task_id = None
         self.cancelled_task_ids.clear()
         self.streamed_task_ids.clear()
+        self.awaiting_results.clear()
         self.continuous_role = None
         self.continuous_last_active = 0.0
         self.continuous_current = None
@@ -292,6 +298,27 @@ class ClientState:
             logger.debug(f"打断任务已收尾: {task_id}")
         except ValueError:
             pass
+
+    # ========== 等待结果的任务（控制台第一行） ==========
+
+    def register_awaiting_result(self, task_id: Optional[str], duration: float) -> None:
+        """录音结束（含打断）、即将发出最终包时登记，供之后打印任务的第一行"""
+        if not task_id:
+            return
+        self.awaiting_results[task_id] = duration
+        # 与路由快照同一个上限：正常情况下最多一两条在等，兜底防服务端异常时滞留
+        while len(self.awaiting_results) > MAX_CONTINUOUS_SNAPSHOTS:
+            self.awaiting_results.pop(next(iter(self.awaiting_results)))
+
+    def pop_awaiting_result(self, task_id: str) -> Optional[float]:
+        """取出任务的录音时长；None 表示没登记过，或已被别处取出并打印过"""
+        return self.awaiting_results.pop(task_id, None)
+
+    def drain_awaiting_results(self) -> List[Tuple[str, float]]:
+        """断线时取出全部还在等的任务（按登记顺序），它们的结果不会再来"""
+        items = list(self.awaiting_results.items())
+        self.awaiting_results.clear()
+        return items
 
     # ========== 连续对话 ==========
 

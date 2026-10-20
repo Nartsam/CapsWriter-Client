@@ -1,5 +1,6 @@
 # coding: utf-8
-"""流式上屏：逐句打字、开头角色名改为松手后处理、角色名被切开时的等待、打断与旧服务端回退。
+"""流式上屏：逐句打字、开头角色名改为松手后处理、角色名被切开时的等待、打断与旧服务端回退；
+另含任务在控制台的第一行（结果到达时才打、每个任务一行、打断与断线清理）。
 
 ResultProcessor 的相关方法按源码抽出来，绑到桩对象上运行；打字、热词、LLM、指示器均为桩。
 """
@@ -39,10 +40,12 @@ roles = load('core.client.llm.llm_role_config', 'core/client/llm/llm_role_config
 load('core.client.llm.llm_interfaces', 'core/client/llm/llm_interfaces.py')
 detector_mod = load('core.client.llm.llm_role_detector', 'core/client/llm/llm_role_detector.py')
 stream_mod = load('core.client.output.stream_output', 'core/client/output/stream_output.py')
+task_line = load('core.client.task_line', 'core/client/task_line.py')
 RoleConfig = roles.RoleConfig
 
 METHODS = {'_handle_message', '_after_output', '_paste_for_foreground', '_correct_text',
-           '_on_stream_delta', '_decide_stream_mode', '_type_piece', '_finish_stream'}
+           '_on_stream_delta', '_decide_stream_mode', '_type_piece', '_finish_stream',
+           '_print_task_line', '_cleanup'}
 
 
 def extract_methods(namespace):
@@ -96,7 +99,9 @@ def message(task_id='t', delta='', text='', is_final=False):
                                  time_complete=10.0, time_submit=9.5, time_start=1.0, duration=3.0)
 
 
-class ProcessorTests(unittest.IsolatedAsyncioTestCase):
+class ProcessorHarness(unittest.IsolatedAsyncioTestCase):
+    """把 ResultProcessor 的真实方法绑到桩对象上；本身不含测试"""
+
     def make(self, llm_enabled=True, cancelled=False, default_role=False):
         self.config = types.SimpleNamespace(
             llm_enabled=llm_enabled, traditional_convert=False, hot=True, paste=False,
@@ -115,7 +120,9 @@ class ProcessorTests(unittest.IsolatedAsyncioTestCase):
                   broadcast_output_udp=Mock(), RoleConfig=RoleConfig, zhconv_convert=None,
                   format_selection_preview=lambda s: '',
                   StreamSession=stream_mod.StreamSession, trim_for_strip_punc=stream_mod.trim_for_strip_punc,
-                  PENDING=stream_mod.PENDING, TYPING=stream_mod.TYPING, DEFERRED=stream_mod.DEFERRED)
+                  PENDING=stream_mod.PENDING, TYPING=stream_mod.TYPING, DEFERRED=stream_mod.DEFERRED,
+                  format_task_line=task_line.format_task_line, aborted_note=task_line.aborted_note,
+                  no_result_note=task_line.no_result_note, DISCONNECTED=task_line.DISCONNECTED)
         extract_methods(ns)
 
         detector = detector_mod.RoleDetector(FakeLoader(default_role))
@@ -127,6 +134,16 @@ class ProcessorTests(unittest.IsolatedAsyncioTestCase):
         state.streamed_task_ids = []
         state.pop_image_snapshot.return_value = None
         state.pop_continuous_snapshot.return_value = None
+        # 等待结果的登记表照真实语义：取出即删
+        self.awaiting = {}
+        state.pop_awaiting_result.side_effect = lambda tid: self.awaiting.pop(tid, None)
+
+        def drain():
+            items = list(self.awaiting.items())
+            self.awaiting.clear()
+            return items
+
+        state.drain_awaiting_results.side_effect = drain
         hotword = Mock()
         # 热词：把「鱿鱼」纠正成「由于」，并记一条完全匹配
         hotword.get_phoneme_corrector.return_value.correct.side_effect = lambda t, k=10: types.SimpleNamespace(
@@ -154,6 +171,8 @@ class ProcessorTests(unittest.IsolatedAsyncioTestCase):
         for m in msgs:
             await self.p._handle_message(m)
 
+
+class ProcessorTests(ProcessorHarness):
     async def test_typing_sentence_by_sentence(self):
         self.make()
         await self.feed(message(delta='鱿鱼今天下雨'), message(delta='，我们改在室内'))
@@ -223,6 +242,71 @@ class ProcessorTests(unittest.IsolatedAsyncioTestCase):
         self.make()
         await self.feed(message(delta='好的'), message(delta='。', text='好的。', is_final=True))
         self.assertEqual(self.typed, ['好的'])          # 全文短，末尾句号按配置去掉
+
+
+TID = 'a3f91c07_10-20_17-54-20'
+
+
+class TaskLineTests(ProcessorHarness):
+    """任务的第一行：结果到达时才打、排在本任务输出的最前面、每个任务只打一次"""
+
+    def printed(self):
+        return [str(c.args[0]) for c in self.console.print.call_args_list if c.args]
+
+    def lines_with(self, tid):
+        return [line for line in self.printed() if tid in line]
+
+    def assert_one_task_line(self, tid, duration):
+        lines = self.lines_with(tid)
+        self.assertEqual(len(lines), 1, self.printed())
+        self.assertIn(f'{duration:.2f}s', lines[0])
+        self.assertNotIn(tid, self.awaiting)
+
+    async def test_whole_result_line_comes_first(self):
+        self.make()
+        self.awaiting[TID] = 2.5
+        await self.feed(message(task_id=TID, text='今天天气不错', is_final=True))
+        self.assert_one_task_line(TID, 2.5)
+        self.assertIn(TID, self.printed()[0])
+
+    async def test_streaming_line_waits_for_final(self):
+        self.make()
+        self.awaiting[TID] = 3.0
+        await self.feed(message(task_id=TID, delta='今天下雨'), message(task_id=TID, delta='，改在室内'))
+        self.assertEqual(self.lines_with(TID), [])
+        await self.feed(message(task_id=TID, delta='开会。', text='今天下雨，改在室内开会。', is_final=True))
+        self.assert_one_task_line(TID, 3.0)
+        self.assertIn(TID, self.printed()[0])
+
+    async def test_cancelled_task_prints_one_line_on_final(self):
+        self.make(cancelled=True)
+        self.awaiting[TID] = 1.2
+        await self.feed(message(task_id=TID, text='你好', is_final=False))
+        self.assertEqual(self.printed(), [])
+        await self.feed(message(task_id=TID, text='你好。', is_final=True))
+        self.assert_one_task_line(TID, 1.2)
+
+    async def test_cancelled_after_streaming_says_so(self):
+        lines = []
+        for streamed in ([], [TID]):
+            self.make(cancelled=True)
+            self.state.streamed_task_ids = streamed
+            await self.feed(message(task_id=TID, text='你好。', is_final=True))
+            lines.append(self.lines_with(TID)[0])
+        self.assertNotEqual(lines[0], lines[1])
+
+    async def test_cleanup_prints_every_waiting_task(self):
+        self.make()
+        other = 'b0c1d2e3_10-20_17-54-30'
+        self.awaiting.update({TID: 1.0, other: 2.0})
+        self.state.is_task_cancelled.side_effect = lambda tid: tid == other
+        self.p._cleanup()
+        self.assert_one_task_line(TID, 1.0)
+        self.assert_one_task_line(other, 2.0)
+        # 被打断的与单纯断线的说明彼此不同（不比对措辞）
+        notes = [line.replace(TID, '').replace(other, '').replace('1.00s', '').replace('2.00s', '')
+                 for line in self.printed()]
+        self.assertNotEqual(notes[0], notes[1])
 
 
 class RoleLoaderErrorTests(unittest.TestCase):

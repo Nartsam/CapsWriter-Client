@@ -538,7 +538,8 @@ class ProcessorTests(unittest.IsolatedAsyncioTestCase):
         cls = next(node for node in source.body if isinstance(node, ast.ClassDef) and node.name == 'ResultProcessor')
         methods = [node for node in cls.body if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
                    and node.name in {'_handle_message', '_after_output', '_paste_for_foreground',
-                                     '_report_image_usage', '_update_continuous_state'}]
+                                     '_report_image_usage', '_update_continuous_state',
+                                     '_print_task_line'}]
         config = types.SimpleNamespace(llm_enabled=True, traditional_convert=False, hot=False, paste=False,
                                        paste_apps=[], enter_apps=[('editor', 0)], save_audio=True)
         namespace = dict(Optional=Optional, Tuple=Tuple, RecognitionMessage=Any, Config=config, RoleConfig=RoleConfig,
@@ -550,7 +551,8 @@ class ProcessorTests(unittest.IsolatedAsyncioTestCase):
                          update_recording_indicator_progress=Mock(), write_llm_md=Mock(),
                          broadcast_output_udp=Mock(), _auto_enter=AsyncMock(), IMAGE_PLACEHOLDER='[图片]',
                          # 归档改名：真实实现要落盘，这里桩掉并返回空串（等价于未归档）
-                         mark_outcome=Mock(return_value=''))
+                         mark_outcome=Mock(return_value=''),
+                         format_task_line=importlib.import_module('core.client.task_line').format_task_line)
         exec(compile(ast.Module(body=methods, type_ignores=[]), '<real-processor>', 'exec'), namespace)
         for result_text in ['提醒已设置', model.PARSE_ERROR]:
             with self.subTest(result=result_text):
@@ -564,6 +566,7 @@ class ProcessorTests(unittest.IsolatedAsyncioTestCase):
                 state.pop_continuous_snapshot.return_value = snapshot
                 state.pop_image_snapshot.return_value = image
                 state.pop_audio_file.return_value = None
+                state.pop_awaiting_result.return_value = None
                 result = types.SimpleNamespace(result=result_text, role_name='助理', processed=True,
                                                reminder_handled=True, image_used=False)
                 llm = types.SimpleNamespace(process_and_output=AsyncMock(return_value=result))
@@ -575,7 +578,8 @@ class ProcessorTests(unittest.IsolatedAsyncioTestCase):
                     hotword=hotword, diary=Mock(), _resolve_forced_role=Mock(return_value=None),
                     _log_modifier_key_state=Mock(), _streams={},
                     _paste_for_foreground=namespace['_paste_for_foreground'])
-                for name in ['_report_image_usage', '_update_continuous_state', '_after_output']:
+                for name in ['_report_image_usage', '_update_continuous_state', '_after_output',
+                             '_print_task_line']:
                     setattr(processor, name, types.MethodType(namespace[name], processor))
                 message = types.SimpleNamespace(task_id='task', text='十分钟后叫我', is_final=True,
                                                time_complete=stamp()+20, time_submit=stamp(),

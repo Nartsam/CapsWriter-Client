@@ -13,6 +13,7 @@
 - my_status: Rich Status 扩展
 - signal_handler: Ctrl+C 退出处理
 - srt_from_txt: SRT 字幕生成
+- task_id: 任务标识（随机数 + 创建时间）
 - token_sync: 把热词替换等文本改动同步回 token 序列（文件转录的时间戳）
 - window_detector: 前台窗口与进程名检测
 - windows_selection: 选区只读获取（UIA / Scintilla）

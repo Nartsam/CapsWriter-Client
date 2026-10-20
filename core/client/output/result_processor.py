@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING, Dict, Optional, Tuple
 
 from config_client import ClientConfig as Config
 from core.client.state import console
+from core.client.task_line import DISCONNECTED, aborted_note, format_task_line, no_result_note
 from core.client.vision.image_archive import mark_outcome
 from core.protocol import RecognitionMessage
 
@@ -314,6 +315,13 @@ class ResultProcessor:
                 self.state.pop_continuous_snapshot(message.task_id)
                 self.state.pop_image_snapshot(message.task_id)
                 logger.info(f"丢弃已打断任务的识别结果，任务ID: {message.task_id}")
+                # 录音阶段和等待阶段的打断都在这里打这一行：这里在串行流程里，
+                # 排在前一个任务的全部输出之后（见 core/client/task_line.py）
+                partial = message.task_id in self.state.streamed_task_ids
+                console.print(format_task_line(message.task_id,
+                                               self.state.pop_awaiting_result(message.task_id),
+                                               aborted_note(partial)))
+                console.line()
             return
 
         # 使用 text 字段（简单拼接结果，用于语音输入）
@@ -375,9 +383,7 @@ class ResultProcessor:
         # 保存最近一次识别结果
         self.state.last_recognition_text = text
 
-        # 控制台输出：时延 + 热词时延合并到一行
-        hotword_label = f'  热词时延: {hotword_elapsed:.2f}s' if Config.hot else ''
-        console.print(f'    转录时延：{delay:.2f}s{hotword_label}')
+        self._print_task_line(message.task_id, delay, hotword_elapsed)
 
         original_text_stripped = TextOutput.strip_punc(original_text)
         matched_hotwords = correction_result.matchs
@@ -504,6 +510,13 @@ class ResultProcessor:
 
         console.line()
 
+    def _print_task_line(self, task_id: str, delay: float, hotword_elapsed: float) -> None:
+        """结果到达后打印任务的第一行：任务标识、录音时长、转录时延、热词时延"""
+        items = [f'转录时延：{delay:.2f}s']
+        if Config.hot:
+            items.append(f'热词时延：{hotword_elapsed:.2f}s')
+        console.print(format_task_line(task_id, self.state.pop_awaiting_result(task_id), *items))
+
     @staticmethod
     def _paste_for_foreground() -> Tuple[bool, str]:
         """按当前前台程序决定输出方式，返回 (是否粘贴, 小写进程名)"""
@@ -605,8 +618,7 @@ class ResultProcessor:
         text = session.typed + piece
         self.state.last_recognition_text = text
 
-        hotword_label = f'  热词时延: {hotword_elapsed:.2f}s' if Config.hot else ''
-        console.print(f'    转录时延：{delay:.2f}s{hotword_label}')
+        self._print_task_line(message.task_id, delay, hotword_elapsed)
         original_text_stripped = TextOutput.strip_punc(message.text)
         console.print(f'    识别结果：[green]{original_text_stripped}')
         if original_text_stripped != text:
@@ -628,6 +640,11 @@ class ResultProcessor:
         """清理资源"""
         # 断线后这些录音的最终结果不会再来
         self._streams.clear()
+        # 还在等结果的任务补打第一行，否则它们在控制台上不留任何痕迹
+        for task_id, duration in self.state.drain_awaiting_results():
+            console.print(format_task_line(task_id, duration,
+                                           no_result_note(self.state, task_id, DISCONNECTED)))
+            console.line()
         if self.state.websocket is not None:
             try:
                 if self.state.websocket.closed:

@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import asyncio
 import base64
-import uuid
 from pathlib import Path
 from subprocess import Popen
 from typing import TYPE_CHECKING, Optional
@@ -22,8 +21,10 @@ from config_client import ClientConfig as Config
 from core.client.state import console
 from core.client.audio.file_manager import AudioFileManager
 from core.client.connection import WebSocketManager
+from core.client.task_line import NOT_CONNECTED, SEND_FAILED, format_task_line, no_result_note
 from core.protocol import AudioMessage
 from core.tools.asyncio_to_thread import to_thread
+from core.tools.task_id import new_task_id
 from . import logger
 
 if TYPE_CHECKING:
@@ -81,7 +82,7 @@ class AudioRecorder:
         if not self._ws_manager.is_connected:
             if message.is_final:
                 self.state.pop_audio_file(message.task_id)
-                console.print('    服务端未连接，无法发送\n')
+                self._report_no_result(message.task_id, NOT_CONNECTED)
                 logger.warning("服务端未连接，无法发送音频数据")
                 if not quiet:
                     # 最终包发送失败时，悬浮提示改为错误状态并自动隐藏。
@@ -93,12 +94,25 @@ class AudioRecorder:
         success = await self._ws_manager.send(message)
         if not success and message.is_final:
             self.state.pop_audio_file(message.task_id)
+            self._report_no_result(message.task_id, SEND_FAILED)
             if not quiet:
                 # WebSocketManager 返回发送失败时，用悬浮提示反馈给用户。
                 from core.client.ui import show_recording_indicator_error
                 show_recording_indicator_error("音频发送失败")
             # 具体错误日志由 WebSocketManager 记录
-    
+
+    def _report_no_result(self, task_id: str, reason: str) -> None:
+        """最终包发不出去、结果不会回来：当场打印这个任务的第一行
+
+        这是「任务的控制台输出只在结果处理里打印」的例外（见 core/client/task_line.py），
+        没有回包可等。登记表里已经没有它，说明断线清理抢先打过了，不再重复。
+        """
+        duration = self.state.pop_awaiting_result(task_id)
+        if duration is None:
+            return
+        console.print(format_task_line(task_id, duration, no_result_note(self.state, task_id, reason)))
+        console.line()
+
     def _audio_message(self, data: Optional[np.ndarray], is_final: bool) -> AudioMessage:
         """构造本次录音的音频消息；data 是 48kHz 采集块（None 表示不带音频），在这里降到 16kHz 单声道"""
         payload = ''
@@ -130,7 +144,7 @@ class AudioRecorder:
         try:
             self._streaming = streaming
             # 生成唯一任务 ID
-            self.task_id = str(uuid.uuid1())
+            self.task_id = new_task_id()
             # 登记为待处理任务，打断键据此判断当前是否有可打断的输入
             self.state.pending_task_id = self.task_id
             # 连续对话的路由快照在 launch() 时就建好了（那时粘滞角色已确定），
@@ -204,10 +218,12 @@ class AudioRecorder:
                         self._file_manager.finish()
                         logger.debug("完成音频文件写入")
                     
-                    console.print(f'任务标识：{self.task_id}')
-                    console.print(f'    录音时长：{self._duration:.2f}s')
                     logger.info(f"录音任务完成，任务ID: {self.task_id}, 时长: {self._duration:.2f}s")
-                    
+
+                    # 任务标识与录音时长等结果到达后与时延合成一行打印，这里只登记。
+                    # 松手时就打的话，等上一句的角色回复期间说的下一句会插进上一句的输出中间
+                    self.state.register_awaiting_result(self.task_id, self._duration)
+
                     # 告诉服务端音频片段结束了
                     asyncio.create_task(self._send_message(self._audio_message(None, True)))
                     break
@@ -219,9 +235,9 @@ class AudioRecorder:
                     self._cache.clear()
                     self._discard_audio_file()
 
-                    console.print(f'任务标识：{self.task_id}')
-                    console.print('    已手动打断，识别结果将被丢弃\n')
                     logger.info(f"录音任务被打断，任务ID: {self.task_id}, 已录 {self._duration:.2f}s")
+                    # 「已手动打断」那一行在结果处理丢弃回包时打印，理由同上面的 finish
+                    self.state.register_awaiting_result(self.task_id, self._duration)
 
                     asyncio.create_task(self._send_message(self._audio_message(None, True), quiet=True))
                     break

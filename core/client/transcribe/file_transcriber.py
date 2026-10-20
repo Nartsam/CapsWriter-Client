@@ -11,7 +11,6 @@ import asyncio
 import base64
 import json
 import time
-import uuid
 from pathlib import Path
 from typing import TYPE_CHECKING, Optional
 
@@ -22,6 +21,7 @@ from core.protocol import AudioMessage, RecognitionMessage
 from .media_tool import MediaTool
 from .result_handler import ResultHandler
 from . import logger
+from core.tools.task_id import new_task_id
 from core.tools.token_sync import sync_tokens_from_text
 
 if TYPE_CHECKING:
@@ -85,7 +85,7 @@ class FileTranscriber:
     async def send(self) -> None:
         """发送音频数据到服务端 (异步流式处理)"""
         
-        self.task_id = str(uuid.uuid1())
+        self.task_id = new_task_id()
         console.print(f'\n任务标识：{self.task_id}')
         console.print(f'    处理文件：{self.file}')
         

@@ -689,9 +689,11 @@ class ConsoleTests(unittest.IsolatedAsyncioTestCase):
             TextOutput=types.SimpleNamespace(strip_punc=lambda text: text),
             show_processing_indicator=Mock(), hide_recording_indicator=Mock(),
             get_active_window_info=lambda: {}, broadcast_output_udp=Mock(),
-            format_selection_preview=selection.format_selection_preview)
+            format_selection_preview=selection.format_selection_preview,
+            format_task_line=load('core.client.task_line', 'core/client/task_line.py').format_task_line)
         extract_methods('core/client/output/result_processor.py', 'ResultProcessor',
-                        {'_handle_message', '_after_output', '_paste_for_foreground'}, namespace)
+                        {'_handle_message', '_after_output', '_paste_for_foreground', '_print_task_line'},
+                        namespace)
 
         async def request(text, **kwargs):
             if failure:
@@ -702,6 +704,7 @@ class ConsoleTests(unittest.IsolatedAsyncioTestCase):
         state = Mock()
         state.is_task_cancelled.return_value = False
         state.pop_image_snapshot.return_value = None
+        state.pop_awaiting_result.return_value = None
         hotword = Mock()
         hotword.get_phoneme_corrector.return_value.correct.return_value = types.SimpleNamespace(
             text='识别文字', matchs=[], similars=[])
@@ -712,6 +715,7 @@ class ConsoleTests(unittest.IsolatedAsyncioTestCase):
             _update_continuous_state=Mock(), _log_modifier_key_state=Mock(), _streams={},
             _paste_for_foreground=namespace['_paste_for_foreground'])
         processor._after_output = lambda *args: namespace['_after_output'](processor, *args)
+        processor._print_task_line = lambda *args: namespace['_print_task_line'](processor, *args)
         message = types.SimpleNamespace(task_id='test', is_final=True, text='识别文字',
                     time_complete=10, time_submit=9, time_start=5, duration=4)
         if failure:
