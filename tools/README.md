@@ -35,9 +35,9 @@ python tools/run_tests.py
 | `test_selection_native.py` | 原生 Windows 冒烟：自有隐藏 Edit 真实 UIA 读取，加自有 Scintilla 协议窗口验证只读 Win32 消息链路；后者不是真实 Scintilla 库。覆盖 Unicode、长度上限、空光标和剪贴板序号不变；仅替换焦点定位，无键盘输入或剪贴板写入。需 Windows 会话，不进流水线，不能替代 Notepad4 / Windows Terminal/TUI 验收 |
 | `probe_selection.py` | 只读诊断真实前台 UIA 父链、控件类型、进程号与选区长度；不打印选区正文，不发送输入或读写剪贴板。`--wait 10` 留出手动选择时间，`--depth 16` 可复现旧上限，`--all-patterns` 检查各祖先的选区长度（该模式最后的 status 不代表捕获结果）；`--samples 23 --interval 2` 可连续观察焦点/选区变化，控件 Name 仅按编辑器/终端标签分类，不输出原文。需要用户桌面访问，沙箱隔离桌面可能返回 HWND=0 |
 | `probe_keys.py` | 只读记录按键时序：低级钩子看到的每个键（含注入标记，排在客户端钩子之前，客户端拦截的也看得到）、系统按键状态里修饰键与 Esc 的变化（只反映没被拦截的）、鼠标按键、前台窗口与菜单模式、焦点在 Scintilla 上时选区个数与模式的变化。字符键只记「字符键」。先启动客户端再运行，复现后 Ctrl+C，日志在 `logs/probe_keys.log`。需要用户桌面，不进流水线 |
-| `test_backends.py` | LLM 后端切换（`LLM/backends.py`）：两套 profile 的接线与协议约束（DeepSeek 走 Anthropic 接口、网关按 OpenAI 格式带 `/v1`、超时大于 0）、未知名字回退、`backends.py` 排在所有引用它的角色文件之前（热切换的前提）、写了 `backend` 的角色六个字段都取自同一套 profile。不检查各角色当前的参数取值 |
+| `test_backends.py` | LLM 后端切换（`LLM/backends.py`）：两套 profile 的接线与协议约束（DeepSeek 走 Anthropic、custom 固定 Responses、超时大于 0）、未知名字回退、`backends.py` 排在所有引用它的角色文件之前（热切换的前提）、角色六个后端字段均取自同一套 profile、`thinking_level` 加载。不检查各角色当前的参数取值 |
 | `test_toast_status.py` | LLM 角色 Toast：占位替换与空回复收尾；取消立即结束本地等待，旧线程的迟到正文/错误不影响下一轮；完成后关窗保留结果；取消跳过角色归档与自动回车。窗口焦点和实际显示由 `test_toast_padding.py` 用真 Tk 验证 |
-| `test_anthropic_path.py` | Anthropic 格式（DeepSeek 后端）：消息转换、请求参数、流解析、错误处理与记忆隔离、路由、客户端缓存及重试；另覆盖 P4/P5 探针的成功判据、读取失败时释放响应与清理分段发送器、失败请求不影响后续实验。生产请求和探针共用模块加载与 HTTP 替身，不读取角色或凭证 |
+| `test_anthropic_path.py` | Anthropic 与 Responses：消息转换、`thinking_level` 的协议字段、custom 开关搜索都固定 Responses、正文/工具流解析、错误处理与记忆隔离、客户端缓存及重试；另覆盖 P4/P5 探针的成功判据、读取失败时释放响应与清理分段发送器、失败请求不影响后续实验。生产请求和探针共用模块加载与 HTTP 替身，不读取角色或凭证 |
 | `test_level_meter.py` | 录音悬浮指示器的声波条：音量换算（按两台机器实测电平特征合成信号，换算后说话高度相近、静音贴底、瞬态冲高不压低之后的说话、持续底噪不放大成满格、第一次开口很快跟上、长停顿后不必重新适应）；竖条轮廓、加载波浪方向、打断/出错压平、按高度取色与渐变配色、电平中断时回落。不建窗口 |
 | `test_toast_padding.py` | Toast 顶部留白、画布坐标和窗口几何、提醒窗口、占位替换与续写；另验证点击后且有焦点才接受 Esc、切换 Markdown 控件后保持焦点、完成后关闭不触发取消（Markdown 控件用真 Tk Text 替身）。**真构造 Tk 窗口、会闪窗**，不进流水线，见下 |
 | `test_toast_scaling.py` | Toast 线程的 `tk scaling` 被显示配置变更改掉后能自动恢复：启动真实的 `ToastMessageManager`，只向本进程的 Toast 线程发 `WM_DISPLAYCHANGE`；先关掉修复确认能触发字号放大，再验证恢复、日志与「先恢复再构造窗口」。**会闪窗**，不进流水线 |

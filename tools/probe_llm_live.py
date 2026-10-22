@@ -320,13 +320,17 @@ def completed_reply(result: dict) -> bool:
 def p4_thinking_disabled(key, prod, role) -> bool:
     """P4：Anthropic 接口上 thinking:disabled 应真的关掉思考
 
-    角色 enable_thinking=False 时生产请求带这个参数；DeepSeek 的 Responses API 上它被接受
+    角色 thinking_level='none' 时生产请求带这个参数；DeepSeek 的 Responses API 上它被接受
     但无效（DEV_NOTES），每次都先思考、首字慢约 0.5s。判据是有没有 thinking 块，
     不比 token 数（天生抖动）。不带参数的那次只作对照，用来确认判据本身看得到思考
     """
     def once(disabled: bool):
-        variant = dataclasses.replace(role, enable_thinking=not disabled, enable_web_search=False)
+        variant = dataclasses.replace(role, thinking_level='none' if disabled else 'high', enable_web_search=False)
         params = production_params(prod, variant, '用一句话说明什么是快速排序。')
+        if not disabled:
+            # 对照组仍采用后端默认思考设置，不把显式 high 当作默认行为的证据。
+            params.pop('thinking', None)
+            params.pop('output_config', None)
         params['max_tokens'] = 400
         r = post(params, role)
         return r, r['counts'].get('block_start[thinking]', 0), 'thinking' in params

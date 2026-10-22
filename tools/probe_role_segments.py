@@ -173,9 +173,6 @@ def run_request(prod, openmate, role, profile, prompt, user_text, history):
         payload = processor._build_anthropic_params(role, messages)
     else:
         payload = processor._build_responses_params(role, messages)
-        # OpenAI SDK 的 extra_body 会并入 HTTP JSON；timeout 是客户端参数，不上行。
-        if not role.enable_thinking:
-            payload['thinking'] = {'type': 'disabled'}
     payload['stream'] = True
 
     class CaptureClient(openmate.OpenMateClient):
@@ -293,8 +290,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--output', required=True)
     parser.add_argument('--role', choices=['kyoko', 'makoto'], default='kyoko')
-    parser.add_argument('--backends', nargs='+', choices=['deepseek', 'cpa'],
-                        default=['deepseek', 'cpa'])
+    parser.add_argument('--backends', nargs='+', choices=['deepseek', 'custom'],
+                        default=['deepseek', 'custom'])
     parser.add_argument('--variants', nargs='+', choices=['current', 'grouped', 'compact', 'natural', 'restrained'],
                         default=['current'])
     parser.add_argument('--cases', nargs='+', choices=list(CASES), default=['intro'])

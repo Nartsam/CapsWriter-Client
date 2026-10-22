@@ -1,7 +1,7 @@
 """
 LLM 角色的后端切换
 
-角色文件里只写一行 `backend = 'deepseek'` 或 `'cpa'`，具体用哪个模型、连哪个地址、
+角色文件里只写一行 `backend = 'deepseek'` 或 `'custom'`，具体用哪个模型、连哪个地址、
 用什么请求格式、超时多少，全部在本文件里定。
 
 **热切换**：`llm_watcher` 监视整个 `LLM/` 目录，改本文件会触发全部角色重载
@@ -11,20 +11,17 @@ LLM 角色的后端切换
 随后 import 到的就是新值。**不要把本文件改成排序靠后的名字**（比如 `zz_backends.py`），
 那样角色读到的会是上一轮的旧值，而且不报错。
 """
-from LLM.secrets import CPA_API_KEY, DEEPSEEK_API_KEY
+from LLM.secrets import CUSTOM_API_KEY, DEEPSEEK_API_KEY
 
 
-# ==================== CPA 网关（局域网小主机） ====================
+# ==================== 自定义 Responses 后端 ====================
 
-# 改这一行即可换模型，存盘立即生效，不必重启客户端。
-# 网关上可用的 Gemini 有四个，分属两条不同上游：
-#   'gemini-3.8-flash'        / 'gemini-3.7-flash'          → antigravity
-# 不用 vertex/ 前缀的模型（用户决定）
-CPA_MODEL = 'gemini-3.8-flash(low)'
+# 模型名不嵌入思考档位，统一由角色的 thinking_level 指定。
+CUSTOM_MODEL = 'gemini-3.8-flash'
 
-# 只有局域网内可达。人不在这个网里时，走 cpa 的角色一律请求失败，**不会自动回退**
-# 到 DeepSeek——要切回去得自己改角色文件里的 backend
-CPA_URL = 'http://192.168.5.8:8317/v1'
+# 填接口根地址，SDK 会在后面拼 /responses；是否带 /v1 由后端的实际路径决定。
+# 当前地址在局域网内，连接失败不会自动回退到 DeepSeek。
+CUSTOM_URL = 'http://192.168.5.8:8317/v1'
 
 
 # ==================== DeepSeek 直连 ====================
@@ -36,8 +33,8 @@ DEEPSEEK_MODEL = 'deepseek-flash'
 DEEPSEEK_URL = 'https://api.deepseek.com/anthropic'
 
 
-# 两套后端统一取同一个值。CPA 实测中位 3~7s、带图约 20s，DeepSeek 侧的联网搜索在
-# 首个分片前也会静默数秒，provider 默认的 2s 两边都会发发超时（约定 15②）
+# 两套后端统一取同一个值。联网搜索、图片和较慢的网关可能数秒没有正文分片，
+# provider 默认的 2s 不够，故显式提供请求超时。
 REQUEST_TIMEOUT = 60
 
 
@@ -50,15 +47,13 @@ PROFILES = {
         'model': DEEPSEEK_MODEL,
         'request_timeout': REQUEST_TIMEOUT,
     },
-    'cpa': {
-        # 刻意不写 'gemini'：网关同时代理 kimi / glm / grok 等，换模型时这个名字不用
-        # 跟着改。provider 只影响日志与错误信息里的名字，以及 APIConfig 的兜底查表，
-        # 而上面恒定给出 request_timeout > 0，那张兜底超时表永远走不到
-        'provider': 'cpa',
-        'api_format': 'openai',
-        'api_url': CPA_URL,
-        'api_key': CPA_API_KEY,
-        'model': CPA_MODEL,
+    'custom': {
+        # provider 用通用名称；协议由 api_format 固定，不随搜索开关或模型名称切换。
+        'provider': 'custom',
+        'api_format': 'responses',
+        'api_url': CUSTOM_URL,
+        'api_key': CUSTOM_API_KEY,
+        'model': CUSTOM_MODEL,
         'request_timeout': REQUEST_TIMEOUT,
     },
 }

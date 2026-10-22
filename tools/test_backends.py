@@ -30,13 +30,13 @@ if REPO not in sys.path:
 # 真实的 LLM/secrets.py 未被 git 跟踪且存放密钥，一律桩掉：测试只关心「这个值有没有
 # 被原样传下去」，用哨兵字符串比真密钥更容易断言
 DEEPSEEK_SENTINEL = '<deepseek-key-sentinel>'
-CPA_SENTINEL = '<cpa-key-sentinel>'
+CUSTOM_SENTINEL = '<custom-key-sentinel>'
 
 import LLM  # noqa: E402  （先拿到包对象，再把桩挂上去）
 
 _secrets = types.ModuleType('LLM.secrets')
 _secrets.DEEPSEEK_API_KEY = DEEPSEEK_SENTINEL
-_secrets.CPA_API_KEY = CPA_SENTINEL
+_secrets.CUSTOM_API_KEY = CUSTOM_SENTINEL
 sys.modules['LLM.secrets'] = _secrets
 LLM.secrets = _secrets
 
@@ -114,21 +114,20 @@ check(ds['api_key'] == DEEPSEEK_SENTINEL, 'deepseek api_key 没有原样传下�
 # 接线性质：PROFILES 必须把 DEEPSEEK_MODEL 传出来，不许另写死一个
 check(ds['model'] == backends.DEEPSEEK_MODEL, 'deepseek model 没有跟随 DEEPSEEK_MODEL')
 
-cpa = backends.resolve('cpa')
-check(cpa['api_url'] == backends.CPA_URL, 'cpa api_url 没有跟随 CPA_URL：%r' % cpa['api_url'])
-check(cpa['api_format'] == 'openai',
-      'cpa 网关按 OpenAI 格式接入（Chat Completions / Responses），实为 %r' % cpa['api_format'])
-check(cpa['api_url'].rstrip('/').endswith('/v1'),
-      'cpa base_url 必须带 /v1：chat/completions 与 responses 两条路径都拼在它后面')
-check(cpa['api_key'] == CPA_SENTINEL, 'cpa api_key 没有原样传下去')
-check(cpa['model'] == backends.CPA_MODEL, 'cpa model 没有跟随 CPA_MODEL')
+custom = backends.resolve('custom')
+check(custom['api_url'] == backends.CUSTOM_URL, 'custom api_url 没有跟随 CUSTOM_URL：%r' % custom['api_url'])
+check(custom['api_format'] == 'responses',
+      'custom 后端必须固定走 Responses，实为 %r' % custom['api_format'])
+check(custom['provider'] == 'custom', 'custom 后端的 provider 应使用通用名称')
+check(custom['api_key'] == CUSTOM_SENTINEL, 'custom api_key 没有原样传下去')
+check(custom['model'] == backends.CUSTOM_MODEL, 'custom model 没有跟随 CUSTOM_MODEL')
 
-for name, profile in (('deepseek', ds), ('cpa', cpa)):
+for name, profile in (('deepseek', ds), ('custom', custom)):
     # 0 表示用 provider 兜底的 2 秒，对联网检索与网关的实测延迟必然超时
     check(profile['request_timeout'] > 0, '%s request_timeout 必须大于 0' % name)
     check(profile['provider'] != 'ollama', '%s 是 OpenAI 兼容接口，不能走 Ollama 分支' % name)
 
-check(set(ds) == set(cpa), '两套 profile 的键必须一致，否则角色文件里的取用会 KeyError')
+check(set(ds) == set(custom), '两套 profile 的键必须一致，否则角色文件里的取用会 KeyError')
 check(USED_KEYS <= set(ds), '角色文件取用的键缺了：%r' % (USED_KEYS - set(ds)))
 
 # ---------------------------------------------------------------- 2
@@ -142,10 +141,10 @@ check(backends.resolve('') == ds, '空串也要回退，不能抛异常')
 # ---------------------------------------------------------------- 3
 section('resolve() 返回副本，调用方改不脏全局')
 
-got = backends.resolve('cpa')
+got = backends.resolve('custom')
 got['model'] = '被角色文件改掉了'
-check(backends.PROFILES['cpa']['model'] == backends.CPA_MODEL, 'PROFILES 被调用方污染了')
-check(backends.resolve('cpa')['model'] == backends.CPA_MODEL, '下一次 resolve 拿到了被污染的值')
+check(backends.PROFILES['custom']['model'] == backends.CUSTOM_MODEL, 'PROFILES 被调用方污染了')
+check(backends.resolve('custom')['model'] == backends.CUSTOM_MODEL, '下一次 resolve 拿到了被污染的值')
 
 # ---------------------------------------------------------------- 4
 section('加载顺序不变式（热切换的前提）')
@@ -172,6 +171,11 @@ for file_name in BACKEND_ROLES:
 section('中间变量不会被当成配置项')
 
 field_names = {f.name for f in fields(RoleConfig)}
+check('thinking_level' in field_names and 'enable_thinking' not in field_names,
+      '角色字段应以 thinking_level 替换旧思考开关')
+sample = types.SimpleNamespace(name='档位测试', provider='custom', model='m', thinking_level='high',
+                               __name__='LLM.档位测试')
+check(build_role_config(sample).thinking_level == 'high', '角色加载器应保留 thinking_level 的显式档位')
 for name in ('backend', 'backend_config', 'resolve'):
     check(name not in field_names, '%s 撞上了 RoleConfig 字段名，会被 RoleLoader 吃进配置' % name)
 

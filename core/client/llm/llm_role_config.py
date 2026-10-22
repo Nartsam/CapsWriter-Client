@@ -26,9 +26,9 @@ class RoleConfig:
     api_url: str = ''                             # API 地址
     api_key: str = ''                             # API Key
     model: str = 'gemma3:4b'                      # 模型名称
-    api_format: str = 'openai'                    # 请求格式：'openai'（Chat Completions，联网搜索时
-                                                  # Responses）或 'anthropic'（Messages，api_url 写到
-                                                  # /v1 之前，见 llm_anthropic）。provider 为 ollama 时不看
+    api_format: str = 'openai'                    # 'responses' 固定用 Responses；'anthropic' 用 Messages；
+                                                  # 'openai' 保留 Chat Completions、开启搜索时用 Responses。
+                                                  # provider 为 ollama 时不看此项
     enable_vision: bool = False                  # 该角色能否接收图片。为真时，待挂图片会随
                                                   # 这句话一并上传；**不校验 model 是否真支持
                                                   # 视觉**——写错了服务端会返 400，llm_processor
@@ -42,16 +42,16 @@ class RoleConfig:
     max_context_length: int = 4096                # 最大上下文长度（token 数）
 
     # 功能配置
-    enable_thinking: bool = False                 # 是否启用思考。Ollama 传 think；其余路径为 False 时
-                                                  # 在请求里声明关闭（DeepSeek 的 Responses API 上无效，
-                                                  # Anthropic 接口上有效）
+    thinking_level: str = 'none'                  # none 关闭思考；其余档位按后端支持填写。
+                                                  # Responses 传 reasoning.effort；Anthropic 传 thinking
+                                                  # 与 output_config.effort；Ollama 保留开关语义
     enable_history: bool = False                  # 是否保留对话历史
     enable_hotwords: bool = False                 # 是否读取潜在热词列表
     enable_read_selection: bool = False           # 是否读取鼠标所选文字（默认 UI Automation）
     selection_max_length: int = 1000              # 选中文字最大长度
     enable_web_search: bool = False               # 联网搜索：挂载服务端内置搜索工具，由模型自行决定
-                                                  # 是否检索。api_format='openai' 时改走 Responses API
-                                                  # 挂 web_search，'anthropic' 时挂 web_search_20250305
+                                                  # 是否检索。Responses 挂 web_search，Anthropic 挂
+                                                  # web_search_20250305；只有旧 'openai' 路由会据此切换接口
                                                   # （需要后端真的执行它：DeepSeek 只有 Anthropic 接口
                                                   # 执行，见 LLM/backends.py）
     enable_datetime: bool = False                 # 在用户消息里注入当前日期时间，供模型判断时效性

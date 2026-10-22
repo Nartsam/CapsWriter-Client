@@ -8,13 +8,13 @@ name = '新岛真|真学姐'                         # 角色名称（留空表�
 enabled = True                           # 是否启用此角色
 
 # ==================== API 配置 ====================
-backend = 'deepseek'                                # 后端：'deepseek'（直连）或 'cpa'（局域网网关）。模型 / 地址 / 超时见 LLM/backends.py
+backend = 'deepseek'                                # 后端：'deepseek'（直连）或 'custom'（自定义 Responses 后端）。模型 / 地址 / 超时见 LLM/backends.py
 backend_config = resolve(backend)
 provider = backend_config['provider']               # API 提供商
 api_url = backend_config['api_url']                 # API 地址
 api_key = backend_config['api_key']                 # API Key
 model = backend_config['model']                     # 模型名称
-api_format = backend_config['api_format']           # 请求格式（OpenAI / Anthropic），随后端而定
+api_format = backend_config['api_format']           # 请求格式（Responses / Anthropic），随后端而定
 enable_vision = True                                # 接收 vision_capture_key 挂载的图片。注意本项不会校验 model 是否真支持视觉，写错了服务端会返 400
 
 # ==================== 上下文管理 ====================
@@ -22,13 +22,13 @@ max_context_length = 256 * 1024                # 最大上下文长度（token �
 
 # ==================== 功能配置 ====================
 enable_hotwords = False                 # 是否启用热词
-enable_thinking = False                 # 是否启用思考（关闭时直接回答、更快；Ollama 与 DeepSeek 生效）
+thinking_level = 'none'                 # none 关闭思考；其余档位按后端支持填写，见角色功能说明
 enable_history = True                   # 是否保留对话历史
 enable_read_selection = True            # 是否启用获取选中文字（默认 UI Automation）
 selection_max_length = 1000             # 选中文字最大长度
-enable_web_search = True                # 联网搜索：挂载 DeepSeek 服务端内置 web_search 工具，是否检索由模型判断，闲聊与常识不触发、速度不受影响
+enable_web_search = True                # 联网搜索：按后端协议挂载内置搜索工具，是否检索由模型判断
 enable_datetime = True                  # 注入当前时间，模型据此判断知识是否过期
-request_timeout = backend_config['request_timeout'] # 单次请求超时。两套后端都远超 provider 默认的 2s：DeepSeek 检索期数秒无输出，CPA 中位 3~7s、带图约 20s
+request_timeout = backend_config['request_timeout'] # 单次请求超时；联网搜索、图片和较慢的后端可能数秒没有正文分片
 
 # ==================== 输出配置 ====================
 output_mode = 'toast'                   # 输出方式：'typing' 直接打字, 'toast' 浮动窗口

@@ -473,11 +473,14 @@ class AnalyzerRequestTests(unittest.TestCase):
             {'protocolVersion': 1, 'requestId': 'request', 'items': items})
 
     def test_backend_paths_are_isolated_and_nonstreaming(self):
-        for provider, web in [('cpa', False), ('cpa', True), ('ollama', False)]:
-            with self.subTest(provider=provider, responses=web):
-                role = RoleConfig(name='助理', provider=provider, enable_web_search=web,
+        cases = [('custom', 'responses', False), ('custom', 'responses', True),
+                 ('openai', 'openai', False), ('openai', 'openai', True), ('ollama', 'openai', False)]
+        for provider, api_format, web in cases:
+            with self.subTest(provider=provider, api_format=api_format, web=web):
+                role = RoleConfig(name='助理', provider=provider, api_format=api_format, enable_web_search=web,
                                   system_prompt='温柔地提醒', max_tokens=4096,
-                                  extra_options={'tools': ['forbidden'], 'stream': True})
+                                  thinking_level='none', extra_options={'tools': ['forbidden'], 'stream': True,
+                                                                      'reasoning': {'effort': 'none'}})
                 client = Mock()
                 client.with_options.return_value = client
                 reply = '{"operation":"none"}'
@@ -489,11 +492,21 @@ class AnalyzerRequestTests(unittest.TestCase):
                 handler.client_pool.get_client.return_value = client
                 self.assertEqual(analyzer.analyze(handler, role, '解释十分钟', [], [], stamp(), 60),
                                  {'operation': 'none'})
+                responses = api_format == 'responses' or web
                 request = (client.chat if provider == 'ollama' else
-                           client.responses.create if web else client.chat.completions.create)
+                           client.responses.create if responses else client.chat.completions.create)
                 kwargs = request.call_args.kwargs
                 self.assertIs(kwargs['stream'], False)
                 self.assertNotIn('tools', kwargs)
+                self.assertNotIn('reasoning', kwargs)
+                self.assertNotIn('reasoning_effort', kwargs)
+                self.assertNotIn('thinking', kwargs)
+                if provider != 'ollama':
+                    client.with_options.assert_called_once_with(max_retries=0)
+                    if responses:
+                        client.chat.completions.create.assert_not_called()
+                    else:
+                        client.responses.create.assert_not_called()
                 messages = kwargs.get('messages', kwargs.get('input'))
                 body = json.loads(messages[-1]['content'])
                 self.assertEqual(body['utterance'], '解释十分钟')
@@ -503,7 +516,9 @@ class AnalyzerRequestTests(unittest.TestCase):
     def test_anthropic_path_is_isolated_and_nonstreaming(self):
         role = RoleConfig(name='助理', provider='deepseek', api_format='anthropic', enable_web_search=True,
                           system_prompt='温柔地提醒', max_tokens=4096,
-                          extra_options={'tools': ['forbidden'], 'stream': True})
+                          thinking_level='none', extra_options={'tools': ['forbidden'], 'stream': True,
+                                                               'thinking': {'type': 'disabled'},
+                                                               'output_config': {'effort': 'low'}})
         client = Mock()
         client.create.return_value = {'stop_reason': 'end_turn',
                                       'content': [{'type': 'text', 'text': '{"operation":"none"}'}]}
@@ -522,6 +537,7 @@ class AnalyzerRequestTests(unittest.TestCase):
         self.assertNotIn('tools', body)
         self.assertNotIn('stream', body)       # 由客户端的 create() 补成 False
         self.assertNotIn('thinking', body)     # 关掉思考会把相对时间误判为模糊，见 analyzer 注释
+        self.assertNotIn('output_config', body)
         self.assertEqual(body['system'], analyzer.SYSTEM)
         self.assertTrue(all(m['role'] in ('user', 'assistant') for m in body['messages']))
         self.assertEqual(json.loads(body['messages'][-1]['content'])['utterance'], '解释十分钟')

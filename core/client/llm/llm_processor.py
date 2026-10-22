@@ -157,6 +157,7 @@ class LLMProcessor:
             'messages': messages,
             'temperature': role_config.temperature,
             'top_p': role_config.top_p,
+            'reasoning_effort': role_config.thinking_level,
         }
 
         if role_config.max_tokens > 0:
@@ -229,6 +230,7 @@ class LLMProcessor:
             'input': input_items,
             'temperature': role_config.temperature,
             'top_p': role_config.top_p,
+            'reasoning': {'effort': role_config.thinking_level},
         }
 
         if instructions:
@@ -238,10 +240,7 @@ class LLMProcessor:
             params['max_output_tokens'] = role_config.max_tokens
 
         if role_config.enable_web_search:
-            # 服务端内置工具，检索在 DeepSeek 侧执行，本地无需搜索 API Key。
-            # 是否检索由模型自行判断，普通问题不会触发，速度与不挂载工具时一致。
-            # 没有接第三方搜索 API，也没有做本地关键词路由：后者既会漏判（「XX 发布了
-            # 吗」不含时效词）又会误判（拖慢常识问答）
+            # 由后端执行内置搜索工具；关闭时仅省略 tools，Responses 后端仍走同一接口。
             params['tools'] = [{'type': 'web_search'}]
 
         if role_config.stop:
@@ -279,10 +278,12 @@ class LLMProcessor:
                 stop_list = [s.strip() for s in stop_list.split(',')]
             params['stop_sequences'] = stop_list
 
-        # 与另两条 OpenAI 路径一致：只在关闭时显式声明。DeepSeek 的 Anthropic 接口上
-        # 这个开关是生效的（Responses 上被忽略，见 DEV_NOTES）
-        if not role_config.enable_thinking:
+        # Anthropic 把开关与档位分成两个字段；none 只关闭思考，不发送无效的 effort。
+        if role_config.thinking_level == 'none':
             params['thinking'] = {'type': 'disabled'}
+        else:
+            params['thinking'] = {'type': 'enabled'}
+            params['output_config'] = {'effort': role_config.thinking_level}
 
         if role_config.enable_web_search:
             params['tools'] = [dict(WEB_SEARCH_TOOL)]
@@ -341,7 +342,7 @@ class LLMProcessor:
                 client, role_config, messages, callback, should_stop_check,
                 status_callback, used_tools
             )
-        elif role_config.enable_web_search:
+        elif role_config.api_format == 'responses' or role_config.enable_web_search:
             # 带图的请求同样走这里，不降级到 Chat Completions：图片与内置 web_search
             # 可以在同一个 Responses 请求里共存（tools/probe_llm_live.py 的 P1 复测）
             result = self._process_responses_stream(
@@ -424,7 +425,7 @@ class LLMProcessor:
             messages=messages,
             stream=True,
             options=ollama_options,
-            think=role_config.enable_thinking
+            think=role_config.thinking_level != 'none'
         )
 
         # 3. 迭代处理
@@ -468,9 +469,6 @@ class LLMProcessor:
 
         params = self._build_request_params(role_config, messages)
         params['stream'] = True
-
-        if not role_config.enable_thinking:
-            params['extra_body'] = {"thinking": {"type": "disabled"}}
 
         if role_config.request_timeout > 0:
             params['timeout'] = role_config.request_timeout
@@ -582,7 +580,7 @@ class LLMProcessor:
         status_callback: Optional[Callable[[str], None]] = None,
         used_tools: Optional[List[str]] = None
     ) -> Tuple[str, int, float]:
-        """处理 Responses API 流响应（联网搜索路径）
+        """处理 Responses API 流响应（可选联网搜索）
 
         服务端执行工具期间不会有正文分片产生，只能靠 <工具>_call 事件告知用户，
         否则窗口会空着好几秒像卡死
@@ -590,9 +588,6 @@ class LLMProcessor:
 
         params = self._build_responses_params(role_config, messages)
         params['stream'] = True
-
-        if not role_config.enable_thinking:
-            params['extra_body'] = {"thinking": {"type": "disabled"}}
 
         if role_config.request_timeout > 0:
             params['timeout'] = role_config.request_timeout

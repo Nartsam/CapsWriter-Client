@@ -22,6 +22,7 @@ tailscale | Palescale | Telescale
 gvisor | GWARSER | J. Watson | JWater | 这沃 sir | J. Walter | Jay Woehler
 CUDA | kuda
 3DMigoto | 3D 米高苏 | 3D 尼多夫 | 3D 米沟突 | 3D 米 Go Two
+yolox | Ulo X
 只读 | 止读
 PyTorch
 TensorRT

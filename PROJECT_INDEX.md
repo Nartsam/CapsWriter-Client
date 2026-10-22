@@ -96,14 +96,14 @@ CapsWriter 离线语音输入的**客户端**（Windows）。上游 [HaujetZhao/
 | `llm_role_config.py`、`llm_role_loader.py`、`llm_role_detector.py`、`llm_watcher.py` | 角色字段定义；按文件名顺序加载 `LLM/*.py`；`startswith` 前缀匹配；目录变化 3s 防抖后重载（保留历史） |
 | `llm_message_builder.py`、`llm_context.py` | 组装 system + 历史 + 当前时间/热词/选区/用户输入（带图时为 Chat 口味多模态 content）；每角色一份历史，超 `max_context_length` 80% 从旧裁剪，旧图降级为 `［图片］`；每轮整体落盘（`add_turn`），启动时 `restore()` 读回 |
 | `llm_memory.py` | 记忆文件：`logs/llm_memory/<角色 .py 文件名>.json`，先写临时文件再替换；读不了的改名为 `.bad-时间.json` 保留；图片落盘为占位符（由 `ContextManager` 转换） |
-| `llm_processor.py`、`llm_client_pool.py` | 四条流式路径：Ollama 原生、Anthropic Messages（`api_format='anthropic'`）、Chat Completions、Responses（OpenAI 格式且 `enable_web_search` 时）；工具事件 → `used_tools`；空回复/截断/拒答诊断；Anthropic 流内错误进入统一响应错误处理，本轮不写记忆；每次请求 INFO 一行「请求构成」 |
+| `llm_processor.py`、`llm_client_pool.py` | 四条流式路径：Ollama 原生、Anthropic Messages（`api_format='anthropic'`）、Responses（`api_format='responses'` 固定使用；旧 `openai` 格式开启搜索时也走这里）、Chat Completions；`thinking_level` 按协议转换；工具事件 → `used_tools`；空回复/截断/拒答诊断；Anthropic 流内错误进入统一响应错误处理，本轮不写记忆；每次请求 INFO 一行「请求构成」 |
 | `llm_anthropic.py` | Anthropic 格式：内部 Chat 口味消息的转换，及基于 httpx 的极简客户端（SSE 解析、HTTP 状态映射到与 openai 路径相同的包装异常）；请求重试策略见 [DEV_NOTES 的有效决策](docs/DEV_NOTES.md#仍然有效的决策) |
 | `llm_output_typing.py`、`llm_output_toast.py`、`llm_output_openmate.py` | 三种输出：打字/粘贴；本地 Toast（以「正在思考…」占位弹出，工具状态与正文整段取代它）；OpenMate 看板（探测 `/health`，本机端口预查；情绪指令注入、流式或分段队列、typing 指示与工具状态文案，状态和正文共用发送线程；失败回退本地 Toast） |
 | `llm_state_tags.py` | `<state:…>` 情绪标签的识别与剥离；流式用 `StateTagFilter`。模型偶尔补上的结束标签 `</state:…>` 本地一并剥掉，OpenMate 路径只去结束标签（`close_only`） |
 | `llm_stop_monitor.py` | OpenMate / typing 的全局中断键两层闸门；本地 Toast 使用独立 `ToastRequest`，跨线程共享取消状态、互斥确定完成与取消 |
 | `llm_get_selection.py` | 按 `selection_mode` 获取选区，`SelectionContext` 区分本轮附加文字与终端预览，按角色相邻轮次去重 |
 | `llm_error_handler.py` | 错误分类：认证/连接/响应错误弹红色错误框；超时、限流及其他未归类异常降级为把识别原文打字输出 |
-| `LLM/backends.py` | 角色文件只写 `backend = 'deepseek' \| 'cpa'`，模型/地址/请求格式/超时由 `resolve()` 给出（约束见其文件头）；DeepSeek 走 Anthropic 兼容接口，CPA 走 OpenAI 格式 |
+| `LLM/backends.py` | 角色文件只写 `backend = 'deepseek' \| 'custom'`，模型/地址/请求格式/超时由 `resolve()` 给出（约束见其文件头）；DeepSeek 走 Anthropic 兼容接口，custom 固定走 Responses；配置与迁移见 [角色功能说明](docs/角色功能如何使用.md#九切换后端deepseek--custom) |
 
 当前角色文件：`default.py`（typing，已禁用）、`助理.py`、`翻译.py`（当前禁用）、`雾切响子.py`、`新岛真.py`（后四个为 toast；两个人设角色开启 OpenMate 分段，按单换行切）。内置角色的本地 Toast 宽度配置已统一，取值与优先级见 [角色功能说明](docs/角色功能如何使用.md#toast-模式)。
 
@@ -159,7 +159,7 @@ CapsWriter 离线语音输入的**客户端**（Windows）。上游 [HaujetZhao/
 10. **`smart_duration` = 「LLM 角色白框」**：同一个标志决定智能时长、40px 顶部拖动区和 `close_llm_windows()` 的顶替范围；新 LLM 回复（含 OpenMate 接管）先顶掉所有旧白框。
 11. **剪贴板**：之后要写回剪贴板的读取必须用 `try_paste()`，`safe_paste()` 会把「读不到」折叠成空串、写回时清掉原内容（典型是待挂的截图）。只读选区模式（`selection_mode='uia'`）不碰剪贴板，复制模式与粘贴输出仍会写。
 12. **配置读取**：本地新增的 `ClientConfig` 项在代码里用 `getattr(Config, 名, 默认值)` 读取（多数还会校验取值、非法时回退默认），缺项时照常运行；新增配置照此办理。角色文件未写的字段取 `RoleConfig` 默认值。
-13. **联网搜索**：`enable_web_search` 挂服务端内置搜索工具，是否检索由模型决定：① 工具随请求格式而定——`api_format='anthropic'` 挂 `web_search_20250305`（工具事件是 `server_tool_use` 块），OpenAI 格式改走 Responses API 挂 `web_search`（事件是 `<工具>_call`）；DeepSeek 的 Responses API 忽略 `web_search`，所以 DeepSeek 必须走 Anthropic 格式（`tools/test_backends.py` 钉住）；② 检索期数秒无正文，必须设 `request_timeout`（两套后端均由 `backends.py` 给 60s）；③ 各格式的参数差异分别在 `_build_responses_params`（`instructions`/`input`/`max_output_tokens`，无 `stop`）与 `_build_anthropic_params`（`system` 顶层、`max_tokens` 必填、`stop_sequences`）收敛。
+13. **协议、搜索与思考**：custom 的普通回复和提醒解析均由 `api_format='responses'` 固定路由；`enable_web_search` 只决定是否挂 `web_search`（事件是 `<工具>_call`）。`anthropic` 挂 `web_search_20250305`（事件是 `server_tool_use` 块），DeepSeek 保持此格式（`tools/test_backends.py` 钉住）；旧 `openai` 路由仍在开启搜索时转 Responses。检索期数秒无正文，必须设 `request_timeout`。参数差异收敛在 `_build_responses_params` 与 `_build_anthropic_params`：`thinking_level` 分别转成 `reasoning.effort`、`thinking` + `output_config.effort`；DeepSeek / custom 的提醒分析独立使用后端默认思考，不传角色档位或额外选项。
 14. **本地 Toast 取消隔离**：`toast_request` 从输出层经 Handler 传到 Processor；线程认领完成后才提交记忆，取消后不再更新窗口、选区去重或历史。输出层立即结束本地等待，底层网络线程收尾只读自己那一轮的状态；`LLMResult.cancelled` 让 ResultProcessor 跳过角色归档和自动回车。点击与 Esc 的用户行为见 [角色功能说明](docs/角色功能如何使用.md#toast-模式)。
 15. **一个任务的控制台输出排在一起**：麦克风任务的全部输出只在结果处理里打印（接收循环逐条 `await _handle_message`，含 LLM 回复，天然串行），录音协程松手和打断时只登记 `awaiting_results`，不打印；被打断的任务在丢弃回包处打一行。例外是确定等不到结果的任务：未连接、发送失败由录音协程当场打，等待中断线由 `_cleanup` 补打，登记表谁取出谁打印。新增任务相关的控制台输出放进结果处理的流程里；不属于任何任务的提示（挂图、热重载、连接状态、警告日志）照旧当场打印。
 
@@ -203,7 +203,7 @@ CapsWriter 离线语音输入的**客户端**（Windows）。上游 [HaujetZhao/
 | 热词匹配 | `hotword/hot_phoneme.py`、`hot_rule.py` |
 | 新增或修改角色 | `LLM/` 下新建/编辑 .py（热重载）；字段见 `llm_role_config.py` |
 | 角色记忆（重启后恢复） | `llm_context.py`（`add_turn`/`restore`/落盘）、`llm_memory.py`（文件格式）、`llm_handler`（`_init_context_managers`、`clear_history`）、`llm_processor._record_turn`（空回复不写）；角色表提示 `llm_role_formatter`；同步 [docs/角色功能如何使用.md](docs/角色功能如何使用.md)；验证 `tools/test_llm_memory.py` |
-| 角色后端 / CPA 模型 | 角色文件的 `backend`；`LLM/backends.py` 的 `CPA_MODEL`、`CPA_URL`、`PROFILES`（每套 profile 给出 `api_format`；新后端的密钥加进 `secrets.py`，由用户自己改）；验证 `tools/test_backends.py` |
+| 角色后端 / 自定义模型 | 角色文件的 `backend` 与 `thinking_level`；`LLM/backends.py` 的 `CUSTOM_MODEL`、`CUSTOM_URL`、`PROFILES`（每套 profile 给出 `api_format`；`CUSTOM_API_KEY` 在 `secrets.py`，由用户自己改）；验证 `tools/test_backends.py`、`test_anthropic_path.py` |
 | LLM 请求与流式解析 | `llm_handler.py`、`llm_processor.py`、`llm_anthropic.py`；联网搜索见「跨模块约定」第 13 条；验证 `tools/test_anthropic_path.py`，厂商行为 `tools/probe_llm_live.py` |
 | 新增输出模式 | 照「跨模块约定」第 8 条的清单 |
 | 选区获取 | `selection_mode`；`core/tools/windows_selection.py`、`llm_get_selection.py`；验证 `tools/test_selection.py`、`test_selection_native.py` |

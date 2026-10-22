@@ -27,7 +27,7 @@ model: str = 'gemma3:4b'                     # 模型名称
 max_context_length: int = 4096               # 最大上下文长度（token 数）
 
 # 功能配置
-enable_thinking: bool = False                # 是否启用思考（关闭时直接回答、更快；Ollama 与 DeepSeek 生效）
+thinking_level: str = 'none'                # none 关闭思考；其余档位按后端支持填写，Ollama 保留开关语义
 enable_history: bool = False                 # 是否保留对话历史
 enable_hotwords: bool = False                # 是否读取潜在热词列表
 enable_read_selection: bool = False          # 是否读取鼠标所选文字（默认 UI Automation）

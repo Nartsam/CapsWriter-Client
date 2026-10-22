@@ -3,10 +3,10 @@
 Anthropic Messages 路径单测（api_format='anthropic'，桩模块加载，不联网）
 
 1. Chat 口味的内部消息转成 Anthropic 口味：system 提到顶层、data URL 图片转 base64 块
-2. 请求参数：max_tokens 必填、stop_sequences、thinking 关闭、联网时挂 web_search_20250305
+2. 请求参数：max_tokens 必填、stop_sequences、thinking_level 按协议转换、联网时挂搜索工具
 3. 流解析：正文分片、server_tool_use 触发状态占位（只一次、早于正文）与 used_tools、
    usage 取终值、中断时断开连接、流内错误不写入记忆且不降级打字
-4. 路由：provider 为 ollama 时不看 api_format；anthropic 时联网与否都走这条
+4. 路由：provider 为 ollama 时不看 api_format；anthropic / responses 均不随搜索开关切换
 5. 客户端：URL 拼接、认证头、SSE 解析、重试只发生在拿到响应头之前、HTTP 状态到包装
    异常的映射（与 openai SDK 路径同一套，llm_error_handler 靠类型决定弹框还是降级）
 6. 厂商探针：P4/P5 的通过条件、读取失败释放响应与清理发送器、失败请求不影响后续实验
@@ -221,15 +221,55 @@ params = p._build_anthropic_params(role_of(max_tokens=0, stop='甲, 乙'), messa
 check(params['max_tokens'] == anth.DEFAULT_MAX_TOKENS, 'max_tokens 为 0 时应给默认值（Anthropic 必填）')
 check(params['stop_sequences'] == ['甲', '乙'] and 'stop' not in params, '停止序列应写成 stop_sequences')
 check(params['tools'] == [anth.WEB_SEARCH_TOOL], '开启联网时应挂 web_search_20250305：%r' % params.get('tools'))
-check(params['thinking'] == {'type': 'disabled'}, 'enable_thinking=False 时应显式关闭思考')
+check(params['thinking'] == {'type': 'disabled'} and 'output_config' not in params,
+      'thinking_level=none 时应关闭思考，不携带 effort')
 check('stream' not in params, 'stream 由客户端按调用方式补上，参数里不应预先写死')
 check(all(it['role'] != 'system' for it in params['messages']), 'system 不应留在 messages 里')
-params = p._build_anthropic_params(role_of(max_tokens=321, enable_web_search=False, enable_thinking=True,
+params = p._build_anthropic_params(role_of(max_tokens=321, enable_web_search=False, thinking_level='high',
                                            extra_options={'metadata': {'user_id': 'u'}}), messages)
 check(params['max_tokens'] == 321, 'max_tokens 应取角色配置')
 check('tools' not in params, '未开启联网时不应挂工具')
-check('thinking' not in params, 'enable_thinking=True 时不传 thinking，用服务端默认')
+check(params['thinking'] == {'type': 'enabled'} and params['output_config'] == {'effort': 'high'},
+      '具体档位应开启思考并使用 Anthropic output_config.effort')
 check(params.get('metadata') == {'user_id': 'u'}, 'extra_options 应合并进参数')
+
+section('Responses 请求：搜索开关不切换协议，思考强度使用标准字段')
+for level in ('none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'):
+    for web in (False, True):
+        custom_role = role_of(provider='custom', api_format='responses', thinking_level=level,
+                              enable_web_search=web, enable_history=False)
+        sdk = Mock()
+        sdk.responses.create.return_value = iter([
+            types.SimpleNamespace(type='response.output_text.delta', delta='回答'),
+            types.SimpleNamespace(type='response.completed', response=types.SimpleNamespace(
+                status='completed', usage=types.SimpleNamespace(output_tokens=2))),
+        ])
+        shown = []
+        answer, tokens, _ = p._stream_request(sdk, shown.append, None, custom_role, None, messages)
+        check(sdk.responses.create.call_count == 1 and not sdk.chat.completions.create.called,
+              'custom 搜索=%s、档位=%s 时应只调用 Responses' % (web, level))
+        sent = sdk.responses.create.call_args.kwargs
+        check(sent['reasoning'] == {'effort': level} and 'extra_body' not in sent and 'thinking' not in sent,
+              'Responses 应发送 reasoning.effort，不注入厂商 thinking 字段')
+        check(sent.get('tools') == ([{'type': 'web_search'}] if web else None),
+              '搜索开关只控制 web_search 工具')
+        check(sent['stream'] is True and sent['timeout'] == custom_role.request_timeout
+              and answer == '回答' and shown == ['回答'] and tokens == 2,
+              'Responses 正文回调、终局 usage 和请求超时应保持生效')
+    if level != 'none':
+        anth_params = p._build_anthropic_params(role_of(thinking_level=level), messages)
+        check(anth_params['thinking'] == {'type': 'enabled'}
+              and anth_params['output_config'] == {'effort': level},
+              'Anthropic 的具体档位交给后端解释：%s' % level)
+    chat_params = p._build_request_params(role_of(thinking_level=level), messages)
+    check(chat_params['reasoning_effort'] == level, 'Chat Completions 使用 reasoning_effort')
+
+section('Ollama 保留思考开关语义')
+for level, expected in [('none', False), ('high', True)]:
+    sdk = Mock()
+    sdk.chat.return_value = iter([])
+    p._process_ollama_stream(sdk, role_of(provider='ollama', thinking_level=level), messages, None, None)
+    check(sdk.chat.call_args.kwargs['think'] is expected, 'Ollama 档位=%s 的开关映射' % level)
 
 
 # ---------------------------------------------------------------- 3
@@ -365,7 +405,10 @@ cases = [
     (dict(api_format='anthropic', enable_web_search=False), '_process_anthropic_stream'),
     (dict(api_format='openai', enable_web_search=True), '_process_responses_stream'),
     (dict(api_format='openai', enable_web_search=False), '_process_openai_stream'),
+    (dict(provider='custom', api_format='responses', enable_web_search=True), '_process_responses_stream'),
+    (dict(provider='custom', api_format='responses', enable_web_search=False), '_process_responses_stream'),
     (dict(provider='ollama', api_format='anthropic'), '_process_ollama_stream'),
+    (dict(provider='ollama', api_format='responses'), '_process_ollama_stream'),
 ]
 for kw, want in cases:
     called.clear()
@@ -380,6 +423,9 @@ check(isinstance(a, anth.AnthropicClient), 'api_format=anthropic 应返回 Anthr
 check(getattr(o, 'kind', '') == 'openai', '同一地址的 OpenAI 格式客户端不能被缓存串用')
 check(pool.get_client('deepseek', 'https://x.invalid/anthropic', 'k', api_format='anthropic') is a,
       '同一组参数应复用缓存的客户端（保持连接）')
+custom_client = pool.get_client('custom', 'https://custom.invalid/api', 'k', api_format='responses')
+check(custom_client.kind == 'openai' and custom_client.base_url == 'https://custom.invalid/api',
+      'custom 使用通用 OpenAI 客户端，接口根地址不强制添加 /v1')
 
 # ---------------------------------------------------------------- 5
 section('客户端：URL、认证头、SSE')

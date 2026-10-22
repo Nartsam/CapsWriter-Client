@@ -331,8 +331,8 @@ class RoleLoaderErrorTests(unittest.TestCase):
 
     def test_other_error_keeps_message(self):
         e = self.raise_in(str(ROOT / 'LLM' / 'backends.py'),
-                          "raise ImportError(\"cannot import name 'CPA_API_KEY' from 'LLM.secrets'\")\n")
-        self.assertIn("cannot import name 'CPA_API_KEY'", self.loader_mod._describe_error(e))
+                          "raise ImportError(\"cannot import name 'CUSTOM_API_KEY' from 'LLM.secrets'\")\n")
+        self.assertIn("cannot import name 'CUSTOM_API_KEY'", self.loader_mod._describe_error(e))
 
 
 if __name__ == '__main__':

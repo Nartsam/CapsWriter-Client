@@ -59,7 +59,7 @@ class RoleFormatter:
             text.append("打字 ", style="dim")
 
         # 思考
-        thinking = role_config.enable_thinking
+        thinking = role_config.thinking_level != 'none'
         text.append("思考 " if thinking else "思考 ", style="green" if thinking else "dim")
 
         # 记忆

@@ -199,6 +199,7 @@ def test_responses_params(proc_mod):
         top_p = 0.9
         max_tokens = 4096
         enable_web_search = True
+        thinking_level = 'none'
         stop = ''
         extra_options = None
 

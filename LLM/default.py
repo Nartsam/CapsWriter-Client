@@ -18,7 +18,7 @@ max_context_length = 4096               # 最大上下文长度（token 数）
 
 # ==================== 功能配置 ====================
 enable_hotwords = True                  # 是否启用热词
-enable_thinking = False                 # 是否启用思考（关闭时直接回答、更快；Ollama 与 DeepSeek 生效）
+thinking_level = 'none'                 # none 关闭思考；其余档位按后端支持填写，见角色功能说明
 enable_history = True                   # 是否保留对话历史
 enable_read_selection = False           # 是否启用获取选中文字（默认 UI Automation）
 selection_max_length = 1024             # 选中文字最大长度

@@ -101,11 +101,11 @@ def analyze(handler, role, content, pending, states, anchor, timeout):
     if role.provider == 'ollama':
         response = client.chat(model=role.model, messages=messages, stream=False, format='json',
                                options={'temperature': role.temperature, 'top_p': role.top_p,
-                                        'num_predict': max(role.max_tokens, 2048)}, think=role.enable_thinking)
+                                        'num_predict': max(role.max_tokens, 2048)}, think=role.thinking_level != 'none')
         text = response.message.content
     elif role.api_format == 'anthropic':
         # 不传 thinking、用服务端默认（会先思考），与另两条分支一样。不能跟着角色的
-        # enable_thinking=False 关掉：关掉后「十分钟后」「半小时以后」这类相对时间
+        # thinking_level='none' 关掉：关掉后「十分钟后」「半小时以后」这类相对时间
         # 被判成 vague_time 拒绝（2026-10-07 实测各 3/3），思考开着则全部正确
         body = dict(params, system=SYSTEM, messages=messages[1:], max_tokens=max(role.max_tokens, 2048))
         response = client.create(body, timeout=timeout, max_retries=0)
@@ -113,7 +113,7 @@ def analyze(handler, role, content, pending, states, anchor, timeout):
             logger.info('提醒 Anthropic 未完成：stop_reason=%s', response.get('stop_reason'))
             raise ReminderError('提醒未设置：模型响应未正常完成（可能被截断）。')
         text = extract_text(response)
-    elif role.enable_web_search:
+    elif role.api_format == 'responses' or role.enable_web_search:
         response = client.with_options(max_retries=0).responses.create(
             **params, instructions=SYSTEM, input=messages[1:], stream=False,
             max_output_tokens=max(role.max_tokens, 2048), timeout=timeout)
