@@ -114,7 +114,7 @@ BAR_GAP = 4
 BAR_X = PANEL_X + 28                    # 第一根竖条的左边缘
 BAR_CY = (TITLE_Y + DETAIL_Y) // 2      # 横跨两行：以两行文字之间的中线为轴上下伸缩
 BAR_MIN_H = 8
-BAR_MAX_H = 88
+BAR_MAX_H = 72                         # 含圆端头的总高度，收在两行文字的上下边界内并留少量余白
 # 'round' 圆端头；Tk 的圆端头同样没有抗锯齿，看着发毛就改 'butt'（直角）
 BAR_CAPSTYLE = "round"
 # 每根相对整体音量的比例：中间高、两边低（中间 1.0，最外侧 BAR_EDGE_RATIO）

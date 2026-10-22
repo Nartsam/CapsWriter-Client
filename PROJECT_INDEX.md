@@ -212,7 +212,7 @@ CapsWriter 离线语音输入的**客户端**（Windows）。上游 [HaujetZhao/
 | 情绪标签剥离 | `llm_state_tags.py` |
 | 一次性提醒 | `reminder_*` 配置；`core/client/reminder/`、`core/ui/toast_reminder.py`；同步 [docs/提醒功能如何使用.md](docs/提醒功能如何使用.md)；验证 `tools/test_reminders.py` |
 | Toast 弹窗 | `core/ui/toast_*.py`；顶部留白 `toast_constants.py`；改完跑 `tools/test_toast_padding.py`、`test_toast_scaling.py` 并实机弹一次窗口（构造失败是静默的）；LLM 白框的占位流程验证 `tools/test_toast_status.py` |
-| 悬浮指示器 | `core/client/ui/recording_indicator.py`；声波条的尺寸、配色（`BAR_COLOR_MODE`）、动画与音量换算参数都是文件头常量，电平来自 `audio/stream.py` 的 `_audio_callback`；看效果 `tools/preview_indicator.py`，换算与竖条高度验证 `tools/test_level_meter.py` |
+| 悬浮指示器 | `core/client/ui/recording_indicator.py`；声波条的最大可见高度（含圆端头）由 `BAR_MAX_H` 控制，尺寸、配色（`BAR_COLOR_MODE`）、动画与音量换算参数都是文件头常量，电平来自 `audio/stream.py` 的 `_audio_callback`；看效果 `tools/preview_indicator.py`，换算与竖条高度验证 `tools/test_level_meter.py` |
 | 托盘 | `core/ui/tray.py`、`core/client/manager/tray_manager.py` |
 | Companion | `companion_*` 配置；`core/client/companion/` |
 | C/S 协议 | `core/protocol.py` + 两端收发代码（**服务端仓库同步修改**） |
