@@ -106,7 +106,7 @@ class HotwordManager:
         self._load_rule()
         logger.info("热词资源加载完成")
 
-    def _read_file(self, key: str) -> str:
+    def _read_file(self, key: str) -> Optional[str]:
         """读取文件的统一辅助函数"""
         path = self.files.get(key)
         if not path: return ""
@@ -120,20 +120,22 @@ class HotwordManager:
             validate(path.name, content)
             return content
         except Exception as e:
-            logger.error(f"读取文件失败 {path}: {e}")
+            logger.warning("热词文件加载失败，暂未同步，修正并保存后重试（%s）：%s", path, e)
             return None
 
-    def _load_hot(self) -> None:
+    def _load_hot(self) -> bool:
         content = self._read_file('hot')
-        if content is None: return
+        if content is None: return False
         num = self.phoneme_corrector.update_hotwords(content)
         console.print(self._format_msg("热词库", "hot.txt", num))
+        return True
 
-    def _load_rule(self) -> None:
+    def _load_rule(self) -> bool:
         content = self._read_file('rule')
-        if content is None: return
+        if content is None: return False
         num = self.rule_corrector.update_rules(content)
         console.print(self._format_msg("规则库", "hot-rule.txt", num))
+        return True
 
     def get_phoneme_corrector(self) -> PhonemeCorrector:
         return self.phoneme_corrector
@@ -231,8 +233,9 @@ class _HotwordFileHandler(FileSystemEventHandler):
             self._timers.pop(path, None)
         try:
             loader = self._file_mapping[path]
-            if loader:
-                loader()
+            # 加载失败已提示，本次保存不再触发同步侧的重复校验和报错。
+            if loader and loader() is False:
+                return
             if self.manager.synchronizer is not None:
                 self.manager.synchronizer.changed(path)
         except Exception as error:
