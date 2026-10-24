@@ -69,7 +69,7 @@ CapsWriter 离线语音输入的**客户端**（Windows）。上游 [HaujetZhao/
 | `manager/tray_manager.py`、`core/ui/tray.py` | 托盘菜单：复制结果、上下文（编辑发给服务端的 `context`）、热词（打开 hot.txt）、清除记忆、重开音频、显示/隐藏、重启、退出 |
 | `state.py` | `ClientState`：音频队列、连接、录音状态；打断用的 `pending_task_id`/`cancelled_task_ids`；连续对话与图片的每句话路由快照；等待结果的任务登记（`awaiting_results`，转交录音时长） |
 | `task_line.py`、`core/tools/task_id.py` | 麦克风任务在控制台的第一行（任务标识、录音时长、时延，或打断/出错说明）；任务标识 `8 位随机十六进制数_月-日_时-分-秒`，三种任务共用（格式约束见其文件头） |
-| `shortcut/shortcut_manager.py` | 低级钩子入口：防自捕获、录音键分发、打断键（`_handle_cancel_key`）、连续对话切换键（`_handle_chat_key`，配置校验在 `_resolve_chat_key`） |
+| `shortcut/shortcut_manager.py` | 低级钩子入口：防自捕获、录音键分发与前台进程让键（`_route_shortcut`）、打断键（`_handle_cancel_key`）、连续对话切换键（`_handle_chat_key`，配置校验在 `_resolve_chat_key`） |
 | `shortcut/event_handler.py`、`task.py` | 长按/单击两种模式；`ShortcutTask.launch/finish/cancel/abort`（建立快照、显示指示器、驱动 AudioRecorder、作废回滚） |
 | `shortcut/emulator.py`、`key_mapper.py` | 补发被拦截的按键、修饰键释放（为何要补发见 `MODIFIER_KEYS` 上方注释）；VK 码与按键名互转 |
 
@@ -127,13 +127,13 @@ CapsWriter 离线语音输入的**客户端**（Windows）。上游 [HaujetZhao/
 | `core/ui/toast_base.py`、`toast_text.py`、`toast_label.py`、`toast_constants.py` | 窗口基类（无边框置顶、透明圆角、宽度只增不减、拖动、滚轮、复制、Markdown 最终视图、智能时长）；Text 版用于流式（续写只追加，不是续写时整段替换）、Label 版用于普通提示 |
 | `core/ui/dpi.py` | 进程 DPI 感知统一声明（固定 SYSTEM 级，原因见文件头） |
 | `core/tools/windows_selection.py` | ctypes 调原生 UIA（独立 MTA 线程、焦点及祖先的 TextPattern），UIA 不支持时对 Scintilla 焦点控件做标量只读查询 |
-| `core/tools/window_detector.py` | 前台窗口进程名，供 `paste_apps`/`enter_apps`/`trash_punc_apps` 匹配 |
+| `core/tools/window_detector.py` | 前台窗口进程名，供 `paste_apps`/`enter_apps`/`trash_punc_apps` 匹配；录音键用 `get_foreground_process_name` 只查 HWND/PID/进程名，查询失败或期间切换前台时返回空串 |
 
 ---
 
 ## 数据流
 
-**麦克风识别**：钩子 KEYDOWN → `ShortcutTask.launch()`（连续对话闲置判断、建快照、绑定待挂图片、显示指示器）→ `AudioRecorder.record_and_send()`（生成 task_id、登记快照、过阈值后分块发送）→ KEYUP：超过阈值 `finish()` 发 `is_final`，否则 `cancel()` 并补发按键 → 服务端逐段回 `RecognitionMessage`（非最终包只刷新指示器进度）→ 最终包进 ResultProcessor 流水线（见上表）。
+**麦克风识别**：钩子 KEYDOWN → 按前台进程判断归属（让键时直接放行，本机不进入任务）→ `ShortcutTask.launch()`（连续对话闲置判断、建快照、绑定待挂图片、显示指示器）→ `AudioRecorder.record_and_send()`（生成 task_id、登记快照、过阈值后分块发送）→ KEYUP：超过阈值 `finish()` 发 `is_final`，否则 `cancel()` 并补发按键 → 服务端逐段回 `RecognitionMessage`（非最终包只刷新指示器进度）→ 最终包进 ResultProcessor 流水线（见上表）。
 
 **流式上屏**（快捷键配置 `streaming`，用法与限制见 [docs/流式上屏如何使用.md](docs/流式上屏如何使用.md)）：`launch()` 按快照判定这次录音是否流式（连续对话中、挂图、默认角色启用时不流式）→ `AudioMessage.streaming` → 服务端在停顿处切句、逐句回带 `delta` 的非最终包 → `_on_stream_delta`：第一句命中角色就整次改为松手后处理（之后只攒不打），否则逐句做繁简/热词/规则并打字 → 最终包只带最后一句，`_finish_stream` 打出后走与整段相同的收尾。没收到过 `delta`（旧服务端、只有一句）的最终包一律按整段处理。
 
@@ -150,6 +150,7 @@ CapsWriter 离线语音输入的**客户端**（Windows）。上游 [HaujetZhao/
 1. **门面与单例**：`CapsWriterClient` 是唯一入口；RecordingIndicator、ToastMessageManager、GlobalHotkeyManager 是线程安全单例。
 2. **低级钩子回调只做状态翻转和派发**：超过约 300ms 会被系统摘钩，此后所有快捷键失效。耗时操作一律 submit 到线程池（打断收尾、补发按键、截图读取都是如此）。
 3. **拦截决策在 KEYDOWN 锁存、KEYUP 沿用**：判据会被按键动作本身翻转，两次各自判断会产生不配对的按下/松开。打断键与连续对话切换键只在录音阶段拦截。长按的录音键是修饰键时，按住期间同族修饰键的按下也拦截（`_is_modifier_sync`）：系统里这个修饰键是松开的，RayLink 等远控软件会注入一个不配对的按下来「同步」，放行就卡住。
+   录音键的进程让行由 `_shortcut_routes` 锁存，放行分支必须绕过整个事件处理器（含短按/修饰键补发）；单击模式已有本机录音时保留结束入口。名单为空时不查询前台，启用后只在首次按下且需要决定归属时查询；配置与用户行为见 [进程让键说明](docs/常见问题.md#如何让指定程序自行处理录音快捷键)。
 4. **GlobalHotKeys 共用一个 Listener**：注册新热键会重启它；一个非法组合会让整个 Listener 起不来、连带 `llm_stop_key` 失效，所以注册前自行 `HotKey.parse` 校验。
 5. **多 Tk 解释器**：创建 `tkinter.font.Font` 必须传 `root=` 指向所属窗口，否则命名字体建到进程里第一个 Tk 上，跨解释器引用时静默回退为小号宋体。
 6. **日志**：控制台处理器固定 WARNING，诊断一律走 INFO（升级等于往运行终端刷字）；用户需要当场看见的结果用 `console.print`。模块用包内的 `from . import logger`，`logging.getLogger(__name__)` 不在项目日志器树上，写不进 `logs/`。
@@ -190,7 +191,7 @@ CapsWriter 离线语音输入的**客户端**（Windows）。上游 [HaujetZhao/
 
 | 修改目标 | 涉及文件 |
 |---|---|
-| 快捷键配置 / 行为 | `config_client.py` 的 `shortcuts`；`shortcut/event_handler.py`、`task.py`；钩子分发 `shortcut_manager.py`；补发 `emulator.py`；按键名 `key_mapper.py` |
+| 快捷键配置 / 行为 | `config_client.py` 的 `shortcuts`、`shortcut_passthrough_apps`；`shortcut/event_handler.py`、`task.py`；钩子分发与让键 `shortcut_manager.py`；进程查询 `core/tools/window_detector.py`；补发 `emulator.py`；按键名 `key_mapper.py`；验证 `tools/test_shortcut_keys.py` |
 | 录音打断 | `cancel_recording_key`；`shortcut_manager._handle_cancel_key`、`task.abort`、`audio/recorder.py` 的 abort 分支、`state` 的打断名单 |
 | 连续对话 | `continuous_chat_key/_timeout`；`state.py`（`ContinuousChatSnapshot`、`continuous_*`）、`shortcut_manager._handle_chat_key/_resolve_chat_key`、`task.py`、`result_processor._resolve_forced_role/_update_continuous_state`、`llm_handler`（`forced_role`/`resolve_role`）；配色 `recording_indicator` 的 `CONTINUOUS_*` |
 | 视觉输入 | `vision_*` 配置；`core/client/vision/` 各文件；`state` 的 `*_image_snapshot`；`result_processor._report_image_usage`；带图消息格式 `llm_message_builder` 与 `llm_processor._to_responses_content`；描边 `recording_indicator` 的 `IMAGE_BORDER*` |

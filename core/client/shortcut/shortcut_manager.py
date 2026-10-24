@@ -11,7 +11,7 @@
 from __future__ import annotations
 import time
 from concurrent.futures import ThreadPoolExecutor
-from typing import TYPE_CHECKING, Dict, List, Optional
+from typing import TYPE_CHECKING, Dict, List, Optional, Tuple
 
 from pynput import keyboard, mouse
 
@@ -21,6 +21,7 @@ from core.client.shortcut.key_mapper import KeyMapper, MODIFIER_KEYS, MODIFIER_F
 from core.client.shortcut.emulator import ShortcutEmulator
 from core.client.shortcut.event_handler import ShortcutEventHandler
 from core.client.shortcut.task import ShortcutTask
+from core.tools.window_detector import get_foreground_process_name
 
 if TYPE_CHECKING:
     from core.client.shortcut.shortcut_config import Shortcut
@@ -64,6 +65,10 @@ class ShortcutManager:
         # 按键恢复状态追踪
         self._restoring_keys = set()
 
+        self._passthrough_apps = self._resolve_passthrough_apps()
+        # 每轮按键事件的（交给前台、抑制原始事件），KEYUP 后移除。
+        self._shortcut_routes: Dict[str, Tuple[bool, bool]] = {}
+
         # 打断键：录音中或等待识别结果时按下，本次输入作废。留空则禁用
         from config_client import ClientConfig as Config
         self._cancel_key = (getattr(Config, 'cancel_recording_key', '') or '').lower().strip()
@@ -88,6 +93,35 @@ class ShortcutManager:
     def state(self) -> ClientState:
         """快捷访问状态单例"""
         return self.app.state
+
+    def _resolve_passthrough_apps(self):
+        from config_client import ClientConfig as Config
+
+        apps = getattr(Config, 'shortcut_passthrough_apps', [])
+        if (not isinstance(apps, (list, tuple))
+                or any(not isinstance(name, str) for name in apps)):
+            logger.warning("shortcut_passthrough_apps 应为进程名列表，已关闭录音键让行")
+            return set()
+        return {name.strip().lower() for name in apps if name.strip()}
+
+    def _route_shortcut(self, key_name: str, is_keydown: bool) -> Tuple[bool, bool]:
+        """返回（交给前台、抑制原始事件）；一次按下到松开只判定一次。"""
+        task = self.tasks[key_name]
+        if not self._passthrough_apps:
+            return False, task.shortcut.suppress
+        if not is_keydown:
+            # 没见过按下的孤立松开直接放行，例如客户端启动时用户已经按着 Ctrl。
+            return self._shortcut_routes.pop(key_name, (True, False))
+        if key_name not in self._shortcut_routes:
+            passthrough = False
+            stopping = task.is_recording and not task.shortcut.hold_mode
+            # 已有本机录音保留结束入口，打断后也保持原归属直到物理松开。
+            if not task.is_recording and not task.wait_release:
+                name = get_foreground_process_name()
+                passthrough = not name or name.lower() in self._passthrough_apps
+            suppress = not passthrough and (task.shortcut.suppress or stopping)
+            self._shortcut_routes[key_name] = passthrough, suppress
+        return self._shortcut_routes[key_name]
 
     def _resolve_chat_key(self) -> str:
         """
@@ -184,16 +218,22 @@ class ShortcutManager:
                     self.keyboard_listener.suppress_event()
                 return True
 
+            task = self.tasks.get(key_name)
+            if task is not None:
+                passthrough, suppress = self._route_shortcut(key_name, msg in KEY_DOWN_MESSAGES)
+                if passthrough:
+                    # 命中名单的配置录音键优先让行；同族同步保护只处理其余按键。
+                    # 包括 KEYUP：不能进入短按补发、修饰键补发或录音状态机。
+                    return True
+
             if msg in KEY_DOWN_MESSAGES and self._is_modifier_sync(key_name):
                 if self.keyboard_listener:
                     self.keyboard_listener.suppress_event()
                 return True
 
             # 查找匹配的快捷键
-            if key_name not in self.tasks:
+            if task is None:
                 return True
-
-            task = self.tasks[key_name]
 
             # 处理按键事件
             try:
@@ -204,7 +244,12 @@ class ShortcutManager:
             except Exception as e:
                 logger.error(f"[{key_name}] 事件处理异常: {e}")
             finally:
-                if task.shortcut.suppress and self.keyboard_listener:
+                if suppress and self.keyboard_listener:
+                    # 单击录音的结束键即使原配为非阻塞，也要拦截并清理修饰键状态。
+                    # 原本阻塞的键已由 event_handler 补发，避免重复释放。
+                    if (msg in KEY_UP_MESSAGES and not task.shortcut.suppress
+                            and key_name in MODIFIER_KEYS):
+                        self._pool.submit(self._emulator.release_key, key_name)
                     self.keyboard_listener.suppress_event()
 
             return True
@@ -231,6 +276,9 @@ class ShortcutManager:
                 return True
 
             task = self.tasks[button_name]
+            passthrough, suppress = self._route_shortcut(button_name, msg == WM_XBUTTONDOWN)
+            if passthrough:
+                return True
 
             # 处理鼠标事件
             try:
@@ -241,7 +289,7 @@ class ShortcutManager:
             except Exception as e:
                 logger.error(f"[{button_name}] 事件处理异常: {e}")
             finally:
-                if task.shortcut.suppress and self.mouse_listener:
+                if suppress and self.mouse_listener:
                     self.mouse_listener.suppress_event()
 
             return True

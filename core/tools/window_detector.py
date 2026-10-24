@@ -6,6 +6,36 @@
 import platform
 
 
+def get_foreground_process_name() -> str:
+    """供录音键按下时查询进程名；失败或查询期间切换前台时返回空串。
+
+    钩子只需要进程名，直接查 HWND/PID，避免读取窗口标题、遍历窗口或调用 UIA。
+    空串保留「无法确定归属」的语义，由快捷键管理器决定放行。
+    """
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        user32 = ctypes.WinDLL('user32', use_last_error=True)
+        user32.GetForegroundWindow.argtypes = []
+        user32.GetForegroundWindow.restype = wintypes.HWND
+        user32.GetWindowThreadProcessId.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.DWORD)]
+        user32.GetWindowThreadProcessId.restype = wintypes.DWORD
+
+        hwnd = user32.GetForegroundWindow()
+        if not hwnd:
+            return ''
+        pid = wintypes.DWORD()
+        if not user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid)) or not pid.value:
+            return ''
+        name = _get_process_name(pid.value)
+        if user32.GetForegroundWindow() != hwnd:
+            return ''
+        return name
+    except (OSError, AttributeError):
+        return ''
+
+
 def get_active_window_info() -> dict:
     """
     获取当前前台窗口信息
