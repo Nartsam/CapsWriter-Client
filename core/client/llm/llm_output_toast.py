@@ -20,8 +20,8 @@ LLM_TOAST_BG = "#f7fbff"
 LLM_TOAST_FG = "black"
 LLM_TOAST_ALPHA = 0.92
 LLM_TOAST_CORNER_RADIUS = 12
-# 窗口弹出到首个正文分片（或工具状态）之间的占位。CPA 网关首字就要 4～7s，挂搜索
-# 工具时还要攒齐整段才发，这段空白可达 20s；窗口点击获得焦点后即可用 Esc 取消，不响应全局中断键
+# 首个正文分片或工具状态到达前显示占位，等待时长取决于模型和后端。
+# 窗口点击获得焦点后即可用 Esc 取消，不响应全局中断键。
 LLM_TOAST_THINKING_TEXT = '正在思考…'
 
 

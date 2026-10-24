@@ -1,15 +1,12 @@
 """
 LLM 角色的后端切换
 
-角色文件里只写一行 `backend = 'deepseek'` 或 `'custom'`，具体用哪个模型、连哪个地址、
-用什么请求格式、超时多少，全部在本文件里定。
+角色文件里只写一行 `backend = 'deepseek'` 或 `'custom'`，具体用哪个模型、连哪个地址、用什么请求格式、超时多少，全部在本文件里定。
 
-**热切换**：`llm_watcher` 监视整个 `LLM/` 目录，改本文件会触发全部角色重载
-（`_do_reload` → `load_all_roles`）。`load_all_roles` 对 `sorted(glob('*.py'))` 里的
-每个文件先 `del sys.modules` 再 import，而 `backends.py` 的首字母 `b` 排在
-`default.py`、`secrets.py` 与四个中文角色文件之前，所以它一定先被重新执行、角色
-随后 import 到的就是新值。**不要把本文件改成排序靠后的名字**（比如 `zz_backends.py`），
-那样角色读到的会是上一轮的旧值，而且不报错。
+**热切换**：`llm_watcher` 监视整个 `LLM/` 目录，改本文件会触发全部角色重载（`_do_reload` → `load_all_roles`）。
+`load_all_roles` 对 `sorted(glob('*.py'))` 里的每个文件先 `del sys.modules` 再 import，
+而 `backends.py` 的首字母 `b` 排在`default.py`、`secrets.py` 与四个中文角色文件之前，所以它一定先被重新执行、角色随后 import 到的就是新值。
+**不要把本文件改成排序靠后的名字**（比如 `zz_backends.py`），那样角色读到的会是上一轮的旧值，而且不报错。
 """
 from LLM.secrets import CUSTOM_API_KEY, DEEPSEEK_API_KEY
 

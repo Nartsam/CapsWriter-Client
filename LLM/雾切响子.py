@@ -1,5 +1,5 @@
 """
-助理角色，联网模型
+助理类角色，联网模型，由 Claude 编写
 """
 from LLM.backends import resolve
 

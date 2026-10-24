@@ -2,9 +2,9 @@
 
 > **按住快捷键说话，松开就上屏。**
 
-CapsWriter 离线语音输入的**客户端**（Windows）：按住快捷键录音，把音频发给 **CapsWriter-Server** 服务端识别，拿到文字后做热词替换、可选的 LLM 处理，再模拟键盘输入到当前窗口。服务端是另一个仓库（与本仓库同级的 `CapsWriter-Server`），部署、模型与显卡加速看那边的说明。
+CapsWriter 离线语音输入的**客户端**（Windows）：按住快捷键录音，把音频发给 **CapsWriter-Server** 服务端识别，拿到文字后做热词替换、可选的 LLM 处理，再模拟键盘输入到当前窗口。
 
-Fork 自 [HaujetZhao/CapsWriter-Offline](https://github.com/HaujetZhao/CapsWriter-Offline)，只维护客户端，仅供个人使用。
+Fork 自 [HaujetZhao/CapsWriter-Offline](https://github.com/HaujetZhao/CapsWriter-Offline)
 
 ## ✨ 核心特性
 
