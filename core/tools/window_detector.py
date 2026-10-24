@@ -101,7 +101,7 @@ def _get_process_name(pid: int) -> str:
     按 PID 取进程的可执行文件名（如 'WeChat.exe'），取不到返回空串。
 
     以前用 psutil，但 internal/ 冻结运行时里没有打包 psutil，导入失败被吞掉后进程名
-    永远是空串，paste_apps / enter_apps / trash_punc_apps 因此从不生效。这里只用
+    永远是空串，paste_apps / trash_punc_apps 因此从不生效。这里只用
     标准库 ctypes 调 QueryFullProcessImageNameW：它只需要 PROCESS_QUERY_LIMITED_INFORMATION
     权限，前台是管理员权限运行的程序时通常也能取到。
     """

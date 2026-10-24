@@ -40,7 +40,7 @@ class LLMResult:
     used_tools: List[str] = field(default_factory=list)  # 本次请求实际触发的服务端工具 ID
     image_used: bool = False       # 本次绑定的图片是否真的随请求上传了
     reminder_handled: bool = False  # 独立提醒任务，不写角色对话归档、不广播输出
-    cancelled: bool = False         # 本地 Toast 生成中取消：整轮丢弃，不归档或自动回车
+    cancelled: bool = False         # 本地 Toast 生成中取消：整轮丢弃，不写角色归档
 
 
 # ======================================================================

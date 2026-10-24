@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import time
-from typing import TYPE_CHECKING, Dict, Optional, Tuple
+from typing import TYPE_CHECKING, Dict, Optional
 
 from config_client import ClientConfig as Config
 from core.client.state import console
@@ -22,7 +22,6 @@ from core.client.output.stream_output import (
     DEFERRED, PENDING, TYPING, StreamSession, trim_for_strip_punc,
 )
 from core.tools.window_detector import get_active_window_info
-import keyboard
 from . import logger
 
 from core.client.udp.udp_broadcaster import broadcast_output_udp
@@ -56,13 +55,6 @@ def _estimate_tokens(text: str) -> int:
     chinese_chars = sum(1 for c in text if '\u4e00' <= c <= '\u9fff')
     other_chars = len(text) - chinese_chars
     return int(chinese_chars / 1.5 + other_chars / 4)
-
-
-async def _auto_enter(delay: float) -> None:
-    """延迟发送回车键"""
-    await asyncio.sleep(delay)
-    keyboard.press_and_release('enter')
-    logger.debug(f"自动回车已发送 (延迟 {delay}s)")
 
 
 class ResultProcessor:
@@ -418,7 +410,7 @@ class ResultProcessor:
                 logger.debug(f"潜在热词: {log_str}")
 
         # 窗口兼容性检测
-        paste, process_name = self._paste_for_foreground()
+        paste = self._paste_for_foreground()
 
         # 连续对话路由：由说这句话时的快照决定，而不是此刻的全局状态。两者之间隔着
         # 一整个服务端往返，期间用户完全可能已经开始说下一句或切换了状态
@@ -453,18 +445,13 @@ class ResultProcessor:
         # 文本已经完成输出，此时关闭悬浮提示。
         hide_recording_indicator()
 
-        self._after_output(message, text, process_name, llm_result, snapshot, pending_image)
+        self._after_output(message, text, llm_result, snapshot, pending_image)
 
-    def _after_output(self, message: RecognitionMessage, text: str, process_name: str,
+    def _after_output(self, message: RecognitionMessage, text: str,
                       llm_result, snapshot, pending_image) -> None:
-        """文字输出之后的收尾：自动回车、录音改名与日记、LLM 结果记录、图片去向、连续对话状态"""
+        """文字输出之后的收尾：录音改名与日记、LLM 结果记录、图片去向、连续对话状态"""
         reminder_handled = bool(llm_result and getattr(llm_result, 'reminder_handled', False))
         cancelled = bool(llm_result and getattr(llm_result, 'cancelled', False))
-        # 提醒只有通知，不应向用户当前文档注入一个回车。
-        if not reminder_handled and not cancelled:
-            for app, delay in Config.enter_apps:
-                if app.lower() == process_name:
-                    asyncio.create_task(_auto_enter(delay))
 
         # 保存录音与写入 md 文件
         file_audio = None
@@ -518,15 +505,15 @@ class ResultProcessor:
         console.print(format_task_line(task_id, self.state.pop_awaiting_result(task_id), *items))
 
     @staticmethod
-    def _paste_for_foreground() -> Tuple[bool, str]:
-        """按当前前台程序决定输出方式，返回 (是否粘贴, 小写进程名)"""
+    def _paste_for_foreground() -> bool:
+        """按当前前台程序判断是否使用粘贴输出"""
         paste = Config.paste
         process_name = get_active_window_info().get('process_name', '').lower()
         logger.debug(f"当前活动窗口: {process_name}")
         if any(app.lower() == process_name for app in Config.paste_apps):
             paste = True
             logger.debug(f"检测到兼容性应用: {process_name}，使用粘贴模式")
-        return paste, process_name
+        return paste
 
     def _correct_text(self, text: str):
         """繁简转换 + 热词替换，返回 (文字, 热词纠错结果)。与整段处理的前两步相同"""
@@ -593,7 +580,7 @@ class ResultProcessor:
         """打出流式上屏的一段；输出方式按此刻的前台程序决定"""
         if not piece:
             return
-        paste, _ = self._paste_for_foreground()
+        paste = self._paste_for_foreground()
         await self.output.output(piece, paste=paste)
         session.typed += piece
         session.pieces += 1
@@ -611,7 +598,7 @@ class ResultProcessor:
         piece = self.hotword.get_rule_corrector().substitute(piece)
         hotword_elapsed = time.monotonic() - hotword_start
 
-        paste, process_name = self._paste_for_foreground()
+        paste = self._paste_for_foreground()
         await self.output.output(piece, paste=paste)
         if piece:
             session.pieces += 1
@@ -634,7 +621,7 @@ class ResultProcessor:
 
         snapshot = self.state.pop_continuous_snapshot(message.task_id)
         pending_image = self.state.pop_image_snapshot(message.task_id)
-        self._after_output(message, text, process_name, None, snapshot, pending_image)
+        self._after_output(message, text, None, snapshot, pending_image)
 
     def _cleanup(self) -> None:
         """清理资源"""

@@ -11,7 +11,7 @@ from pathlib import Path
 import sys
 import tempfile
 import types
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 import unittest
 from unittest.mock import AsyncMock, Mock, patch
 
@@ -557,15 +557,15 @@ class ProcessorTests(unittest.IsolatedAsyncioTestCase):
                                      '_report_image_usage', '_update_continuous_state',
                                      '_print_task_line'}]
         config = types.SimpleNamespace(llm_enabled=True, traditional_convert=False, hot=False, paste=False,
-                                       paste_apps=[], enter_apps=[('editor', 0)], save_audio=True)
-        namespace = dict(Optional=Optional, Tuple=Tuple, RecognitionMessage=Any, Config=config, RoleConfig=RoleConfig,
+                                       paste_apps=[], save_audio=True)
+        namespace = dict(Optional=Optional, RecognitionMessage=Any, Config=config, RoleConfig=RoleConfig,
                          console=Mock(), logger=logging.getLogger('reminder-test'),
-                         time=importlib.import_module('time'), asyncio=asyncio, AudioFileManager=Mock(),
+                         time=importlib.import_module('time'), AudioFileManager=Mock(),
                          TextOutput=types.SimpleNamespace(strip_punc=lambda value: value),
                          get_active_window_info=lambda: {'process_name': 'editor'},
                          show_processing_indicator=Mock(), hide_recording_indicator=Mock(),
                          update_recording_indicator_progress=Mock(), write_llm_md=Mock(),
-                         broadcast_output_udp=Mock(), _auto_enter=AsyncMock(), IMAGE_PLACEHOLDER='[图片]',
+                         broadcast_output_udp=Mock(), IMAGE_PLACEHOLDER='[图片]',
                          # 归档改名：真实实现要落盘，这里桩掉并返回空串（等价于未归档）
                          mark_outcome=Mock(return_value=''),
                          format_task_line=importlib.import_module('core.client.task_line').format_task_line)
@@ -609,7 +609,6 @@ class ProcessorTests(unittest.IsolatedAsyncioTestCase):
                 self.assertIn('图片', str(namespace['console'].print.call_args_list))
         namespace['write_llm_md'].assert_not_called()
         namespace['broadcast_output_udp'].assert_not_called()
-        namespace['_auto_enter'].assert_not_called()
 
 
 class RoutingTests(unittest.IsolatedAsyncioTestCase):

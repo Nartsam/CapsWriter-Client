@@ -6,7 +6,7 @@
 ## 待验证
 
 - [ ] **一次性提醒的全屏延后与重启恢复**（2026-09-12）：在独占全屏游戏里到期时不弹出、退出游戏后补投；重启后未来提醒继续、6 小时内的过期提醒合并通知、更早的静默过期。录音创建、到期投递与 OpenMate 批次已实机通过。
-- [ ] **`paste_apps` / `enter_apps` / `trash_punc_apps` 实机确认**（2026-09-29）：进程名原先靠运行时里没有的 psutil，这三项一直没生效；已改用 ctypes 获取（`window_detector._get_process_name`），系统 Python 下验证过，还没在 exe 里跑过。重启客户端后在微信里说一句，确认走了粘贴、末尾标点被去掉。
+- [ ] **`paste_apps` / `trash_punc_apps` 实机确认**（2026-09-29）：进程名原先靠运行时里没有的 psutil，这两项一直没生效；已改用 ctypes 获取（`window_detector._get_process_name`），系统 Python 下验证过，还没在 exe 里跑过。重启客户端后在微信里说一句，确认走了粘贴、末尾标点被去掉。
 
 ## 已知问题
 

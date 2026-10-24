@@ -200,25 +200,22 @@ class ToastStatusTests(unittest.IsolatedAsyncioTestCase):
                     await asyncio.gather(task, return_exceptions=True)
                     await asyncio.wait_for(finished.wait(), 2)
 
-    async def test_cancelled_result_skips_reply_archive_and_auto_enter(self):
+    async def test_cancelled_result_skips_reply_archive(self):
         source = ast.parse((ROOT / 'core/client/output/result_processor.py').read_text(encoding='utf-8'))
         cls = next(n for n in source.body if isinstance(n, ast.ClassDef) and n.name == 'ResultProcessor')
         method = next(n for n in cls.body if isinstance(n, ast.FunctionDef) and n.name == '_after_output')
         archive, console = Mock(), Mock()
-        namespace = dict(RecognitionMessage=object, asyncio=asyncio, console=console,
-                         Config=types.SimpleNamespace(save_audio=True, llm_enabled=True,
-                                                      enter_apps=[('editor.exe', 0)]),
-                         write_llm_md=archive, _auto_enter=Mock())
+        namespace = dict(RecognitionMessage=object, console=console,
+                         Config=types.SimpleNamespace(save_audio=True, llm_enabled=True),
+                         write_llm_md=archive)
         exec(compile(ast.Module(body=[method], type_ignores=[]), '<after_output>', 'exec'), namespace)
         processor = types.SimpleNamespace(
             state=types.SimpleNamespace(pop_audio_file=Mock(return_value=None)), diary=Mock(),
             _report_image_usage=Mock(), _update_continuous_state=Mock(), _log_modifier_key_state=Mock())
         result = types.SimpleNamespace(cancelled=True, role_name='助理', processed=True, result='')
         message = types.SimpleNamespace(task_id='t', time_start=1)
-        with patch.object(asyncio, 'create_task') as create_task:
-            namespace['_after_output'](processor, message, '识别原文', 'editor.exe', result, None, None)
+        namespace['_after_output'](processor, message, '识别原文', result, None, None)
         archive.assert_not_called()
-        create_task.assert_not_called()
         processor.diary.write.assert_called_once_with('识别原文', 1, None)
         console.print.assert_called_once()
 

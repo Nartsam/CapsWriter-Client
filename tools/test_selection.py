@@ -683,9 +683,9 @@ class ConsoleTests(unittest.IsolatedAsyncioTestCase):
     async def run_processor(self, selected, failure=False):
         console = Mock()
         config = types.SimpleNamespace(llm_enabled=True, traditional_convert=False, hot=False,
-                                       paste=False, paste_apps=[], enter_apps=[], save_audio=False)
-        namespace = dict(Optional=Optional, Tuple=Tuple, Config=config, RecognitionMessage=object,
-            console=console, logger=logging.getLogger('selection-test'), time=time, asyncio=asyncio,
+                                       paste=False, paste_apps=[], save_audio=False)
+        namespace = dict(Optional=Optional, Config=config, RecognitionMessage=object,
+            console=console, logger=logging.getLogger('selection-test'), time=time,
             TextOutput=types.SimpleNamespace(strip_punc=lambda text: text),
             show_processing_indicator=Mock(), hide_recording_indicator=Mock(),
             get_active_window_info=lambda: {}, broadcast_output_udp=Mock(),

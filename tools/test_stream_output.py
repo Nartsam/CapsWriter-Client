@@ -7,14 +7,13 @@ ResultProcessor 的相关方法按源码抽出来，绑到桩对象上运行；�
 from __future__ import annotations
 
 import ast
-import asyncio
 import importlib.util
 import logging
 from pathlib import Path
 import sys
 import time
 import types
-from typing import Dict, Optional, Tuple
+from typing import Dict, Optional
 import unittest
 from unittest.mock import AsyncMock, Mock
 
@@ -105,13 +104,13 @@ class ProcessorHarness(unittest.IsolatedAsyncioTestCase):
     def make(self, llm_enabled=True, cancelled=False, default_role=False):
         self.config = types.SimpleNamespace(
             llm_enabled=llm_enabled, traditional_convert=False, hot=True, paste=False,
-            paste_apps=[], enter_apps=[], save_audio=False)
+            paste_apps=[], save_audio=False)
         self.console = Mock()
         self.note = Mock()
         self.progress = Mock()
         self.typed = []
-        ns = dict(Optional=Optional, Tuple=Tuple, Dict=Dict, Config=self.config, RecognitionMessage=object,
-                  console=self.console, logger=logging.getLogger('stream-test'), time=time, asyncio=asyncio,
+        ns = dict(Optional=Optional, Dict=Dict, Config=self.config, RecognitionMessage=object,
+                  console=self.console, logger=logging.getLogger('stream-test'), time=time,
                   TextOutput=types.SimpleNamespace(strip_punc=lambda t: t[:-1] if t.endswith('。') and len(t) < 6 else t),
                   show_processing_indicator=Mock(), hide_recording_indicator=Mock(),
                   update_recording_indicator_progress=self.progress,
@@ -173,6 +172,32 @@ class ProcessorHarness(unittest.IsolatedAsyncioTestCase):
 
 
 class ProcessorTests(ProcessorHarness):
+    async def test_output_mode_for_whole_and_streaming_results(self):
+        for streaming in (False, True):
+            for default, apps, expected in ((False, [], False), (False, ['CODE.exe'], True),
+                                            (False, ['Other.exe'], False), (True, [], True)):
+                with self.subTest(streaming=streaming, default=default, apps=apps):
+                    self.make(llm_enabled=False)
+                    self.config.paste = default
+                    self.config.paste_apps = apps
+                    self.p.output.output = AsyncMock()
+                    if streaming:
+                        await self.feed(message(delta='第一句'),
+                                        message(delta='第二句', text='第一句第二句', is_final=True))
+                    else:
+                        await self.feed(message(text='完整文字', is_final=True))
+                    self.assertEqual(self.p.output.output.await_count, 2 if streaming else 1)
+                    for call in self.p.output.output.await_args_list:
+                        self.assertIs(call.kwargs['paste'], expected)
+
+    async def test_llm_receives_foreground_output_mode(self):
+        for apps, expected in (([], False), (['CODE.exe'], True)):
+            with self.subTest(apps=apps):
+                self.make()
+                self.config.paste_apps = apps
+                await self.feed(message(text='助理，你好', is_final=True))
+                self.assertIs(self.llm.process_and_output.await_args.kwargs['paste'], expected)
+
     async def test_typing_sentence_by_sentence(self):
         self.make()
         await self.feed(message(delta='鱿鱼今天下雨'), message(delta='，我们改在室内'))

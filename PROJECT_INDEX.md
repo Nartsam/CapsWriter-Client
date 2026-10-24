@@ -79,7 +79,7 @@ CapsWriter 离线语音输入的**客户端**（Windows）。上游 [HaujetZhao/
 |---|---|
 | `audio/stream.py`、`recorder.py`、`file_manager.py` | 采集；按 `AudioMessage` 分块发送、打断时丢缓存并仍发 `is_final`；录音存 MP3/WAV 并按识别文本改名（`年/月/assets/`） |
 | `connection/websocket_manager.py` | 连接与重连。`addr` 可写候选列表：未锁定时一次 `connect()` 内按序探测，首个连上即锁定（取舍见类说明） |
-| `output/result_processor.py` | 主循环：收结果 → 繁简 → 热词 → 去末尾标点 → 正则 → LLM 或直接上屏 → 自动回车 → 日记与录音改名 → LLM md 记录 → 报告图片去向 → 连续对话状态迁移；流式上屏的逐句打字（`_on_stream_delta` / `_finish_stream`，输出后的收尾与整段共用 `_after_output`） |
+| `output/result_processor.py` | 主循环：收结果 → 繁简 → 热词 → 去末尾标点 → 正则 → LLM 或直接上屏 → 日记与录音改名 → LLM md 记录 → 报告图片去向 → 连续对话状态迁移；流式上屏的逐句打字（`_on_stream_delta` / `_finish_stream`，输出后的收尾与整段共用 `_after_output`） |
 | `output/stream_output.py` | 流式上屏单次录音的状态（待判定 / 逐句上屏 / 改为松手后处理）与取舍说明 |
 | `output/text_output.py`、`clipboard/clipboard.py` | 打字（`keyboard.write`）或粘贴输出；剪贴板读写（`try_paste` 区分「读不到」与「空文本」，占用时退避重试） |
 | `hotword/` | `manager.py` 加载并监视 hot.txt/hot-rule.txt；`hot_phoneme.py` 音素 RAG（粗筛 + 精算）；`hot_rule.py` 正则替换 |
@@ -127,7 +127,7 @@ CapsWriter 离线语音输入的**客户端**（Windows）。上游 [HaujetZhao/
 | `core/ui/toast_base.py`、`toast_text.py`、`toast_label.py`、`toast_constants.py` | 窗口基类（无边框置顶、透明圆角、宽度只增不减、拖动、滚轮、复制、Markdown 最终视图、智能时长）；Text 版用于流式（续写只追加，不是续写时整段替换）、Label 版用于普通提示 |
 | `core/ui/dpi.py` | 进程 DPI 感知统一声明（固定 SYSTEM 级，原因见文件头） |
 | `core/tools/windows_selection.py` | ctypes 调原生 UIA（独立 MTA 线程、焦点及祖先的 TextPattern），UIA 不支持时对 Scintilla 焦点控件做标量只读查询 |
-| `core/tools/window_detector.py` | 前台窗口进程名，供 `paste_apps`/`enter_apps`/`trash_punc_apps` 匹配；录音键用 `get_foreground_process_name` 只查 HWND/PID/进程名，查询失败或期间切换前台时返回空串 |
+| `core/tools/window_detector.py` | 前台窗口进程名，供 `paste_apps`/`trash_punc_apps` 匹配；录音键用 `get_foreground_process_name` 只查 HWND/PID/进程名，查询失败或期间切换前台时返回空串 |
 
 ---
 
@@ -161,7 +161,7 @@ CapsWriter 离线语音输入的**客户端**（Windows）。上游 [HaujetZhao/
 11. **剪贴板**：之后要写回剪贴板的读取必须用 `try_paste()`，`safe_paste()` 会把「读不到」折叠成空串、写回时清掉原内容（典型是待挂的截图）。只读选区模式（`selection_mode='uia'`）不碰剪贴板，复制模式与粘贴输出仍会写。
 12. **配置读取**：本地新增的 `ClientConfig` 项在代码里用 `getattr(Config, 名, 默认值)` 读取（多数还会校验取值、非法时回退默认），缺项时照常运行；新增配置照此办理。角色文件未写的字段取 `RoleConfig` 默认值。
 13. **协议、搜索与思考**：custom 的普通回复和提醒解析均由 `api_format='responses'` 固定路由；`enable_web_search` 只决定是否挂 `web_search`（事件是 `<工具>_call`）。`anthropic` 挂 `web_search_20250305`（事件是 `server_tool_use` 块），DeepSeek 保持此格式（`tools/test_backends.py` 钉住）；旧 `openai` 路由仍在开启搜索时转 Responses。检索期数秒无正文，必须设 `request_timeout`。参数差异收敛在 `_build_responses_params` 与 `_build_anthropic_params`：`thinking_level` 分别转成 `reasoning.effort`、`thinking` + `output_config.effort`；DeepSeek / custom 的提醒分析独立使用后端默认思考，不传角色档位或额外选项。
-14. **本地 Toast 取消隔离**：`toast_request` 从输出层经 Handler 传到 Processor；线程认领完成后才提交记忆，取消后不再更新窗口、选区去重或历史。输出层立即结束本地等待，底层网络线程收尾只读自己那一轮的状态；`LLMResult.cancelled` 让 ResultProcessor 跳过角色归档和自动回车。点击与 Esc 的用户行为见 [角色功能说明](docs/角色功能如何使用.md#toast-模式)。
+14. **本地 Toast 取消隔离**：`toast_request` 从输出层经 Handler 传到 Processor；线程认领完成后才提交记忆，取消后不再更新窗口、选区去重或历史。输出层立即结束本地等待，底层网络线程收尾只读自己那一轮的状态；`LLMResult.cancelled` 让 ResultProcessor 跳过角色归档。点击与 Esc 的用户行为见 [角色功能说明](docs/角色功能如何使用.md#toast-模式)。
 15. **一个任务的控制台输出排在一起**：麦克风任务的全部输出只在结果处理里打印（接收循环逐条 `await _handle_message`，含 LLM 回复，天然串行），录音协程松手和打断时只登记 `awaiting_results`，不打印；被打断的任务在丢弃回包处打一行。例外是确定等不到结果的任务：未连接、发送失败由录音协程当场打，等待中断线由 `_cleanup` 补打，登记表谁取出谁打印。新增任务相关的控制台输出放进结果处理的流程里；不属于任何任务的提示（挂图、热重载、连接状态、警告日志）照旧当场打印。
 
 > 旧编号对照：`LLM/backends.py` 注释与 `tools/probe_llm_live.py` 输出文字里仍有「约定 15/21/22」，分别指本节第 13 条、视觉输入（`core/client/vision/`）、第 9 条。
