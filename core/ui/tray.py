@@ -266,6 +266,12 @@ class _TraySystem:
     def on_restart(self, icon, item) -> None:
         """托盘重启处理：启动新进程后退出当前进程"""
         logger.info("托盘重启: 用户点击重启菜单，准备重启程序")
+        owner = getattr(_get_exit_callback(), '__self__', None)
+        restart = getattr(owner, 'restart', None)
+        if restart is not None:
+            restart()
+            return
+
         try:
             if getattr(sys, 'frozen', False):
                 cmd = sys.argv

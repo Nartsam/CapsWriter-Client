@@ -8,7 +8,6 @@
 from __future__ import annotations
 
 import threading
-import time
 import unicodedata
 from pathlib import Path
 from typing import Dict, Callable, Optional, TYPE_CHECKING, Any, Tuple
@@ -17,6 +16,7 @@ from watchdog.events import FileSystemEventHandler
 from watchdog.observers import Observer
 from rich.console import Console
 
+from core.hotword_sync import CLIENT_FILES, read_text, validate
 from .hot_rule import RuleCorrector
 from .hot_phoneme import PhonemeCorrector
 
@@ -76,6 +76,8 @@ class HotwordManager:
         
         self._observer: Optional[Observer] = None
         self._is_watcher_started = False
+        self.synchronizer = None
+        self._handler = None
 
         
 
@@ -114,18 +116,22 @@ class HotwordManager:
                 path.parent.mkdir(parents=True, exist_ok=True)
                 path.write_text("# 热词文件单行一个\n", encoding='utf-8')
                 return ""
-            return path.read_text(encoding='utf-8')
+            content = read_text(path)
+            validate(path.name, content)
+            return content
         except Exception as e:
             logger.error(f"读取文件失败 {path}: {e}")
-            return ""
+            return None
 
     def _load_hot(self) -> None:
         content = self._read_file('hot')
+        if content is None: return
         num = self.phoneme_corrector.update_hotwords(content)
         console.print(self._format_msg("热词库", "hot.txt", num))
 
     def _load_rule(self) -> None:
         content = self._read_file('rule')
+        if content is None: return
         num = self.rule_corrector.update_rules(content)
         console.print(self._format_msg("规则库", "hot-rule.txt", num))
 
@@ -149,10 +155,12 @@ class HotwordManager:
         if self._observer: return
         
         self._observer = Observer()
-        handler = _HotwordFileHandler(self)
+        handler = self._handler = _HotwordFileHandler(self)
         
         # 监视每一个文件所在的目录 (去重后监听)
         watched_dirs = {p.parent.absolute() for p in self.files.values()}
+        if self.synchronizer is not None:
+            watched_dirs.add(self.synchronizer.directory.absolute())
         for d in watched_dirs:
             self._observer.schedule(handler, path=str(d), recursive=False)
             
@@ -164,6 +172,8 @@ class HotwordManager:
     def stop_file_watcher(self) -> None:
         """停止文件监视"""
         if self._is_watcher_started and self._observer:
+            if self._handler is not None:
+                self._handler.stop()
             self._observer.stop()
             self._observer.join()
             self._is_watcher_started = False
@@ -172,73 +182,65 @@ class HotwordManager:
 
 
 class _HotwordFileHandler(FileSystemEventHandler):
-    """热词文件变化处理器"""
+    """按文件独立防抖；编辑器的创建、保存和原子替换均使用同一事件路径。"""
 
-    _debounce_delay = 3
+    _debounce_delay = 0.4
 
-    def __init__(self, manager: HotwordManager):
+    def __init__(self, manager):
         super().__init__()
         self.manager = manager
-        self._last_event = None
-        self._timer = None
+        self._timers = {}
         self._lock = threading.Lock()
-
-        # 映射文件路径名到加载函数
-        # 注意：这里直接与 manager.files 动态保持一致
-        self._update_mapping()
-
-    def _update_mapping(self):
-        m = self.manager
+        self._stopped = False
         self._file_mapping = {
-            m.files['hot'].name: m._load_hot,
-            m.files['rule'].name: m._load_rule,
+            manager.files['hot'].absolute(): manager._load_hot,
+            manager.files['rule'].absolute(): manager._load_rule,
         }
+        if manager.synchronizer is not None:
+            for name in CLIENT_FILES:
+                self._file_mapping[manager.synchronizer.conflict_path(name).absolute()] = None
 
     def on_modified(self, event):
-        """文件修改时触发"""
-        if event.is_directory: return
-        
-        event_path = Path(event.src_path)
-        filename = event_path.name
-        
-        # 检查是否是我们关心的文件
-        if filename not in self._file_mapping:
+        self._event(event.src_path, event.is_directory)
+
+    def on_created(self, event):
+        self._event(event.src_path, event.is_directory)
+
+    def on_moved(self, event):
+        self._event(event.dest_path, event.is_directory)
+
+    def _event(self, filename, is_directory):
+        path = Path(filename).absolute()
+        if is_directory or path not in self._file_mapping:
             return
-
-        logger.debug(f"[watchdog] 热词文件变化: {filename}")
-        current_time = time.time()
-
         with self._lock:
-            self._last_event = (filename, current_time)
-            if self._timer is None or not self._timer.is_alive():
-                self._timer = threading.Thread(target=self._debounced_worker, daemon=True)
-                self._timer.start()
+            if self._stopped:
+                return
+            previous = self._timers.pop(path, None)
+            if previous:
+                previous.cancel()
+            timer = threading.Timer(self._debounce_delay, self._reload, args=(path,))
+            timer.daemon = True
+            self._timers[path] = timer
+            timer.start()
 
-    def _debounced_worker(self):
-        """防抖工作线程"""
-        while True:
-            time.sleep(self._debounce_delay)
+    def _reload(self, path):
+        with self._lock:
+            if self._stopped:
+                return
+            self._timers.pop(path, None)
+        try:
+            loader = self._file_mapping[path]
+            if loader:
+                loader()
+            if self.manager.synchronizer is not None:
+                self.manager.synchronizer.changed(path)
+        except Exception as error:
+            logger.warning('热词保存事件处理失败：%s', error)
 
-            with self._lock:
-                if self._last_event is None:
-                    break
-
-                filename, event_time = self._last_event
-                if time.time() - event_time < self._debounce_delay:
-                    continue
-
-                self._last_event = None
-
-            # 执行加载
-            handler = self._file_mapping.get(filename)
-            if handler:
-                try:
-                    handler()
-                    logger.info(f"热词文件已自动重新加载: {filename}")
-                except Exception as e:
-                    console.print(f'热词自动更新失败：{e}', style='bright_red')
-                    logger.error(f"更新热词失败: {e}", exc_info=True)
-            break
-
-
-
+    def stop(self):
+        with self._lock:
+            self._stopped = True
+            for timer in self._timers.values():
+                timer.cancel()
+            self._timers.clear()

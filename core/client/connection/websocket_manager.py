@@ -281,6 +281,9 @@ class WebSocketManager:
                 kwargs["proxy"] = None
 
             self.state.websocket = await websockets.connect(**kwargs)
+            synchronizer = getattr(self.app, 'hotword_sync', None)
+            if synchronizer is not None:
+                synchronizer.connect(endpoint.url)
 
             console.print(f'[bold green]已连接服务端: {endpoint.url}[/bold green]\n')
             logger.info(f"WebSocket 建立成功: {endpoint.url}")

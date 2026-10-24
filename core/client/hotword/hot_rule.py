@@ -45,9 +45,11 @@ class RuleCorrector:
         new_patterns = {}
 
         for line in rule_text.splitlines():
-            if not line or line.startswith('#'):
+            if not line.strip() or line.lstrip().startswith('#'):
                 continue
 
+            if line.endswith(' ='):
+                line += ' '  # 空替换式允许编辑器裁掉行尾空格
             parts = line.split(' = ')
             if len(parts) == 2:
                 pattern = parts[0].strip()

@@ -1,5 +1,6 @@
 # coding: utf-8
 from __future__ import annotations
+import threading
 from pathlib import Path
 from . import logger
 from config_client import ClientConfig as Config, __version__
@@ -56,10 +57,30 @@ class FileRunner:
             
             logger.info("所有文件已处理完成")
             
-            input('\n按回车退出\n')
+            # 等待回车不能阻塞同步事件循环，也不能让默认线程池在退出时等待 stdin。
+            finished = self.app.loop.create_future()
+
+            def complete():
+                if not finished.done():
+                    finished.set_result(None)
+
+            def wait_input():
+                try:
+                    input('\n按回车退出\n')
+                except (EOFError, OSError):
+                    pass
+                try:
+                    self.app.loop.call_soon_threadsafe(complete)
+                except RuntimeError:
+                    pass  # 主程序已经退出
+
+            threading.Thread(target=wait_input, daemon=True).start()
+            await finished
 
         except Exception as e:
             logger.error(f"文件模式运行异常: {e}", exc_info=True)
             raise
         finally:
             self.app.hotword.stop()
+            if self.app.hotword_sync is not None:
+                await self.app.hotword_sync.shutdown()

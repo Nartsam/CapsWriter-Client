@@ -1,5 +1,7 @@
 /20[0-9][0-9]/
 /logs/
+/hot.txt
+/hot-rule.txt
 /data/reminders.json
 /data/reminders.json.tmp
 

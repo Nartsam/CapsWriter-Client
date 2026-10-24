@@ -8,6 +8,7 @@ CapsWriter Offline 客户端主程序门面类 (Facade)
 
 import os
 import sys
+import subprocess
 import asyncio
 from pathlib import Path
 
@@ -73,6 +74,13 @@ class CapsWriterClient:
 
         # 初始化各管理器
         self.ws = WebSocketManager(self)
+        self.hotword_sync = None
+        try:
+            from .hotword.sync import HotwordSyncClient
+            self.hotword_sync = HotwordSyncClient(self)
+            self.hotword.synchronizer = self.hotword_sync
+        except Exception as error:
+            logger.warning('热词同步初始化失败，继续使用本机词库：%s', error)
         self.tray = TrayManager(self)
 
         # 实例化硬件资源管理组件
@@ -86,10 +94,20 @@ class CapsWriterClient:
         # 内存清理
         empty_current_working_set()
 
+    def restart(self):
+        if getattr(self, '_stopping', False):
+            return
+        self._restart_command = ([sys.executable] + sys.argv[1:] if getattr(sys, 'frozen', False)
+                                 else [sys.executable, str(Path(sys.argv[0]).absolute())] + sys.argv[1:])
+        self.stop()
+
     def stop(self):
         """
         统一释放所有资源（清理顺序：硬件 -> 托盘 -> WebSocket -> State）
         """
+        if getattr(self, '_stopping', False):
+            return
+        self._stopping = True
         logger.info("正在执行 CapsWriterClient 资源释放...")
 
         try:
@@ -114,18 +132,29 @@ class CapsWriterClient:
         self.llm.stop()
         self.vision.stop()
 
-        # 4. 关闭 WebSocket 连接
-        self.ws.close_sync()
+        # 托盘/信号可能来自其他线程；退出的最后阶段留在事件循环里等待同步确认。
+        if self.loop.is_running():
+            self.loop.call_soon_threadsafe(lambda: self.loop.create_task(self._finish_stop()))
+        else:
+            self.loop.run_until_complete(self._finish_stop())
 
-        # 5. 重置 State
+    async def _finish_stop(self):
         try:
-            self.state.reset()
-        except Exception as e:
-            logger.warning(f"重置状态时发生错误: {e}")
-
-        # 6. 停止事件循环（最后一步，确保前面的异步操作已调度）
-        self.loop.stop()
-
+            if self.hotword_sync is not None:
+                await self.hotword_sync.shutdown()
+            await asyncio.wait_for(self.ws.close(), timeout=2)
+        except Exception as error:
+            logger.warning('退出连接时发生错误：%s', error)
+        finally:
+            try:
+                self.state.reset()
+                command = getattr(self, '_restart_command', None)
+                if command:
+                    # 旧实例的同步任务已完成/取消，再让新实例读取同一份状态。
+                    subprocess.Popen(command)
+            except Exception as error:
+                logger.warning('退出或重启失败：%s', error)
+            self.loop.stop()
         logger.info("资源释放完成")
         console.print('[green4]再见！')
 

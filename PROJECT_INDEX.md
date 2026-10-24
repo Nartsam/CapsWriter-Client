@@ -40,6 +40,12 @@ CapsWriter 离线语音输入的**客户端**（Windows）。上游 [HaujetZhao/
 
 ---
 
+## 热词同步
+
+`core/hotword_sync.py` 与服务端保持逐字相同，包含格式、合并规则和原子存储；`hotword/sync.py` 使用独立 WebSocket `/hotword-sync` 跟随识别连接选中的服务端，不访问外部存储。`hotword/manager.py` 按文件防抖监听创建、修改、替换事件，包含冲突文件目录。
+
+同步基线按服务端保存在 `logs/hotword_sync/client.json`，ACK 应用日志保证退出恢复；冲突解决后经服务端确认和正式文件落盘才删除冲突稿。操作说明见 [热词功能如何使用](docs/热词功能如何使用.md#六跨电脑同步与冲突处理)。
+
 ## 运行时架构
 
 | 线程 | 内容 |
