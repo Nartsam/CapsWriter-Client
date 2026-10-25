@@ -85,7 +85,7 @@ CapsWriter 离线语音输入的**客户端**（Windows）。上游 [HaujetZhao/
 |---|---|
 | `audio/stream.py`、`recorder.py`、`file_manager.py` | 采集；按 `AudioMessage` 分块发送、打断时丢缓存并仍发 `is_final`；录音存 MP3/WAV 并按识别文本改名（`年/月/assets/`） |
 | `connection/websocket_manager.py` | 连接与重连。`addr` 可写候选列表：未锁定时一次 `connect()` 内按序探测，首个连上即锁定（取舍见类说明） |
-| `output/result_processor.py` | 主循环：收结果 → 繁简 → 热词 → 去末尾标点 → 正则 → LLM 或直接上屏 → 日记与录音改名 → LLM md 记录 → 报告图片去向 → 连续对话状态迁移；流式上屏的逐句打字（`_on_stream_delta` / `_finish_stream`，输出后的收尾与整段共用 `_after_output`） |
+| `output/result_processor.py` | 主循环：收结果 → 繁简 → 热词 → 去末尾标点 → 正则 → LLM 或直接上屏 → 日记与录音改名 → LLM md 记录 → 报告图片去向 → 连续对话状态迁移；流式逐句打字（`_on_stream_delta` / `_finish_stream`）及挂图角色预览（`_preview_image_role`），输出后的收尾与整段共用 `_after_output` |
 | `output/stream_output.py` | 流式上屏单次录音的状态（待判定 / 逐句上屏 / 改为松手后处理）与取舍说明 |
 | `output/text_output.py`、`clipboard/clipboard.py` | 打字（`keyboard.write`）或粘贴输出；剪贴板读写（`try_paste` 区分「读不到」与「空文本」，占用时退避重试） |
 | `hotword/` | `manager.py` 加载并监视 hot.txt/hot-rule.txt；`hot_phoneme.py` 音素 RAG（粗筛 + 精算）；`hot_rule.py` 正则替换 |
@@ -118,7 +118,7 @@ CapsWriter 离线语音输入的**客户端**（Windows）。上游 [HaujetZhao/
 | 文件 | 职责 |
 |---|---|
 | `vision_manager.py` | 注册 `vision_capture_key`，回调只 submit；工作线程做时效检查、重复挂载拦截、读取、归档、写入待挂槽 |
-| `clipboard_image.py`、`clipboard_watcher.py` | 读剪贴板图片（PNG → CF_DIBV5 → CF_DIB，缩放、PNG/JPEG 编码与体积上限）；轮询剪贴板序号记录变更时刻 |
+| `clipboard_image.py`、`clipboard_watcher.py` | 读剪贴板图片（PNG → CF_DIBV5 → CF_DIB，缩放、PNG/JPEG 编码与体积上限）；注册截图快捷键前短暂重试建立序号基线，成功后轮询记录变更时刻，连续失败则告警并跳过时效检查（次数与间隔见函数旁常量） |
 | `image_archive.py`、`notice.py` | 挂载图片存 `logs/vision/` 并按去向改名；终端提示去重 |
 | `reminder/service.py` | 协调：预筛 → 隔离的非流式语义分析（`analyzer.py`）→ 本地校验（`model.py`）→ 原子存储（`store.py`，`logs/reminders.json`）→ 调度 → 投递（`output.py`：内部状态窗、角色 Toast 或 OpenMate 批次）；`fullscreen.py` 判断前台全屏/锁屏 |
 | `core/ui/toast_reminder.py` | 内部状态专用窗：底部固定、固定时长、不可拖动 |
@@ -141,7 +141,9 @@ CapsWriter 离线语音输入的**客户端**（Windows）。上游 [HaujetZhao/
 
 **麦克风识别**：钩子 KEYDOWN → 按前台进程判断归属（让键时直接放行，本机不进入任务）→ `ShortcutTask.launch()`（连续对话闲置判断、建快照、绑定待挂图片、显示指示器）→ `AudioRecorder.record_and_send()`（生成 task_id、登记快照、过阈值后分块发送）→ KEYUP：超过阈值 `finish()` 发 `is_final`，否则 `cancel()` 并补发按键 → 服务端逐段回 `RecognitionMessage`（非最终包只刷新指示器进度）→ 最终包进 ResultProcessor 流水线（见上表）。
 
-**流式上屏**（快捷键配置 `streaming`，用法与限制见 [docs/流式上屏如何使用.md](docs/流式上屏如何使用.md)）：`launch()` 按快照判定这次录音是否流式（连续对话中、挂图、默认角色启用时不流式）→ `AudioMessage.streaming` → 服务端在停顿处切句、逐句回带 `delta` 的非最终包 → `_on_stream_delta`：第一句命中角色就整次改为松手后处理（之后只攒不打），否则逐句做繁简/热词/规则并打字 → 最终包只带最后一句，`_finish_stream` 打出后走与整段相同的收尾。没收到过 `delta`（旧服务端、只有一句）的最终包一律按整段处理。
+**流式上屏**（快捷键配置 `streaming`，用法与限制见 [docs/流式上屏如何使用.md](docs/流式上屏如何使用.md)）：`launch()` 按快照判定这次录音是否流式（未挂图的连续对话、默认角色仍用整段识别）→ `AudioMessage.streaming` → 服务端在停顿处切句、逐句回带 `delta` 的非最终包 → `_on_stream_delta`：第一句命中角色就整次改为松手后处理（之后只攒不打），否则逐句做繁简/热词/规则并打字 → 最终包只带最后一句，`_finish_stream` 打出后走与整段相同的收尾。没收到过 `delta`（旧服务端、只有一句）的最终包一律按整段处理。
+
+挂图且快捷键 `streaming` 与 LLM 均开启时，也请求流式识别，但固定 `DEFERRED`、不逐句打字；`_preview_image_role` 只读本任务图片/连续对话快照，按累计 `text` 预览角色，最终包仍整段处理。预览不消费图片、不调用 LLM；提示及连续对话切换命令携带录音开始时间，Tk 应用时核对录音归属，挂图预览还核对连续对话状态。切换先清旧预览，后续增量按新路由更新。关闭 `streaming` 或 LLM 时，挂图仍用原来的整段识别。
 
 **打断**：打断键在录音中 → `task.abort()`（登记 `cancelled_task_ids`、回滚快照、`queue_in` 放 abort，recorder 丢缓存、删录音、仍发 `is_final`）；在等待结果中 → `_abort_pending_result()`。长按模式下打断后到松开录音键之前（`task.wait_release`），录音键的按下不重新开始录音，同族修饰键的按下照样拦截（见下面约定 3）。被打断任务的结果在 `_handle_message` 入口整条丢弃。最终包到达后打断窗口关闭（文本随时可能上屏）。
 

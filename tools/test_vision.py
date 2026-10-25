@@ -16,6 +16,7 @@ import pathlib
 import struct
 import sys
 import types
+from unittest.mock import Mock, patch
 
 sys.dont_write_bytecode = True
 
@@ -443,13 +444,57 @@ def test_watcher(watch_mod):
     age = w.seconds_since_change()
     check('序号不变则年龄持续增长', 119 < age < 121, age)
 
-    # 读不到序号（无剪贴板访问权限）
-    watch_mod._sequence_number = lambda: 0
+    # 启动第 1/2/3 次成功：后续尝试停止，首次成功只建立未知时刻的基线。
+    for failures in range(watch_mod.START_ATTEMPTS):
+        startup = W()
+        startup._available = False  # 同一观测器曾失败后重新 start，也要恢复可用状态。
+        with patch.object(watch_mod, '_sequence_number', side_effect=[0] * failures + [100]) as read, \
+                patch.object(watch_mod.threading, 'Thread') as thread_factory, \
+                patch.object(watch_mod.logger, 'warning', Mock()) as warning, \
+                patch.object(startup._stop, 'wait', return_value=False) as wait:
+            startup.start()
+            check('失败 %d 次后成功启用' % failures, startup.available is True)
+            check('成功后停止启动重试 %d' % failures, read.call_count == failures + 1)
+            check('成功前按间隔等待 %d' % failures,
+                  wait.call_count == failures
+                  and all(call.args == (watch_mod.START_RETRY_INTERVAL,) for call in wait.call_args_list))
+            check('启动成功不告警 %d' % failures, not warning.called)
+            check('启动成功仅创建一个轮询线程 %d' % failures,
+                  thread_factory.call_count == 1 and thread_factory.return_value.start.call_count == 1)
+            startup.start()
+            check('重复 start 不重新检查 %d' % failures, read.call_count == failures + 1)
+            read.side_effect = None
+            read.return_value = 100
+            check('重试成功不会将已有图片当新图 %d' % failures, startup.seconds_since_change() is None)
+            read.return_value = 101
+            age = startup.seconds_since_change()
+            check('基线后变更正常记录时效 %d' % failures, age is not None and age < 0.5)
+
+    # 连续失败：只告警一次，保持原来的停用与不再自动重试行为。
     w2 = W()
-    w2.start()
+    with patch.object(watch_mod, '_sequence_number', return_value=0) as read, \
+            patch.object(watch_mod.threading, 'Thread') as thread_factory, \
+            patch.object(watch_mod.logger, 'warning', Mock()) as warning, \
+            patch.object(w2._stop, 'wait', return_value=False) as wait:
+        w2.start()
+        check('连续失败才告警一次', read.call_count == watch_mod.START_ATTEMPTS and warning.call_count == 1)
+        check('最后失败后不再等待', wait.call_count == watch_mod.START_ATTEMPTS - 1)
+        check('失败不创建轮询线程', not thread_factory.called)
+        read.return_value = 123
+        w2.seconds_since_change()
+        check('停用后不再自动重试', read.call_count == watch_mod.START_ATTEMPTS)
     check('序号不可用时标记为不可用', w2.available is False)
     check('不可用时年龄返回 None', w2.seconds_since_change() is None)
     check('不可用时不会起线程', w2._thread is None)
+
+    interrupted = W()
+    with patch.object(watch_mod, '_sequence_number', return_value=0) as read, \
+            patch.object(watch_mod.threading, 'Thread') as thread_factory, \
+            patch.object(watch_mod.logger, 'warning', Mock()) as warning, \
+            patch.object(interrupted._stop, 'wait', side_effect=lambda _: (interrupted.stop(), True)[1]):
+        interrupted.start()
+        check('退出可中止重试', read.call_count == 1)
+        check('退出期间不启动线程或打印停用警告', not thread_factory.called and not warning.called)
 
     # 线程生命周期
     watch_mod._sequence_number = lambda: seq['v']

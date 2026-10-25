@@ -300,11 +300,11 @@ class IndicatorState:
     continuous_mode: str = ""
     # 连续对话的粘滞角色名，仅 continuous_mode == "active" 时用于文案。
     continuous_role: str = ""
-    # 本次录音是否绑定了待上传的图片，只影响最外圈描边颜色。
+    # 本次录音是否绑定了待上传的图片，用于描边和挂图流式录音的说明行。
     has_image: bool = False
-    # 本次录音是否流式上屏（边说边打字），只影响录音态的说明行。
+    # 本次录音是否流式识别；挂图时只预览角色，其余按流式上屏处理。
     streaming: bool = False
-    # 流式录音中途改为松手后处理时的说明（如开头喊了角色名），非空时取代录音态的说明行。
+    # 流式录音识别到的目标角色（含挂图预览），非空时取代录音态的说明行。
     stream_note: str = ""
     # 打断时流式上屏已经打出过文字：只丢弃了还没上屏的部分。
     cancel_partial: bool = False
@@ -403,17 +403,18 @@ class RecordingIndicator:
             streaming=streaming,
         )
 
-    def update_stream_note(self, note: str) -> None:
-        """流式录音中途改为松手后处理时，录音态的说明行改成 note。"""
-        self._post("stream_note", note=note)
+    def update_stream_note(self, note: str, start_time: float,
+                           continuous_mode: Optional[str] = None) -> None:
+        """更新对应录音的角色提示，开始时间随识别消息原样返回。"""
+        self._post("stream_note", note=note, start_time=start_time, continuous_mode=continuous_mode)
 
-    def update_continuous(self, mode: str = "", role: str = "") -> None:
+    def update_continuous(self, mode: str, role: str, start_time: float) -> None:
         """录音过程中切换连续对话显示态。
 
         必须是独立命令而不是重发 show_recording：后者会重建 IndicatorState，
         把 start_time 一并刷新，录音计时会被清零。
         """
-        self._post("continuous", mode=mode, role=role)
+        self._post("continuous", mode=mode, role=role, start_time=start_time)
 
     def show_waiting(self, recorded_duration: Optional[float] = None) -> None:
         """显示等待服务端返回结果状态。"""
@@ -517,6 +518,13 @@ class RecordingIndicator:
         # 否则会把已经进入等待状态的提示框又拉回录音态。
         if action in ("continuous", "stream_note") and self.state.mode != "recording":
             return
+        # 网络回包和 Tk 队列都可能滞后；在实际应用时核对，避免旧任务覆盖新录音。
+        if action in ("continuous", "stream_note") and payload.get("start_time") != self.state.start_time:
+            return
+        # 同次录音也可能先切换路由、后收到旧预览；只接收按当前路由计算的提示。
+        if (action == "stream_note" and payload.get("continuous_mode") is not None
+                and payload["continuous_mode"] != self.state.continuous_mode):
+            return
 
         self._ensure_window()
         previous_mode = self.state.mode
@@ -544,6 +552,9 @@ class RecordingIndicator:
             # 只改连续对话相关字段，start_time 和锚点保持不动。
             self.state.continuous_mode = payload.get("mode", "")
             self.state.continuous_role = payload.get("role", "")
+            if self.state.has_image and self.state.streaming:
+                # 路由已切换，先撤下旧预览，下一条增量按新的本句快照重新判断。
+                self.state.stream_note = ""
         elif action == "waiting":
             # 松开按键后沿用录音时的锚点，并切换为等待服务端状态。
             anchor, source = self._state_anchor_or_current()
@@ -917,6 +928,8 @@ class RecordingIndicator:
             shortcut_name = self._format_shortcut_name(self.state.shortcut_key)
             if self.state.stream_note:
                 detail = self.state.stream_note
+            elif self.state.streaming and self.state.has_image:
+                detail = f"松开{shortcut_name}结束流式识别"
             elif self.state.streaming:
                 detail = f"松开{shortcut_name}结束流式识别"
             else:
@@ -1203,12 +1216,13 @@ def update_recording_indicator_level(db: float, duration: float) -> None:
     RecordingIndicator().update_level(db, duration)
 
 
-def update_recording_indicator_stream_note(note: str) -> None:
-    RecordingIndicator().update_stream_note(note)
+def update_recording_indicator_stream_note(note: str, start_time: float,
+                                          continuous_mode: Optional[str] = None) -> None:
+    RecordingIndicator().update_stream_note(note, start_time, continuous_mode)
 
 
-def update_recording_indicator_continuous(mode: str = "", role: str = "") -> None:
-    RecordingIndicator().update_continuous(mode, role)
+def update_recording_indicator_continuous(mode: str, role: str, start_time: float) -> None:
+    RecordingIndicator().update_continuous(mode, role, start_time)
 
 
 def show_waiting_indicator(recorded_duration: Optional[float] = None) -> None:

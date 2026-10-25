@@ -420,13 +420,14 @@ class ShortcutManager:
             if not self._chat_suppressed:
                 return False
 
+            start_time = self.state.recording_start_time
             snapshot = self.state.toggle_continuous()
             if snapshot is not None:
                 # 钩子线程只做状态翻转和派发：低级钩子超过 300ms 会被系统摘掉。
                 # 这里只是往指示器的队列里塞一条命令，实际渲染在 Tk 线程
                 from core.client.ui import update_recording_indicator_continuous
                 update_recording_indicator_continuous(
-                    snapshot.indicator_mode(), snapshot.sticky_role or ''
+                    snapshot.indicator_mode(), snapshot.sticky_role or '', start_time
                 )
                 logger.debug(f"连续对话切换键：{snapshot.indicator_mode() or '普通录音'}")
             return True

@@ -77,6 +77,27 @@ class CancelKeyRepeatTests(unittest.TestCase):
         self.task.abort.assert_not_called()
 
 
+class ContinuousKeyTests(unittest.TestCase):
+    def test_toggle_carries_recording_identity_and_ignores_key_repeat(self):
+        ns = dict(KEY_DOWN_MESSAGES=(DOWN,), KEY_UP_MESSAGES=(UP,),
+                  logger=logging.getLogger('shortcut-test'))
+        handle = class_method(MANAGER, 'ShortcutManager', '_handle_chat_key', ns)
+        snapshot = types.SimpleNamespace(sticky_role='助理', indicator_mode=lambda: 'exited')
+        state = types.SimpleNamespace(recording=True, recording_start_time=123.0,
+                                      toggle_continuous=Mock(return_value=snapshot))
+        manager = types.SimpleNamespace(state=state, _chat_key_down=False, _chat_suppressed=False)
+        notify = Mock()
+        ui = types.SimpleNamespace(update_recording_indicator_continuous=notify)
+        with patch.dict(sys.modules, {'core.client.ui': ui}):
+            self.assertTrue(handle(manager, DOWN))
+            self.assertTrue(handle(manager, DOWN))
+            self.assertTrue(handle(manager, UP))
+            state.recording = False
+            self.assertFalse(handle(manager, DOWN))
+        state.toggle_continuous.assert_called_once()
+        notify.assert_called_once_with(snapshot.indicator_mode(), snapshot.sticky_role, 123.0)
+
+
 class RemoteModifierSyncTests(unittest.TestCase):
     """按住右 Ctrl 录音时 RayLink 注入的左 Ctrl 按下要被拦截，否则左 Ctrl 卡住、单击变成 Ctrl+单击"""
 

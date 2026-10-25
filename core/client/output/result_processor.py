@@ -539,6 +539,12 @@ class ResultProcessor:
         session = self._streams.get(message.task_id)
         if session is None:
             session = self._streams[message.task_id] = StreamSession(message.task_id)
+        if self.state.image_snapshots.get(message.task_id) is not None:
+            # 挂图的增量只用于角色预览；未喊角色也必须等松手，避免意外逐句打字。
+            # 此处只读任务快照，图片的消费和打断回滚仍由原来的收尾路径负责。
+            session.mode = DEFERRED
+            self._preview_image_role(message)
+            return
         if session.mode == DEFERRED or not message.delta:
             return
 
@@ -549,13 +555,33 @@ class ResultProcessor:
 
         if session.mode == PENDING:
             session.held += piece
-            session.mode = self._decide_stream_mode(session.held)
+            session.mode = self._decide_stream_mode(session.held, message.time_start)
             if session.mode != TYPING:
                 return
             piece, session.held = session.held, ''
         await self._type_piece(session, piece)
 
-    def _decide_stream_mode(self, text: str) -> str:
+    def _preview_image_role(self, message: RecognitionMessage) -> None:
+        """按当前累计文字和本句路由预览角色，不调用 LLM 或消费图片。"""
+        llm = getattr(self.app, 'llm', None)
+        if not Config.llm_enabled or llm is None:
+            return
+        snapshot = self.state.continuous_snapshots.get(message.task_id)
+        continuous_mode = snapshot.indicator_mode() if snapshot else ''
+        forced_role = snapshot.sticky_role if continuous_mode == 'active' else None
+        # 预览不使用 _resolve_forced_role：失效角色的退出和提示留到最终结果处理。
+        role = llm.resolve_role(forced_role) if forced_role else None
+        if role is None:
+            # 累计全文按最终处理的顺序纠错，角色名跨分片或热词/规则跨句时仍能匹配。
+            text, _ = self._correct_text(message.text)
+            text = self.hotword.get_rule_corrector().substitute(TextOutput.strip_punc(text))
+            role, _ = llm.detect_role(text)
+        name = (role.display_name or RoleConfig.DEFAULT_ROLE_NAME) if role is not None else ''
+        update_recording_indicator_stream_note(
+            f"请求将发送给「{name}」" if name else '', message.time_start,
+            continuous_mode=continuous_mode)
+
+    def _decide_stream_mode(self, text: str, start_time: float) -> str:
         """
         按开头的文字判定流式上屏是否继续
 
@@ -569,7 +595,7 @@ class ResultProcessor:
         if role_config is not None:
             name = role_config.display_name or RoleConfig.DEFAULT_ROLE_NAME
             logger.info(f"流式上屏：开头命中角色「{name}」，本次录音改为松手后处理")
-            update_recording_indicator_stream_note(f"请求将发送给「{name}」")
+            update_recording_indicator_stream_note(f"请求将发送给「{name}」", start_time)
             return DEFERRED
         if llm.is_role_name_prefix(text):
             logger.info(f"流式上屏：第一句「{text}」可能是角色名的开头，等下一句再判断")

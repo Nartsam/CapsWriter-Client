@@ -132,18 +132,19 @@ class ShortcutTask:
             self._status.start()
 
     def _want_streaming(self, snapshot, pending_image) -> bool:
-        """这次录音是否流式上屏（边说边打字）
+        """这次录音是否请求服务端流式识别
 
-        连续对话中、挂了图片、启用了默认角色时，这句话注定交给角色、松手后才处理，
-        从一开始就按普通方式录音（服务端整段识别）。开头喊了具名角色的情况要等第一句
-        识别出来才知道，由 ResultProcessor 在那时改为松手后处理。
+        挂图时用增量结果提前提示角色，ResultProcessor 保证不逐句打字，松手后再处理全文。
+        未挂图的连续对话与默认角色仍用整段识别；普通听写在开头命中角色后延后处理。
         """
         if not getattr(self.shortcut, 'streaming', False):
             return False
-        if snapshot.sticky_role or pending_image is not None:
-            return False
         from config_client import ClientConfig as Config
         llm = getattr(self.app, 'llm', None)
+        if pending_image is not None:
+            return Config.llm_enabled and llm is not None
+        if snapshot.sticky_role:
+            return False
         if Config.llm_enabled and llm is not None and llm.default_role_enabled():
             return False
         return True

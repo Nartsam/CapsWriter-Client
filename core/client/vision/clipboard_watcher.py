@@ -40,6 +40,9 @@ from . import logger
 # 显著小于时效阈值——5s 对 60s 是 12 倍余量（最坏放行 65s 前的图）。
 # 再往上调（如 30s）会让这个误差变得可观，收益却只有每小时几分之一毫秒。
 POLL_INTERVAL = 5.0
+# 只在启动建立基线时短暂重试；快捷键尚未注册，避免引入挂图期间的半初始化状态。
+START_ATTEMPTS = 3
+START_RETRY_INTERVAL = 0.2
 
 _user32 = ctypes.windll.user32
 _user32.GetClipboardSequenceNumber.restype = ctypes.c_uint
@@ -80,17 +83,29 @@ class ClipboardWatcher:
     def start(self) -> None:
         if self._thread is not None:
             return
-        seq = _sequence_number()
+        self._stop.clear()
+        seq = 0
+        for attempt in range(START_ATTEMPTS):
+            if self._stop.is_set():
+                return
+            seq = _sequence_number()
+            if seq:
+                break
+            # 用可中止的等待，退出期间不继续重试或报出停用警告。
+            if attempt < START_ATTEMPTS - 1 and self._stop.wait(START_RETRY_INTERVAL):
+                return
+        if self._stop.is_set():
+            return
         if seq == 0:
-            # 拿不到序号就无从判断新鲜度。此时不该把功能连坐禁掉，
-            # 而是退回「不检查时效」的旧行为，并且只告警一次
+            # 连续失败后仍退回「不检查时效」的旧行为，只告警一次。
             self._available = False
             logger.warning("无法读取剪贴板序号，图片时效检查已停用（其余功能不受影响）")
             return
         with self._lock:
             self._last_seq = seq
+            # 第一次成功只建立基线；重试期间原有图片的写入时刻仍然未知。
             self._changed_at = None
-        self._stop.clear()
+            self._available = True
         self._thread = threading.Thread(
             target=self._loop, name='clipboard-watcher', daemon=True)
         self._thread.start()

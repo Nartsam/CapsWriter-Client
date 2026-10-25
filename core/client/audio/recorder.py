@@ -139,7 +139,7 @@ class AudioRecorder:
         并发送到服务端进行识别。
 
         Args:
-            streaming: 请求流式上屏，服务端会按停顿切句、逐句回传（RecognitionMessage.delta）
+            streaming: 请求流式识别，服务端按停顿切句回传（RecognitionMessage.delta）；是否上屏由结果处理器决定
         """
         try:
             self._streaming = streaming
