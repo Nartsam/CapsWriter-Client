@@ -83,7 +83,7 @@ class ContextDialog:
         # 说明
         ttk.Label(
             main_frame,
-            text="请输入提示词上下文（辅助 ASR 识别，如专有名词）：",
+            text="请输入提示词上下文（辅助 ASR 识别，如专有名词）\n仅在运行期间有效，重启后恢复配置文件中的内容",
             font=(DEFAULT_FONT_FAMILY, 9),
             foreground="#666666"
         ).pack(anchor="w", pady=(0, 10))
@@ -100,7 +100,7 @@ class ContextDialog:
             pady=5
         )
         text_widget.pack(fill="both", expand=True, pady=(0, 15))
-        
+
         if default_text:
             text_widget.insert("1.0", default_text)
 

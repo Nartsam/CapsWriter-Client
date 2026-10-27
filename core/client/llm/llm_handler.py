@@ -10,6 +10,8 @@ LLM 处理器 - 协调器
 from dataclasses import dataclass, field
 from typing import Dict, List, Tuple, Optional, Any
 from pathlib import Path
+import string
+import unicodedata
 
 from .llm_role_loader import RoleLoader
 from .llm_context import ContextManager
@@ -343,6 +345,16 @@ class LLMHandler:
                 return LLMResult(result=text, role_name=None, processed=False, 
                                     token_count=0, polish_time=0, input_text=text)
 
+            # 在角色匹配后拦截，保留流式路由对角色名的判断；图片和选区不替代语音正文。
+            # Unicode 标点与 ASCII 标点都忽略，文字、数字、表情等内容仍可触发。
+            if all(char.isspace() or char in string.punctuation
+                   or unicodedata.category(char).startswith('P') for char in content):
+                if on_selection:
+                    on_selection(None)
+                role_name = role_config.display_name or RoleConfig.DEFAULT_ROLE_NAME
+                logger.warning('角色「%s」的输入为空或仅包含空白、标点，已跳过本次请求', role_name)
+                return LLMResult(result='', role_name=role_name, processed=False,
+                                 token_count=0, polish_time=0, input_text=content)
 
             # 只有录音入口提供 anchor，文件转录和默认角色不会创建提醒。
             # 拦截在 Companion、选区读取和图片上传之前；none 才恢复原来的角色请求。

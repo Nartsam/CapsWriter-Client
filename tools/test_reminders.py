@@ -8,9 +8,11 @@ import inspect
 import json
 import logging
 from pathlib import Path
+import string
 import sys
 import tempfile
 import types
+import unicodedata
 from typing import Any, Dict, List, Optional
 import unittest
 from unittest.mock import AsyncMock, Mock, patch
@@ -620,6 +622,7 @@ class RoutingTests(unittest.IsolatedAsyncioTestCase):
         method = next(node for node in handler_class.body if isinstance(node, ast.AsyncFunctionDef)
                       and node.name == 'process_and_output')
         namespace = dict(dataclass=dataclass, field=field, Optional=Optional, List=List, RoleConfig=RoleConfig,
+                         string=string, unicodedata=unicodedata,
                          logger=logging.getLogger('reminder-test'), broadcast_output_udp=Mock(),
                          capture_selection=Mock(return_value=types.SimpleNamespace(text='', preview='', note='')),
                          to_thread=AsyncMock(side_effect=lambda func, *args: func(*args)),

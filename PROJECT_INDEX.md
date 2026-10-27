@@ -5,7 +5,7 @@
 
 ## 项目概览
 
-CapsWriter 离线语音输入的**客户端**（Windows）。上游 [HaujetZhao/CapsWriter-Offline](https://github.com/HaujetZhao/CapsWriter-Offline)（v2.6，版本号仍写在 `config_client.py` 的 `__version__`）把客户端和服务端放在一起；这里只维护客户端，服务端在独立仓库 `../CapsWriter-Server`（见「服务端与协议」）。
+CapsWriter 离线语音输入的**客户端**（Windows）。上游 [HaujetZhao/CapsWriter-Offline](https://github.com/HaujetZhao/CapsWriter-Offline)（v2.6，版本号仍写在 `config_client.py` 的 `__version__`）把客户端和服务端放在一起；这里只维护客户端，服务端由独立的 CapsWriter-Server 仓库维护（见「服务端与协议」）。两端源码目录和部署机器分别确定。
 
 核心流程：按住快捷键 → 录音经 WebSocket 发给服务端 → 收到识别文字 → 热词与规则替换 → 可选交给 LLM 角色 → 模拟键盘上屏或弹窗展示 → 写日记、存录音。
 
@@ -72,7 +72,7 @@ CapsWriter 离线语音输入的**客户端**（Windows）。上游 [HaujetZhao/
 | `core/client/app.py` | `CapsWriterClient` 门面：`__init__` 切到项目根并创建全部子系统，`start()` 选运行器，`stop()` 统一释放 |
 | `manager/mic_runner.py` | 启动顺序：托盘 → 启动提示 → 音频流 → 快捷键 → UDP 控制 → 热词 → LLM → 视觉输入 → Companion → 提醒恢复 → ResultProcessor |
 | `manager/file_runner.py` | 媒体文件走 FileTranscriber；`.txt/.json/.srt/.vtt` 走 SrtAdjuster 按字级时间戳重生成字幕 |
-| `manager/tray_manager.py`、`core/ui/tray.py` | 托盘菜单：复制结果、上下文（编辑发给服务端的 `context`）、热词（打开 hot.txt）、清除记忆、重开音频、显示/隐藏、重启、退出 |
+| `manager/tray_manager.py`、`core/ui/tray.py` | 托盘菜单：复制结果、上下文（编辑发给服务端的 `context`，窗口提示仅本次运行有效、重启恢复配置值）、热词（打开 hot.txt）、清除记忆、重开音频、显示/隐藏、重启、退出 |
 | `state.py` | `ClientState`：音频队列、连接、录音状态；打断用的 `pending_task_id`/`cancelled_task_ids`；连续对话与图片的每句话路由快照；等待结果的任务登记（`awaiting_results`，转交录音时长） |
 | `task_line.py`、`core/tools/task_id.py` | 麦克风任务在控制台的第一行（任务标识、录音时长、时延，或打断/出错说明）；任务标识 `8 位随机十六进制数_月-日_时-分-秒`，三种任务共用（格式约束见其文件头） |
 | `shortcut/shortcut_manager.py` | 低级钩子入口：防自捕获、录音键分发与前台进程让键（`_route_shortcut`）、打断键（`_handle_cancel_key`）、连续对话切换键（`_handle_chat_key`，配置校验在 `_resolve_chat_key`） |
@@ -98,7 +98,7 @@ CapsWriter 离线语音输入的**客户端**（Windows）。上游 [HaujetZhao/
 
 | 文件 | 职责 |
 |---|---|
-| `llm_handler.py` | 协调器。`process_and_output()`：角色检测（连续对话时跳过）→ 提醒入口 → Companion 转发 → 读一次选区 → 按 `output_mode` 分发；`process()` 包装回调（OpenMate / typing 全局中断键的唯一武装点）；`resolve_role()` 供连续对话按名重新解析；记忆按角色 `module_name` 区分，热重载沿用同一个 `ContextManager`，`clear_history()` 清内存并删记忆文件 |
+| `llm_handler.py` | 协调器。`process_and_output()`：角色检测（连续对话时跳过）→ 空白/纯标点正文拦截（行为见[触发机制](docs/角色功能如何使用.md#五触发机制)）→ 提醒入口 → Companion 转发 → 读一次选区 → 按 `output_mode` 分发；`process()` 包装回调（OpenMate / typing 全局中断键的唯一武装点）；`resolve_role()` 供连续对话按名重新解析；记忆按角色 `module_name` 区分，热重载沿用同一个 `ContextManager`，`clear_history()` 清内存并删记忆文件 |
 | `llm_role_config.py`、`llm_role_loader.py`、`llm_role_detector.py`、`llm_watcher.py` | 角色字段定义；按文件名顺序加载 `LLM/*.py`；`startswith` 前缀匹配；目录变化 3s 防抖后重载（保留历史） |
 | `llm_message_builder.py`、`llm_context.py` | 组装 system + 历史 + 当前时间/热词/选区/用户输入（带图时为 Chat 口味多模态 content）；每角色一份历史，超 `max_context_length` 80% 从旧裁剪，旧图降级为 `［图片］`；每轮整体落盘（`add_turn`），启动时 `restore()` 读回 |
 | `llm_memory.py` | 记忆文件：`logs/llm_memory/<角色 .py 文件名>.json`，先写临时文件再替换；读不了的改名为 `.bad-时间.json` 保留；图片落盘为占位符（由 `ContextManager` 转换） |
@@ -147,7 +147,7 @@ CapsWriter 离线语音输入的**客户端**（Windows）。上游 [HaujetZhao/
 
 **打断**：打断键在录音中 → `task.abort()`（登记 `cancelled_task_ids`、回滚快照、`queue_in` 放 abort，recorder 丢缓存、删录音、仍发 `is_final`）；在等待结果中 → `_abort_pending_result()`。长按模式下打断后到松开录音键之前（`task.wait_release`），录音键的按下不重新开始录音，同族修饰键的按下照样拦截（见下面约定 3）。被打断任务的结果在 `_handle_message` 入口整条丢弃。最终包到达后打断窗口关闭（文本随时可能上屏）。
 
-**LLM**：`process_and_output` → 提醒入口（仅录音入口的具名角色）→ Companion（有连接时转发并返回）→ `capture_selection`（一次，结果经 `on_selection` 先打印预览）→ `handle_toast_mode` / `handle_typing_mode`（toast 模式先试 OpenMate）→ `LLMHandler.process` → `LLMProcessor` 流式请求 → 回调逐层回到展示 → `LLMResult`（`used_tools`、`image_used`、`reminder_handled`）回到 ResultProcessor。
+**LLM**：`process_and_output` → 正文有效性检查 → 提醒入口（仅录音入口的具名角色）→ Companion（有连接时转发并返回）→ `capture_selection`（一次，结果经 `on_selection` 先打印预览）→ `handle_toast_mode` / `handle_typing_mode`（toast 模式先试 OpenMate）→ `LLMHandler.process` → `LLMProcessor` 流式请求 → 回调逐层回到展示 → `LLMResult`（`used_tools`、`image_used`、`reminder_handled`）回到 ResultProcessor。
 
 **文件转录**：FileRunner → `FileTranscriber.check()`（FFmpeg + 连接）→ `send()`（FFmpeg 输出 16kHz f32le，按 `file_seg_*` 分段参数发送）→ `receive()`（热词替换）→ `ResultHandler` 存 srt/txt/json。
 
@@ -178,7 +178,7 @@ CapsWriter 离线语音输入的**客户端**（Windows）。上游 [HaujetZhao/
 
 ## 服务端与协议
 
-- 服务端在独立仓库 `../CapsWriter-Server`（Qwen3-ASR 识别，文件转录用 Qwen3-ForcedAligner 出字级时间戳），部署与配置看那边的文档。上游遗留的服务端代码已从本仓库删除。
+- 服务端由独立仓库 [CapsWriter-Server](https://github.com/Nartsam/CapsWriter-Server) 维护（Qwen3-ASR 识别，文件转录用 Qwen3-ForcedAligner 出字级时间戳），部署与配置看该仓库文档；源码和运行实例均可位于其他目录或机器。上游遗留的服务端代码已从本仓库删除。
 - **`core/protocol.py`、`core/constants.py` 与服务端仓库逐字相同**，改协议必须两边同步。
 - 客户端发 `AudioMessage`（JSON 文本帧，`data` 为 base64 的 float32 16kHz 单声道 PCM），带 `seg_duration`/`seg_overlap`（麦克风与文件分别取 `mic_seg_*`、`file_seg_*`，默认 60/4，分段在服务端做）、`context`（服务端当作 Qwen3 的 system prompt）、`language`。服务端每段回一条 `RecognitionMessage`，最后一条 `is_final=True`；听写用 `text`，文件转录用 `tokens`/`timestamps`。流式任务（`streaming=True`）不用 `seg_*`，服务端在停顿处切句，每句一条消息，新增文字在 `delta` 里且发出后不再改；服务端的切句与前缀续写见服务端仓库 PROJECT_INDEX「流式任务」。子协议 `binary`，`max_size=None`。
 - **录音打断不走协议**：服务端的音频缓冲按连接持有、只有 `is_final` 才清空，所以打断仍要发一个 `is_final` 冲掉残余音频，结果回来后在客户端按 task_id 丢弃。没有新增取消消息，是为了不必两个仓库同步部署。

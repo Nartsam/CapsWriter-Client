@@ -10,10 +10,12 @@ import inspect
 import itertools
 import logging
 from pathlib import Path
+import string
 import sys
 import threading
 import time
 import types
+import unicodedata
 from typing import List, Optional, Tuple
 import unittest
 from unittest.mock import AsyncMock, MagicMock, Mock, patch
@@ -561,6 +563,7 @@ class RequestTests(unittest.IsolatedAsyncioTestCase):
         self.preview = selection.SelectionContext('选择内容', '选择内容')
         self.capture = Mock(return_value=self.preview)
         self.namespace = dict(Optional=Optional, Tuple=Tuple, RoleConfig=RoleConfig,
+                              string=string, unicodedata=unicodedata,
                               capture_selection=self.capture, to_thread=thread_tool.to_thread,
                               record_selection_usage=Mock(), clear_selection_usage=Mock(),
                               logger=logging.getLogger('selection-test'), broadcast_output_udp=Mock(),
@@ -594,6 +597,62 @@ class RequestTests(unittest.IsolatedAsyncioTestCase):
 
     async def asyncTearDown(self):
         self.modules.stop()
+
+    async def test_blank_or_punctuation_input_skips_context_and_all_dispatch(self):
+        contents = ['', ' \t\r\n\u3000\u00a0', '，。！？；：、…—“”‘’《》【】（）',
+                    string.punctuation, ' \t?!。 \n']
+        self.app.companion.has_connections = True
+        for route in ('named', 'continuous', 'default'):
+            for mode in ('toast', 'typing'):
+                role = RoleConfig(name='' if route == 'default' else '助理',
+                                  output_mode=mode, enable_read_selection=True, enable_vision=True)
+                for content in contents:
+                    with self.subTest(route=route, mode=mode, content=content):
+                        self.handler.detect_role.return_value = (role, content)
+                        self.handler.monitor.reset_mock()
+                        order = []
+                        preview = Mock(side_effect=lambda value: order.append('recognition'))
+                        with patch.object(self.namespace['logger'], 'warning',
+                                          side_effect=lambda *args: order.append('warning')) as warning:
+                            result = await self.namespace['process_and_output'](
+                                self.handler, content if route != 'named' else '助理' + content,
+                                forced_role=role if route == 'continuous' else None,
+                                image_data='image', reminder_anchor=1, on_selection=preview)
+                        self.assertEqual(result.result, '')
+                        self.assertFalse(result.processed)
+                        self.assertFalse(result.image_used)
+                        self.assertEqual(result.input_text, content)
+                        self.assertEqual(order, ['recognition', 'warning'])
+                        preview.assert_called_once_with(None)
+                        warning.assert_called_once()
+                        self.handler.monitor.end_request.assert_called_once()
+        self.capture.assert_not_called()
+        self.app.reminders.handle.assert_not_awaited()
+        self.app.companion.emit_user_message.assert_not_awaited()
+        self.toast.handle_toast_mode.assert_not_awaited()
+        self.typing.handle_typing_mode.assert_not_awaited()
+        self.typing.output_text.assert_not_awaited()
+        self.app.state.set_output_text.assert_not_called()
+        self.namespace['broadcast_output_udp'].assert_not_called()
+        self.handler.processor.process.assert_not_called()
+        self.namespace['record_selection_usage'].assert_not_called()
+
+    async def test_meaningful_input_is_forwarded_unchanged(self):
+        for content in ['嗯', '不。', '123', '🙂', '请把……改成？', 'a_b']:
+            with self.subTest(content=content):
+                self.handler.detect_role.return_value = (self.role, content)
+                self.toast.handle_toast_mode.reset_mock()
+                result = await self.namespace['process_and_output'](self.handler, '助理，' + content)
+                self.assertTrue(result.processed)
+                self.toast.handle_toast_mode.assert_awaited_once()
+                self.assertEqual(self.toast.handle_toast_mode.call_args.args[4], content)
+
+    async def test_punctuation_without_role_keeps_dictation_output(self):
+        self.handler.detect_role.return_value = (None, '？！')
+        result = await self.namespace['process_and_output'](self.handler, '？！')
+        self.assertFalse(result.processed)
+        self.assertEqual(result.result, '？！')
+        self.typing.output_text.assert_awaited_once_with('？！', None)
 
     async def test_snapshot_is_read_once_and_preview_precedes_dispatch(self):
         order = []
