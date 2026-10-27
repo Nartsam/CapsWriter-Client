@@ -13,6 +13,8 @@ from typing import TYPE_CHECKING, Optional
 
 from . import logger
 from core.tools.my_status import Status
+from core.tools.task_id import new_task_id
+from core.client.output.stream_output import StreamSession
  
 if TYPE_CHECKING:
     from core.client.shortcut.shortcut_config import Shortcut
@@ -74,75 +76,82 @@ class ShortcutTask:
         return self._recorder_class(self.app)
 
     def launch(self) -> None:
-        """启动录音任务"""
-        logger.info(f"[{self.shortcut.key}] 触发：开始录音")
+        """同步预留身份和快照，再派发录音协程。"""
+        with self.state.recording_lock:
+            if self.state.recording:
+                return
+            logger.info(f"[{self.shortcut.key}] 触发：开始录音")
 
-        # 记录开始时间
-        self.recording_start_time = time.time()
-        self.is_recording = True
+            # 记录开始时间
+            self.recording_start_time = time.time()
+            self.is_recording = True
 
-        # 将开始标志放入队列
-        asyncio.run_coroutine_threadsafe(
-            self.state.queue_in.put({'type': 'begin', 'time': self.recording_start_time, 'data': None}),
-            self.app.loop
-        )
+            task_id = new_task_id(self.recording_start_time)
+            recorder = self._get_recorder()
+            recorder.task_id = task_id
+            self.recorder = recorder
 
-        # 连续对话：先做闲置超时的懒判断，再按此刻生效的粘滞角色建立本次录音的路由快照。
-        # 必须排在 start_recording() 之前：切换键以 state.recording 为介入判据，
-        # 反过来会留下「已在录音、快照还没换」的窗口，那时的切换会翻到上一次录音
-        # 尚未消费的快照上去（UDP 控制录音与键盘钩子不在同一线程，确实可能撞上）
-        snapshot = self._prepare_continuous()
+            # 连续对话：先做闲置超时的懒判断，再按此刻生效的粘滞角色建立本次录音的路由快照。
+            # 必须排在 start_recording() 之前：切换键以 state.recording 为介入判据，
+            # 反过来会留下「已在录音、快照还没换」的窗口，那时的切换会翻到上一次录音
+            # 尚未消费的快照上去（UDP 控制录音与键盘钩子不在同一线程，确实可能撞上）
+            snapshot = self._prepare_continuous()
 
-        # 待挂图片在这一刻绑定到本次录音。剪贴板读取是异步的，此刻还没读完就是
-        # 一次不带图的普通录音——「下一条」从图片挂载成功那一刻起算（见 vision_manager 模块说明）
-        pending_image = self.state.begin_image_snapshot()
+            # 待挂图片在这一刻绑定到本次录音。剪贴板读取是异步的，此刻还没读完就是
+            # 一次不带图的普通录音——「下一条」从图片挂载成功那一刻起算（见 vision_manager 模块说明）
+            pending_image = self.state.begin_image_snapshot()
 
-        streaming = self._want_streaming(snapshot, pending_image)
+            streaming = self._want_streaming(snapshot, pending_image)
 
-        # 更新录音状态
-        self.state.start_recording(self.recording_start_time)
+            from config_client import ClientConfig as Config
+            session = StreamSession(
+                task_id, streaming=streaming, revisable=streaming and Config.llm_enabled,
+                start_time=self.recording_start_time, connection=self.state.websocket,
+                recorder=recorder, owner=self)
+            self.state.recognition_sessions[task_id] = session
+            self.state.bind_continuous_snapshot(task_id)
+            self.state.bind_image_snapshot(task_id)
+            self.state.pending_task_id = task_id
+            self._queue('begin', task_id)
+            self.state.start_recording(self.recording_start_time, task_id)
 
-        # 显示录音悬浮提示：传入快捷键名，提示器会转成中文名称。
-        from core.client.ui import show_recording_indicator
-        show_recording_indicator(
-            self.recording_start_time,
-            self.shortcut.key,
-            snapshot.indicator_mode(),
-            snapshot.sticky_role or '',
-            pending_image is not None,
-            streaming,
-        )
+            # 显示录音悬浮提示：传入快捷键名，提示器会转成中文名称。
+            from core.client.ui import show_recording_indicator
+            show_recording_indicator(
+                self.recording_start_time,
+                self.shortcut.key,
+                snapshot.indicator_mode(),
+                snapshot.sticky_role or '',
+                pending_image is not None,
+                streaming,
+            )
 
-        # 通知 Companion 开始录音
-        if self.app.companion.has_connections:
-            self.app.companion.emit_recording_start_threadsafe()
+            # 通知 Companion 开始录音
+            if self.app.companion.has_connections:
+                self.app.companion.emit_recording_start_threadsafe()
 
-        # 启动识别任务；保留 recorder 引用，打断时需要用它的 task_id 丢弃结果
-        recorder = self._get_recorder()
-        self.recorder = recorder
-        self.task = asyncio.run_coroutine_threadsafe(
-            recorder.record_and_send(streaming=streaming),
-            self.app.loop,
-        )
+            # 启动识别任务；保留 recorder 引用，打断时需要用它的 task_id 丢弃结果
+            self.task = asyncio.run_coroutine_threadsafe(
+                recorder.record_and_send(session, self.threshold),
+                self.app.loop,
+            )
 
-        # 控制台动画移到线程池，避免在键盘钩子回调中创建线程导致超时
-        if self.pool:
-            self.pool.submit(self._status.start)
-        else:
-            self._status.start()
+            # 控制台动画移到线程池，避免在键盘钩子回调中创建线程导致超时
+            if self.pool:
+                self.pool.submit(self._status.start)
+            else:
+                self._status.start()
+
+    def _queue(self, kind: str, task_id: str) -> None:
+        self.app.loop.call_soon_threadsafe(self.state.queue_in.put_nowait, {
+            'type': kind, 'task_id': task_id, 'time': time.time(), 'data': None})
 
     def _want_streaming(self, snapshot, pending_image) -> bool:
-        """这次录音是否请求服务端流式识别
-
-        挂图时用增量结果提前提示角色，ResultProcessor 保证不逐句打字，松手后再处理全文。
-        未挂图的连续对话与默认角色仍用整段识别；普通听写在开头命中角色后延后处理。
-        """
+        """已知要调用角色时直接普通识别，其余流式任务再按增量决定。"""
         if not getattr(self.shortcut, 'streaming', False):
             return False
         from config_client import ClientConfig as Config
         llm = getattr(self.app, 'llm', None)
-        if pending_image is not None:
-            return Config.llm_enabled and llm is not None
         if snapshot.sticky_role:
             return False
         if Config.llm_enabled and llm is not None and llm.default_role_enabled():
@@ -164,141 +173,95 @@ class ShortcutTask:
         return self.state.begin_continuous_snapshot()
 
     def cancel(self) -> None:
-        """取消录音任务（时间过短）"""
-        logger.debug(f"[{self.shortcut.key}] 取消录音任务（时间过短）")
-
-        self.is_recording = False
-        self.state.stop_recording()
-        self._status.stop()
-
-        # 这次录音不算数，本次录音期间按过的连续对话切换键、挂上的图片一并回滚
-        cancel_task_id = self.recorder.task_id if self.recorder else None
-        self.state.rollback_continuous_snapshot(cancel_task_id)
-        if self.state.rollback_image_snapshot(cancel_task_id):
-            logger.info("短按取消，图片已退回待挂状态")
-        # 短按取消录音时同步隐藏悬浮提示，避免空提示残留。
-        from core.client.ui import hide_recording_indicator
-        hide_recording_indicator()
-
-        # 短按时音频还全在客户端缓存里、一个字节都没发出，服务端不会回结果，
-        # 所以只需撤销待处理登记，不必登记进丢弃名单。
-        self.state.pending_task_id = None
-
-        # 通知 Companion 本次录音作废（与正常结束区分开）
-        if self.app.companion.has_connections:
-            self.app.companion.emit_recording_cancel_threadsafe()
-
-        self.task.cancel()
-        self.task = None
-        self.recorder = None
+        """短按也用带 ID 的结束标记收尾，不能遗留队列中的 begin/data。"""
+        self._cancel_current(short_press=True)
 
     def abort(self) -> bool:
-        """手动打断录音任务（打断键触发）
-
-        本方法在键盘钩子线程里执行，只做状态翻转和派发：Windows 低级键盘钩子有
-        300ms 超时，超时会被系统直接摘掉钩子，导致此后所有快捷键失效。
-
-        Returns:
-            是否真的发起了打断。未在录音、或按键自动重复导致的重复触发返回 False
-        """
         if not self.is_recording:
             return False
-
-        logger.info(f"[{self.shortcut.key}] 手动打断录音")
-        self.is_recording = False
-        # 长按模式下录音键此刻还按着。到松开之前它的按下不算新的一次录音，同族修饰键的
-        # 同步按下照样拦截（见 ShortcutManager._is_modifier_sync）；松开录音键时解除
         self.wait_release = self.shortcut.hold_mode
-
-        # 单击模式下复位按压状态，避免下一次按键落进半截的状态机
         self.pressed = False
         self.released = True
         self.event.set()
-
-        if self.pool:
-            self.pool.submit(self._finish_abort)
-        else:
-            self._finish_abort()
+        self._cancel_current(short_press=False)
         return True
 
-    def _finish_abort(self) -> None:
-        """打断的实际处理，在线程池中执行"""
-        from config_client import ClientConfig as Config
-
-        try:
-            # 先停采音，音频回调会立刻停止往队列灌数据
-            self.state.stop_recording()
-            self._status.stop()
-
-            # 登记进丢弃名单：这次录音已有音频发到服务端，结果仍会回来
-            task_id = self.recorder.task_id if self.recorder else None
+    def _cancel_current(self, short_press: bool) -> None:
+        with self.state.recording_lock:
+            recorder = self.recorder
+            if recorder is None:
+                return
+            task_id = recorder.task_id
+            session = self.state.recognition_sessions.get(task_id)
+            if session is None or session.terminal:
+                return
+            self.is_recording = False
+            self.state.stop_recording(task_id)
             self.state.mark_task_cancelled(task_id)
-
-            # 打断同样意味着「这次输入不算数」，切换键跟着回滚
-            restored = self.state.rollback_continuous_snapshot(task_id)
-            if restored:
-                logger.info(f"打断已撤销本次退出，仍在连续对话中: {restored}")
-            if self.state.rollback_image_snapshot(task_id):
-                logger.info("打断已把图片退回待挂状态")
-
-            from core.client.ui import show_cancelled_indicator
-            show_cancelled_indicator(Config.cancel_recording_key,
-                                     partial=task_id in self.state.streamed_task_ids)
-
+            self.state.rollback_continuous_snapshot(task_id)
+            self.state.rollback_image_snapshot(task_id)
+            self._queue('abort', task_id)
+            if self.pool:
+                self.pool.submit(self._status.stop)
+            from core.client.ui import hide_recording_indicator, show_cancelled_indicator
+            if short_press:
+                hide_recording_indicator(session.start_time)
+            else:
+                from config_client import ClientConfig as Config
+                show_cancelled_indicator(Config.cancel_recording_key,
+                                         partial=task_id in self.state.streamed_task_ids,
+                                         start_time=session.start_time)
             if self.app.companion.has_connections:
                 self.app.companion.emit_recording_cancel_threadsafe()
+            self.app.loop.call_soon_threadsafe(
+                self.app.result_processor.fail_task_soon, task_id, '', short_press)
 
-            # 通知录音协程收尾：丢弃未发送的缓存、删除录音文件，
-            # 但仍发一个 is_final 把服务端的音频缓冲冲掉
-            asyncio.run_coroutine_threadsafe(
-                self.state.queue_in.put({
-                    'type': 'abort',
-                    'time': time.time(),
-                    'data': None
-                }),
-                self.app.loop
-            )
-        except Exception as e:
-            logger.error(f"[{self.shortcut.key}] 打断处理失败: {e}", exc_info=True)
-        finally:
-            self.recorder = None
-            self.task = None
+    def stop_for_error(self, task_id: str) -> None:
+        """服务端错误只停止对应录音；文件保留，由结果处理器统一释放登记。"""
+        with self.state.recording_lock:
+            if self.recorder is None or self.recorder.task_id != task_id or not self.is_recording:
+                return
+            self.is_recording = False
+            self.wait_release = self.shortcut.hold_mode
+            self.pressed = False
+            self.released = True
+            self.event.set()
+            self.state.stop_recording(task_id)
+            self._queue('error', task_id)
+            if self.pool:
+                self.pool.submit(self._status.stop)
 
     def finish(self) -> None:
-        """完成录音任务"""
-        logger.info(f"[{self.shortcut.key}] 释放：完成录音")
+        """完成本次采集；结束标记与音频块在同一个锁内按序入队。"""
+        with self.state.recording_lock:
+            logger.info(f"[{self.shortcut.key}] 释放：完成录音")
 
-        self.is_recording = False
-        duration = self.state.stop_recording()
-        self._status.stop()
+            self.is_recording = False
+            task_id = self.recorder.task_id
+            duration = self.state.stop_recording(task_id)
+            if self.pool:
+                self.pool.submit(self._status.stop)
 
-        # 退出连续对话在松手时落地：录音已确认有效，下一次录音的指示器立刻恢复正常配色，
-        # 不必等服务端回包。等待阶段再按打断键会通过 rollback 把它恢复回去
-        exited = self.state.commit_continuous_exit()
-        if exited:
-            logger.info(f"已退出连续对话: {exited}")
+            # 退出连续对话在松手时落地：录音已确认有效，下一次录音的指示器立刻恢复正常配色，
+            # 不必等服务端回包。等待阶段再按打断键会通过 rollback 把它恢复回去
+            exited = self.state.commit_continuous_exit()
+            if exited:
+                logger.info(f"已退出连续对话: {exited}")
 
-        # 松开快捷键后进入等待服务端最终结果阶段。
-        from core.client.ui import show_waiting_indicator
-        show_waiting_indicator(duration)
+            # 松开快捷键后进入等待服务端最终结果阶段。
+            from core.client.ui import show_waiting_indicator
+            show_waiting_indicator(duration, self.recording_start_time)
 
-        # 通知 Companion 结束录音
-        if self.app.companion.has_connections:
-            self.app.companion.emit_recording_end_threadsafe()
+            # 通知 Companion 结束录音
+            if self.app.companion.has_connections:
+                self.app.companion.emit_recording_end_threadsafe()
 
-        asyncio.run_coroutine_threadsafe(
-            self.state.queue_in.put({
-                'type': 'finish',
-                'time': time.time(),
-                'data': None
-            }),
-            self.app.loop
-        )
+            self._queue('finish', task_id)
 
-        # 执行 restore（可恢复按键 + 非阻塞模式）
-        # 阻塞模式下按键不会发送到系统，状态不会改变，不需要恢复
-        if self.shortcut.is_toggle_key() and not self.shortcut.suppress:
-            self._restore_key()
+            # 执行 restore（可恢复按键 + 非阻塞模式）
+            # 阻塞模式下按键不会发送到系统，状态不会改变，不需要恢复
+            if self.shortcut.is_toggle_key() and not self.shortcut.suppress:
+                self._restore_key()
 
     def _restore_key(self) -> None:
         """恢复按键状态（防自捕获逻辑由 ShortcutManager 处理）"""

@@ -360,13 +360,13 @@ def test_state(state_mod):
 
     # --- 定长兜底 ---
     st = new_state()
-    limit = state_mod.MAX_CONTINUOUS_SNAPSHOTS
+    limit = 8  # 原实现的淘汰边界；超过它仍须保留有效任务
     for i in range(limit + 5):
         st.set_pending_image('IMG%d' % i)
         st.begin_image_snapshot()
         st.bind_image_snapshot('t%d' % i)
-    check('快照字典有定长上限', len(st.image_snapshots) == limit, len(st.image_snapshots))
-    check('超限时丢的是最旧的', 't0' not in st.image_snapshots)
+    check('未终结快照不按数量淘汰', len(st.image_snapshots) == limit + 5, len(st.image_snapshots))
+    check('最旧的未终结快照仍在', 't0' in st.image_snapshots)
     check('最新的仍在', ('t%d' % (limit + 4)) in st.image_snapshots)
 
     # --- reset 清理 ---

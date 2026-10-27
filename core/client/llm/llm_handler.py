@@ -297,7 +297,8 @@ class LLMHandler:
                                  forced_role: Optional[RoleConfig] = None,
                                  image_data: Optional[str] = None,
                                  reminder_anchor: Optional[float] = None,
-                                 on_selection=None) -> Optional[LLMResult]:
+                                 on_selection=None,
+                                 forced_content: Optional[str] = None) -> Optional[LLMResult]:
         """
         统一入口：处理输入文本并根据配置执行输出（打字或弹屏）
 
@@ -305,7 +306,8 @@ class LLMHandler:
             text: 待润色的完整原始文本（含可能的前缀）
             paste: 是否强制使用粘贴模式（None 则遵循配置）
             matched_hotwords: 潜在热词列表
-            forced_role: 连续对话指定的粘滞角色。给出时跳过角色前缀检测，整句原样发给它
+            forced_role: 已确定的目标角色，给出时跳过角色前缀检测
+            forced_content: 预览锁定角色时的最终正文；连续对话不传，保留整句
             image_data: 本次录音绑定的图片（base64 data URL）。只有角色
                 enable_vision=True 时才真的带上，否则丢弃（去向由 LLMResult.image_used
                 交给 ResultProcessor._report_image_usage 报告）
@@ -325,7 +327,8 @@ class LLMHandler:
             # 1. 角色检测。连续对话中不做检测：此时「我在跟这个角色说话」已经明确，
             #    再让角色名保留劫持能力，说「翻译一下这句话」就会被劫走
             if forced_role is not None:
-                role_config, content = forced_role, text
+                role_config = forced_role
+                content = text if forced_content is None else forced_content
             else:
                 role_config, content = self.detect_role(text)
 

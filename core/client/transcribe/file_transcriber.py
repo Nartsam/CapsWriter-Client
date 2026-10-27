@@ -177,10 +177,13 @@ class FileTranscriber:
             while True:
                 msg = await self._ws_manager.receive()
                 if not msg:
-                    break
+                    return
                 
                 console.print(f'    转录进度: {msg.duration:.2f}s', end='\r')
                 if msg.is_final:
+                    if msg.status != 'ok':
+                        logger.error('文件转录失败: %s', msg.error or msg.status)
+                        return
                     message = msg # 保持变量名兼容后续调用
                     break
         except ConnectionError as e:

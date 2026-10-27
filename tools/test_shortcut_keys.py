@@ -141,7 +141,7 @@ class RemoteModifierSyncTests(unittest.TestCase):
         task.launch = Mock(side_effect=launch)
         task.finish.side_effect = finish_abort
         task.cancel = Mock(side_effect=lambda: setattr(task, 'is_recording', False))
-        task._finish_abort = finish_abort
+        task._cancel_current = lambda **kwargs: finish_abort()
         task.abort = lambda: abort(task)
 
         handler = types.SimpleNamespace(pool=Mock(), emulator=Mock())

@@ -602,7 +602,7 @@ class RequestTests(unittest.IsolatedAsyncioTestCase):
         contents = ['', ' \t\r\n\u3000\u00a0', '，。！？；：、…—“”‘’《》【】（）',
                     string.punctuation, ' \t?!。 \n']
         self.app.companion.has_connections = True
-        for route in ('named', 'continuous', 'default'):
+        for route in ('named', 'continuous', 'default', 'locked'):
             for mode in ('toast', 'typing'):
                 role = RoleConfig(name='' if route == 'default' else '助理',
                                   output_mode=mode, enable_read_selection=True, enable_vision=True)
@@ -616,7 +616,8 @@ class RequestTests(unittest.IsolatedAsyncioTestCase):
                                           side_effect=lambda *args: order.append('warning')) as warning:
                             result = await self.namespace['process_and_output'](
                                 self.handler, content if route != 'named' else '助理' + content,
-                                forced_role=role if route == 'continuous' else None,
+                                forced_role=role if route in ('continuous', 'locked') else None,
+                                forced_content=content if route == 'locked' else None,
                                 image_data='image', reminder_anchor=1, on_selection=preview)
                         self.assertEqual(result.result, '')
                         self.assertFalse(result.processed)
@@ -751,7 +752,7 @@ class ConsoleTests(unittest.IsolatedAsyncioTestCase):
             format_selection_preview=selection.format_selection_preview,
             format_task_line=load('core.client.task_line', 'core/client/task_line.py').format_task_line)
         extract_methods('core/client/output/result_processor.py', 'ResultProcessor',
-                        {'_handle_message', '_after_output', '_paste_for_foreground', '_print_task_line'},
+                        {'_handle_final', '_after_output', '_paste_for_foreground', '_print_task_line'},
                         namespace)
 
         async def request(text, **kwargs):
@@ -762,7 +763,8 @@ class ConsoleTests(unittest.IsolatedAsyncioTestCase):
 
         state = Mock()
         state.is_task_cancelled.return_value = False
-        state.pop_image_snapshot.return_value = None
+        state.image_snapshots = {}
+        state.continuous_snapshots = {}
         state.pop_awaiting_result.return_value = None
         hotword = Mock()
         hotword.get_phoneme_corrector.return_value.correct.return_value = types.SimpleNamespace(
@@ -775,13 +777,13 @@ class ConsoleTests(unittest.IsolatedAsyncioTestCase):
             _paste_for_foreground=namespace['_paste_for_foreground'])
         processor._after_output = lambda *args: namespace['_after_output'](processor, *args)
         processor._print_task_line = lambda *args: namespace['_print_task_line'](processor, *args)
-        message = types.SimpleNamespace(task_id='test', is_final=True, text='识别文字',
+        message = types.SimpleNamespace(task_id='test', is_final=True, recognition_mode='full', text='识别文字',
                     time_complete=10, time_submit=9, time_start=5, duration=4)
         if failure:
             with self.assertRaisesRegex(RuntimeError, 'routing failure'):
-                await namespace['_handle_message'](processor, message)
+                await namespace['_handle_final'](processor, message)
         else:
-            await namespace['_handle_message'](processor, message)
+            await namespace['_handle_final'](processor, message)
         # 按内容认行，不按「识别结果：」「选中文本：」这类标签措辞
         calls = console.print.call_args_list
         recognition = [i for i, call in enumerate(calls) if '识别文字' in str(call.args[0])]

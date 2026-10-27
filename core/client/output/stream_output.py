@@ -1,23 +1,15 @@
 # coding: utf-8
 """
-流式上屏的单次录音状态
+单次麦克风录音的识别与上屏状态。
 
-快捷键配置了 streaming 时，服务端按停顿切句，每识别完一句就回一条带 delta 的非最终结果
-（协议见 core/protocol.py 的 RecognitionMessage.delta）。ResultProcessor 收到后逐句打字上屏，
-最终结果只带最后一句。已发出的 delta 服务端不会再改，所以上屏的字不需要回删。
-
-第一句决定这次录音还要不要边说边上屏：开头喊了角色名（或默认角色已启用），整次录音改为
-松手后按原流程处理，此后的 delta 只攒着不上屏，最终结果里的 text 就是全文。
-第一句恰好停在角色名中间（「新岛」之于「新岛真」）时先不上屏，等下一句接上再判断。
-
-挂图且开启 streaming 时固定延后处理，累计 text 仅用于预览角色；图片由最终结果消费。
-无论是否命中角色都不逐句打字，最终包的全文仍走原来的热词、角色与图片处理流程。
-
-服务端不支持流式（旧版本）时不会有 delta，最终结果照常整段处理，与非流式完全相同。
+launch 同步预留 task_id、路由和连接；音频结束后任务仍可等待客户端决定。
+revisable 任务开头确认角色后 request_full，普通听写则 commit_stream 后逐句打字。
+挂图未确定角色时保持待定、不上屏；decision 只是候选，只有 final 才消费快照与归档。
+阶段和决定在 asyncio 线程更新，键盘钩子只锁存现有取消意图与采集身份。
 """
 
 from dataclasses import dataclass, field
-from typing import List
+from typing import Any, List
 
 # pending：第一句还没判定；typing：逐句上屏；deferred：改为松手后按原流程处理
 PENDING, TYPING, DEFERRED = 'pending', 'typing', 'deferred'
@@ -25,7 +17,7 @@ PENDING, TYPING, DEFERRED = 'pending', 'typing', 'deferred'
 
 @dataclass
 class StreamSession:
-    """一次流式录音在客户端的上屏状态：第一条 delta 到达时创建，最终结果到达时取走"""
+    """一次麦克风录音的识别与上屏状态；launch 预留，唯一终局后释放。"""
 
     task_id: str
     mode: str = PENDING
@@ -33,6 +25,18 @@ class StreamSession:
     typed: str = ''             # 已上屏的文字
     pieces: int = 0             # 已上屏的段数
     matches: List[tuple] = field(default_factory=list)  # 各段的热词完全匹配，最终打印用
+    streaming: bool = False
+    revisable: bool = False
+    start_time: float = 0.0
+    connection: Any = None
+    recorder: Any = None
+    owner: Any = None
+    decision: str = ''          # 未决 / stream / full；决定只在 asyncio 线程更新
+    role_name: str = ''
+    role_alias: str = ''
+    audio_ended: bool = False
+    sent_audio: bool = False
+    terminal: bool = False      # 在任何 await 之前认领终局
 
 
 def trim_for_strip_punc(typed: str, piece: str, stripped_full: str) -> str:

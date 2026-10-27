@@ -26,7 +26,9 @@ class AudioMessage:
         seg_duration: 分段时长（秒）
         seg_overlap: 重叠时长（秒）
         streaming: 流式上屏（仅麦克风任务）。服务端按停顿切句、逐句回传新增文字
-                   （RecognitionMessage.delta），此时忽略 seg_duration / seg_overlap
+                   （RecognitionMessage.delta）；流式阶段忽略 seg_duration / seg_overlap，
+                   revisable 任务选择 full 后按这两个参数重新切片
+        revisable: 保留流式麦克风原始音频，等待客户端选择 stream 或 full 终局
     """
     task_id: str
     source: Literal['mic', 'file']
@@ -38,6 +40,7 @@ class AudioMessage:
     context: str = ''
     language: str = 'auto'
     streaming: bool = False
+    revisable: bool = False
 
     def to_json(self) -> str:
         """序列化为 JSON 字符串"""
@@ -57,7 +60,27 @@ class AudioMessage:
             context=data.get('context', ''),
             language=data.get('language', 'auto'),
             streaming=data.get('streaming', False),
+            revisable=data.get('revisable', False),
         )
+
+
+@dataclass
+class RecognitionControlMessage:
+    """同一连接上对原 task_id 的决定；音频结束包仅表示输入结束。"""
+    task_id: str
+    action: Literal['commit_stream', 'request_full', 'cancel']
+    type: str = field(default='recognition_control', init=False)
+
+    def to_json(self) -> str:
+        return json.dumps(asdict(self), ensure_ascii=False)
+
+    @classmethod
+    def from_dict(cls, data: dict) -> RecognitionControlMessage:
+        if data['type'] != 'recognition_control':
+            raise ValueError('未知控制消息类型')
+        if data['action'] not in ('commit_stream', 'request_full', 'cancel'):
+            raise ValueError('未知识别控制动作')
+        return cls(task_id=data['task_id'], action=data['action'])
 
 
 @dataclass
@@ -79,7 +102,12 @@ class RecognitionMessage:
         timestamps: 字级时间戳列表（秒）
 
         delta: 流式任务中本条消息新增的文字，接在此前各条的 delta 之后；
-               已发出的部分不会再改，text 始终等于此前全部 delta 的拼接。非流式任务恒为空
+               partial 和成功 stream final 的 delta 按序拼成 text；decision 的尾段
+               delta 暂不上屏，commit_stream 后的 final 会再次携带它。full 恒为空
+        phase: partial 进度、decision 等待选择、final 唯一终局
+        recognition_mode: stream 流式候选，full 普通识别
+        status: ok / error / cancelled；后两者仅用于终局，text 和 delta 为空
+        error: status=error 时的可读原因
     """
     task_id: str
     is_final: bool
@@ -98,6 +126,10 @@ class RecognitionMessage:
 
     # 流式上屏的增量文字
     delta: str = ''
+    phase: Literal['partial', 'decision', 'final'] = 'partial'
+    recognition_mode: Literal['stream', 'full'] = 'full'
+    status: Literal['ok', 'error', 'cancelled'] = 'ok'
+    error: str = ''
     
     def to_json(self) -> str:
         """序列化为 JSON 字符串"""
@@ -122,4 +154,8 @@ class RecognitionMessage:
             tokens=data.get('tokens', []),
             timestamps=data.get('timestamps', []),
             delta=data.get('delta', ''),
+            phase=data.get('phase', 'partial'),
+            recognition_mode=data.get('recognition_mode', 'full'),
+            status=data.get('status', 'ok'),
+            error=data.get('error', ''),
         )

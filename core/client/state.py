@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+from threading import RLock
 from collections import deque
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -19,16 +20,12 @@ if TYPE_CHECKING:
     import sounddevice as sd
     from websockets.legacy.client import WebSocketClientProtocol
     from .app import CapsWriterClient
+    from .output.stream_output import StreamSession
 
 from rich.console import Console
 from rich.theme import Theme
 
 from . import logger
-
-
-# 路由快照最多保留几条。服务端对每个任务必定回一个最终包，正常情况下最多只有
-# 一条在飞；定长兜底避免服务端异常时条目无限滞留。
-MAX_CONTINUOUS_SNAPSHOTS = 8
 
 
 @dataclass
@@ -38,7 +35,7 @@ class ContinuousChatSnapshot:
 
     「这句话该发给谁」由说它的那一刻决定，而不是结果到达时的全局状态——两者之间
     隔着一整个服务端往返，期间用户完全可能已经开始说下一句、或者已经切换了状态。
-    快照在 launch() 时创建、拿到 task_id 后登记，最终结果到达时消费。
+    快照和 task_id 在 launch() 时同步绑定，最终结果处理完成时消费。
 
     连续对话只改路由、不碰对话记忆：历史一直由各角色的 enable_history 维护，所以
     进入时不清空历史，enable_history=False 的角色（如翻译）也能进。
@@ -121,15 +118,19 @@ class ClientState:
 
     recording: bool = False
     recording_start_time: float = 0.0
+    recording_task_id: Optional[str] = None
     audio_files: Dict[str, Path] = field(default_factory=dict)
+    recognition_sessions: Dict[str, StreamSession] = field(default_factory=dict)
+    recorder_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    recording_lock: Any = field(default_factory=RLock)
 
     # 当前正在录音或等待识别结果的任务 ID：录音任务创建时写入，最终结果到达或被打断时清空。
     # 打断键只在它非空时有效，这样「录音中」和「松开后等结果」两个阶段用同一个判据。
     pending_task_id: Optional[str] = None
 
-    # 已被打断、结果需要丢弃的任务 ID。服务端对每个任务必定回一个最终包（残余音频
-    # 不足 0.1s 也会跳过推理直接回），收到即移除；定长队列兜底，避免服务端异常时条目滞留。
-    cancelled_task_ids: Deque[str] = field(default_factory=lambda: deque(maxlen=8))
+    # 钩子先锁存取消意图；本地唯一收尾后移除。已释放 session 的迟到帧直接丢弃。
+    # 未完成任务不能按固定数量淘汰，否则 LLM 阻塞接收期间会丢掉有效路由。
+    cancelled_task_ids: set = field(default_factory=set)
 
     # 流式上屏已经打出过文字的任务 ID。打断只能丢弃还没上屏的部分，打断提示据此改口
     streamed_task_ids: Deque[str] = field(default_factory=lambda: deque(maxlen=8))
@@ -146,8 +147,8 @@ class ClientState:
     # 最后一次连续对话交互结束的时间戳，供闲置超时的懒判断使用
     continuous_last_active: float = 0.0
 
-    # 每次录音的路由快照。current 与字典里的是同一个对象：快照要在 launch() 时就
-    # 建好（那时粘滞角色已确定），而 task_id 要等 record_and_send() 协程跑起来才有
+    # 每次录音的路由快照。launch 同步登记；current 与字典中本次录音的是同一个对象，
+    # 切换键更新它，旧任务收尾只能操作自己绑定的对象。
     continuous_current: Optional[ContinuousChatSnapshot] = None
     continuous_snapshots: Dict[str, ContinuousChatSnapshot] = field(default_factory=dict)
 
@@ -196,6 +197,8 @@ class ClientState:
         # 重置其他状态
         self.recording = False
         self.recording_start_time = 0.0
+        self.recording_task_id = None
+        self.recognition_sessions.clear()
         self.audio_files.clear()
         self.pending_task_id = None
         self.cancelled_task_ids.clear()
@@ -211,30 +214,34 @@ class ClientState:
 
         logger.debug("客户端状态重置完成")
     
-    def start_recording(self, start_time: float) -> None:
+    def start_recording(self, start_time: float, task_id: Optional[str] = None) -> None:
         """
         开始录音
         
         Args:
             start_time: 录音开始的时间戳
         """
-        self.recording = True
         self.recording_start_time = start_time
+        self.recording_task_id = task_id
+        self.recording = True
         logger.debug(f"录音状态已更新: recording=True, start_time={start_time:.2f}")
     
-    def stop_recording(self) -> float:
+    def stop_recording(self, task_id: Optional[str] = None) -> float:
         """
         停止录音
         
         Returns:
             录音持续时间（秒）
         """
+        if task_id is not None and self.recording_task_id != task_id:
+            return 0.0
         duration = 0.0
         if self.recording_start_time > 0:
             duration = time.time() - self.recording_start_time
         
         self.recording = False
         self.recording_start_time = 0.0
+        self.recording_task_id = None
         logger.debug(f"录音状态已更新: recording=False, duration={duration:.2f}s")
         return duration
     
@@ -281,10 +288,11 @@ class ClientState:
         Args:
             task_id: 任务ID；为空表示录音尚未拿到任务ID，无需登记
         """
-        self.pending_task_id = None
+        if self.pending_task_id == task_id:
+            self.pending_task_id = None
         if not task_id or task_id in self.cancelled_task_ids:
             return
-        self.cancelled_task_ids.append(task_id)
+        self.cancelled_task_ids.add(task_id)
         logger.debug(f"任务已标记为打断: {task_id}")
 
     def is_task_cancelled(self, task_id: str) -> bool:
@@ -296,7 +304,7 @@ class ClientState:
         try:
             self.cancelled_task_ids.remove(task_id)
             logger.debug(f"打断任务已收尾: {task_id}")
-        except ValueError:
+        except (ValueError, KeyError):
             pass
 
     # ========== 等待结果的任务（控制台第一行） ==========
@@ -306,9 +314,7 @@ class ClientState:
         if not task_id:
             return
         self.awaiting_results[task_id] = duration
-        # 与路由快照同一个上限：正常情况下最多一两条在等，兜底防服务端异常时滞留
-        while len(self.awaiting_results) > MAX_CONTINUOUS_SNAPSHOTS:
-            self.awaiting_results.pop(next(iter(self.awaiting_results)))
+        # LLM 可推迟后续任务的 decision；未终结任务不能按数量淘汰。
 
     def pop_awaiting_result(self, task_id: str) -> Optional[float]:
         """取出任务的录音时长；None 表示没登记过，或已被别处取出并打印过"""
@@ -329,14 +335,11 @@ class ClientState:
         return snapshot
 
     def bind_continuous_snapshot(self, task_id: Optional[str]) -> None:
-        """拿到 task_id 后把当前快照登记进字典，供结果到达时按任务查回"""
+        """launch 时登记当前快照，供结果到达时按任务查回"""
         snapshot = self.continuous_current
         if not task_id or snapshot is None:
             return
         self.continuous_snapshots[task_id] = snapshot
-        # 字典按插入序，超出上限时丢最旧的（Python 3.7+ 保证顺序）
-        while len(self.continuous_snapshots) > MAX_CONTINUOUS_SNAPSHOTS:
-            self.continuous_snapshots.pop(next(iter(self.continuous_snapshots)))
 
     def toggle_continuous(self) -> Optional[ContinuousChatSnapshot]:
         """翻转本次录音的连续对话切换位，返回翻转后的快照"""
@@ -375,10 +378,13 @@ class ClientState:
         Returns:
             被恢复的角色名；没有需要恢复的则返回 None
         """
-        snapshot = self.continuous_current
-        self.continuous_current = None
         if task_id:
-            snapshot = self.continuous_snapshots.pop(task_id, None) or snapshot
+            snapshot = self.continuous_snapshots.pop(task_id, None)
+            if snapshot is self.continuous_current:
+                self.continuous_current = None
+        else:
+            snapshot = self.continuous_current
+            self.continuous_current = None
         if snapshot is None:
             return None
         # continuous_role 非空说明期间已经进入了新的连续对话，此时不该覆盖
@@ -446,21 +452,16 @@ class ClientState:
         return image
 
     def bind_image_snapshot(self, task_id: Optional[str]) -> None:
-        """拿到 task_id 后登记图片快照，供结果到达时按任务查回"""
+        """launch 时登记图片快照，供结果到达时按任务查回"""
         image = self.image_current
         if not task_id or image is None:
             return
         self.image_snapshots[task_id] = image
-        while len(self.image_snapshots) > MAX_CONTINUOUS_SNAPSHOTS:
-            self.image_snapshots.pop(next(iter(self.image_snapshots)))
 
     def pop_image_snapshot(self, task_id: str) -> Any:
         """取出并移除指定任务绑定的图片（消耗）
 
-        **不清 image_current**：上一句的结果到达时，下一次录音可能已经 launch
-        但还没跑到 bind（record_and_send 是另一个协程），此刻清掉会把新录音刚
-        绑定的图凭空抹掉。image_current 由下一次 begin_image_snapshot 覆盖，
-        不会累积。
+        不清全局 image_current：下一次录音可能已经开始；结果只消费自己的快照。
         """
         return self.image_snapshots.pop(task_id, None)
 
@@ -473,10 +474,13 @@ class ClientState:
         Returns:
             被退回的图片；没有可退回的返回 None
         """
-        image = self.image_current
-        self.image_current = None
         if task_id:
-            image = self.image_snapshots.pop(task_id, None) or image
+            image = self.image_snapshots.pop(task_id, None)
+            if image is self.image_current:
+                self.image_current = None
+        else:
+            image = self.image_current
+            self.image_current = None
         if image is None:
             return None
         # 期间若已按过快捷键读进新图，就不要用旧图把它顶掉

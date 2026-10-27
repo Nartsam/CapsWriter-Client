@@ -55,7 +55,9 @@ class MicRunner:
         logger.info(f"CapsWriter Offline Client {__version__} (麦克风模式)")
         logger.info(f"日志级别: {Config.log_level}")
 
-        # 1. 资源启动
+        # 先建立结果收尾入口，快捷键启动后即可收到录音/取消事件。
+        from ..output import ResultProcessor
+        self.processor = ResultProcessor(self.app)
         self.start_resources()
 
         # 2. 启动 Companion 服务器（如果启用）
@@ -64,8 +66,6 @@ class MicRunner:
 
         # 3. 启动核心处理器 (内部处理连接与循环)
 
-        from ..output import ResultProcessor
-        self.processor = ResultProcessor(self.app)
         # 软件资源就绪后恢复提醒；不依赖 ASR 服务是否已连接。
         await self.app.reminders.start()
         await self.processor.start()

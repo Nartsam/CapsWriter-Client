@@ -416,29 +416,29 @@ class RecordingIndicator:
         """
         self._post("continuous", mode=mode, role=role, start_time=start_time)
 
-    def show_waiting(self, recorded_duration: Optional[float] = None) -> None:
+    def show_waiting(self, recorded_duration: Optional[float] = None, start_time=None) -> None:
         """显示等待服务端返回结果状态。"""
-        self._post("waiting", recorded_duration=recorded_duration or 0.0)
+        self._post("waiting", recorded_duration=recorded_duration or 0.0, start_time=start_time)
 
-    def show_processing(self) -> None:
+    def show_processing(self, start_time=None) -> None:
         """显示本地处理最终结果状态。"""
-        self._post("processing")
+        self._post("processing", start_time=start_time)
 
-    def update_progress(self, duration: Optional[float] = None, preview: str = "") -> None:
+    def update_progress(self, duration: Optional[float] = None, preview: str = "", start_time=None) -> None:
         """更新服务端已返回的识别进度。"""
-        self._post("progress", duration=duration or 0.0, preview=preview or "")
+        self._post("progress", duration=duration or 0.0, preview=preview or "", start_time=start_time)
 
-    def show_cancelled(self, cancel_key: str = "", duration_ms: int = 1200, partial: bool = False) -> None:
+    def show_cancelled(self, cancel_key: str = "", duration_ms: int = 1200, partial: bool = False, start_time=None) -> None:
         """显示手动打断状态，短暂停留后自动隐藏。partial：流式上屏已经打出过文字。"""
-        self._post("cancelled", cancel_key=cancel_key, duration_ms=duration_ms, partial=partial)
+        self._post("cancelled", cancel_key=cancel_key, duration_ms=duration_ms, partial=partial, start_time=start_time)
 
-    def show_error(self, text: str, duration_ms: int = 2000) -> None:
+    def show_error(self, text: str, duration_ms: int = 2000, start_time=None) -> None:
         """显示错误并自动隐藏。"""
-        self._post("error", text=text, duration_ms=duration_ms)
+        self._post("error", text=text, duration_ms=duration_ms, start_time=start_time)
 
-    def hide(self) -> None:
+    def hide(self, start_time=None) -> None:
         """隐藏指示器。"""
-        self._post("hide")
+        self._post("hide", start_time=start_time)
 
     # ------------------------------------------------------------------
     # 线程与 Tk 主循环
@@ -509,6 +509,9 @@ class RecordingIndicator:
     # ------------------------------------------------------------------
 
     def _handle_command(self, action: str, payload: dict) -> None:
+        if (action != 'recording' and payload.get('start_time') is not None
+                and payload['start_time'] != self.state.start_time):
+            return
         # 隐藏命令不需要创建窗口。
         if action == "hide":
             self._hide_now()
@@ -1225,25 +1228,25 @@ def update_recording_indicator_continuous(mode: str, role: str, start_time: floa
     RecordingIndicator().update_continuous(mode, role, start_time)
 
 
-def show_waiting_indicator(recorded_duration: Optional[float] = None) -> None:
-    RecordingIndicator().show_waiting(recorded_duration)
+def show_waiting_indicator(recorded_duration: Optional[float] = None, start_time=None) -> None:
+    RecordingIndicator().show_waiting(recorded_duration, start_time)
 
 
-def show_processing_indicator() -> None:
-    RecordingIndicator().show_processing()
+def show_processing_indicator(start_time=None) -> None:
+    RecordingIndicator().show_processing(start_time)
 
 
-def update_recording_indicator_progress(duration: Optional[float] = None, preview: str = "") -> None:
-    RecordingIndicator().update_progress(duration, preview)
+def update_recording_indicator_progress(duration: Optional[float] = None, preview: str = "", start_time=None) -> None:
+    RecordingIndicator().update_progress(duration, preview, start_time)
 
 
-def show_cancelled_indicator(cancel_key: str = "", duration_ms: int = 1200, partial: bool = False) -> None:
-    RecordingIndicator().show_cancelled(cancel_key, duration_ms, partial)
+def show_cancelled_indicator(cancel_key: str = "", duration_ms: int = 1200, partial: bool = False, start_time=None) -> None:
+    RecordingIndicator().show_cancelled(cancel_key, duration_ms, partial, start_time)
 
 
-def show_recording_indicator_error(text: str, duration_ms: int = 2000) -> None:
-    RecordingIndicator().show_error(text, duration_ms)
+def show_recording_indicator_error(text: str, duration_ms: int = 2000, start_time=None) -> None:
+    RecordingIndicator().show_error(text, duration_ms, start_time)
 
 
-def hide_recording_indicator() -> None:
-    RecordingIndicator().hide()
+def hide_recording_indicator(start_time=None) -> None:
+    RecordingIndicator().hide(start_time)

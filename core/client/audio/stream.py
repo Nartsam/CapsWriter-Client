@@ -81,30 +81,21 @@ class AudioStreamManager:
         
         当音频流接收到新数据时调用，将数据放入异步队列中。
         """
-        # 只在录音状态时处理数据
-        if not self.state.recording:
-            return
-
-        # 悬浮指示器的声波条：每块算一次电平，换算与动画在指示器里做。回调里没接住的
-        # 异常会让 sounddevice 中止整条音频流，所以这里出任何错都只能吞掉
+        # 身份读取和入队与 begin/finish 共用短锁，结束包不能越过已采集的尾块。
+        with self.state.recording_lock:
+            task_id = self.state.recording_task_id
+            if not self.state.recording or task_id is None:
+                return
+            if self.app.loop and self.state.queue_in:
+                self.app.loop.call_soon_threadsafe(self.state.queue_in.put_nowait, {
+                    'type': 'data', 'task_id': task_id,
+                    'time': time.time(), 'data': indata.copy(),
+                })
         try:
             update_recording_indicator_level(_block_dbfs(indata), frames / self.SAMPLE_RATE)
         except Exception:
             pass
 
-        import asyncio
-        
-        # 将数据放入队列
-        if self.app.loop and self.state.queue_in:
-            asyncio.run_coroutine_threadsafe(
-                self.state.queue_in.put({
-                    'type': 'data',
-                    'time': time.time(),
-                    'data': indata.copy(),
-                }),
-                self.app.loop
-            )
-    
     def _on_stream_finished(self) -> None:
         """音频流结束回调"""
         if not threading.main_thread().is_alive():

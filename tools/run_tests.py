@@ -30,7 +30,8 @@ SUITES = ['test_vision.py', 'test_state_tags.py', 'test_history_payload.py',
           'test_backends.py', 'test_reminders.py', 'test_openmate_segments.py',
           'test_stop_gate.py', 'test_selection.py', 'test_stream_output.py',
           'test_shortcut_keys.py', 'test_llm_memory.py', 'test_anthropic_path.py',
-          'test_toast_status.py', 'test_level_meter.py', 'test_task_line.py', 'test_hotword_sync.py']
+          'test_toast_status.py', 'test_level_meter.py', 'test_task_line.py', 'test_hotword_sync.py',
+          'test_recognition_flow.py']
 
 
 def syntax_check() -> int:

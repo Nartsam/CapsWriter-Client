@@ -17,7 +17,7 @@ import websockets
 from websockets.exceptions import ConnectionClosedError, ConnectionClosedOK
 
 from config_client import ClientConfig as Config
-from core.protocol import AudioMessage, RecognitionMessage
+from core.protocol import RecognitionMessage
 from ..state import console
 from .. import logger
 import asyncio
@@ -175,6 +175,9 @@ class WebSocketManager:
         self._locked: Optional[ServerEndpoint] = None  # 首次连上的候选，进程内不再更换
         self._probed = False               # 锁定是否经由多候选探测得来（决定断线告警措辞）
         self._timeout_warned = False       # 探测超时配置非法只警告一次
+        self._send_queue = None
+        self._writer = None
+        self._writer_connection = None
 
     @property
     def state(self) -> ClientState:
@@ -201,6 +204,8 @@ class WebSocketManager:
             return True
 
         # 清理旧连接
+        if self._writer_connection is not None:
+            self._disconnect(self._writer_connection, '识别连接已断开')
         if self.state.websocket is not None:
             self.state.websocket = None
 
@@ -281,6 +286,7 @@ class WebSocketManager:
                 kwargs["proxy"] = None
 
             self.state.websocket = await websockets.connect(**kwargs)
+            self._start_writer(self.state.websocket)
             synchronizer = getattr(self.app, 'hotword_sync', None)
             if synchronizer is not None:
                 synchronizer.connect(endpoint.url)
@@ -332,30 +338,70 @@ class WebSocketManager:
 
         return timeout
 
-    async def send(self, message: AudioMessage) -> bool:
-        """
-        发送消息到服务端
-        
-        Args:
-            message: 要发送的 AudioMessage 对象
-            
-        Returns:
-            发送是否成功
-        """
-        if not self.is_connected:
-            logger.warning("无法发送消息：WebSocket 未连接")
-            return False
-        
+    def _start_writer(self, connection) -> None:
+        self._send_queue = asyncio.Queue()
+        self._writer_connection = connection
+        self._writer = asyncio.create_task(self._write_messages(connection, self._send_queue))
+
+    def enqueue(self, message, connection=None):
+        """事件循环内同步入队；Future 在实际发送结束后才完成，断线不重放。"""
+        future = asyncio.get_running_loop().create_future()
+        expected = connection if connection is not None else self.state.websocket
+        if (not self.is_connected or expected is not self._writer_connection
+                or self._send_queue is None):
+            future.set_result(False)
+            return future
+        self._send_queue.put_nowait((message, future))
+        return future
+
+    async def send(self, message, connection=None) -> bool:
+        return await self.enqueue(message, connection)
+
+    async def _write_messages(self, connection, queue) -> None:
+        current = None
         try:
-            await self.state.websocket.send(message.to_json())
-            return True
-            
-        except (websockets.exceptions.ConnectionClosedError, websockets.exceptions.ConnectionClosedOK):
+            while True:
+                message, current = await queue.get()
+                try:
+                    await connection.send(message.to_json())
+                    if not current.done():
+                        current.set_result(True)
+                finally:
+                    queue.task_done()
+                current = None
+        except asyncio.CancelledError:
+            pass
+        except Exception as error:
+            logger.warning('识别连接发送失败：%s', error)
+            self._disconnect(connection, '音频或控制消息发送失败')
+        finally:
+            if current is not None and not current.done():
+                current.set_result(False)
+            self._drain_writer(queue)
+
+    @staticmethod
+    def _drain_writer(queue) -> None:
+        while not queue.empty():
+            _, future = queue.get_nowait()
+            if not future.done():
+                future.set_result(False)
+            queue.task_done()
+
+    def _disconnect(self, connection, reason: str) -> None:
+        """只结算原连接；LLM 阻塞接收循环时，发送侧仍能及时终结等待任务。"""
+        if connection is not self._writer_connection:
+            return
+        self._writer_connection = None
+        if self.state.websocket is connection:
             self.state.websocket = None
-            raise CommunicationError("发送失败：连接已断开")
-            
-        except Exception as e:
-            raise CommunicationError(f"发送消息时发生未知错误: {e}")
+        if self._writer is not None and self._writer is not asyncio.current_task():
+            self._writer.cancel()
+        if self._send_queue is not None:
+            self._drain_writer(self._send_queue)
+        processor = getattr(self.app, 'result_processor', None)
+        if processor is not None:
+            processor.connection_failed(connection, reason)
+        asyncio.create_task(connection.close())
     
     async def receive(self) -> Optional[RecognitionMessage]:
         """
@@ -365,30 +411,46 @@ class WebSocketManager:
             解析后的 RecognitionMessage 对象，如果失败返回 None
         """
         if not self.is_connected:
+            if self._writer_connection is not None:
+                self._disconnect(self._writer_connection, '服务端连接已断开')
             logger.warning("无法接收消息：WebSocket 未连接")
             return None
         
+        connection = self.state.websocket
         try:
-            raw_message = await self.state.websocket.recv()
+            raw_message = await connection.recv()
             data = json.loads(raw_message)
+            # 共享协议的缺省值供本地构造使用；线上仍要求双方显式声明阶段。
+            if 'phase' not in data or 'recognition_mode' not in data:
+                raise CommunicationError('识别结果缺少 phase 或 recognition_mode')
             return RecognitionMessage.from_dict(data)
             
         except (websockets.exceptions.ConnectionClosedError, websockets.exceptions.ConnectionClosedOK):
-            self.state.websocket = None
+            self._disconnect(connection, '服务端连接已断开')
             raise CommunicationError("接收失败：连接已断开")
             
         except json.JSONDecodeError as e:
+            self._disconnect(connection, '识别消息解析失败')
             raise CommunicationError(f"消息解析失败: {e}")
             
         except Exception as e:
+            self._disconnect(connection, '识别连接异常')
             raise CommunicationError(f"接收消息时发生未知错误: {e}")
     
     async def close(self) -> None:
         """关闭 WebSocket 连接"""
-        if self.state.websocket is not None:
-            await self.state.websocket.close()
-            self.state.websocket = None
-            logger.info("WebSocket 连接已关闭")
+        connection = self._writer_connection or self.state.websocket
+        queue, writer = self._send_queue, self._writer
+        try:
+            if queue is not None:
+                await queue.join()
+        finally:
+            if connection is not None:
+                self._disconnect(connection, '识别连接已关闭')
+                await connection.close()
+            if writer is not None:
+                # writer 尚未开始执行就被取消时，其内部 finally 尚无机会运行。
+                await asyncio.gather(writer, return_exceptions=True)
 
     def close_sync(self) -> None:
         """

@@ -555,7 +555,7 @@ class ProcessorTests(unittest.IsolatedAsyncioTestCase):
         source = ast.parse((ROOT / 'core/client/output/result_processor.py').read_text(encoding='utf-8'))
         cls = next(node for node in source.body if isinstance(node, ast.ClassDef) and node.name == 'ResultProcessor')
         methods = [node for node in cls.body if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
-                   and node.name in {'_handle_message', '_after_output', '_paste_for_foreground',
+                   and node.name in {'_handle_final', '_after_output', '_paste_for_foreground',
                                      '_report_image_usage', '_update_continuous_state',
                                      '_print_task_line'}]
         config = types.SimpleNamespace(llm_enabled=True, traditional_convert=False, hot=False, paste=False,
@@ -581,8 +581,8 @@ class ProcessorTests(unittest.IsolatedAsyncioTestCase):
                 snapshot = types.SimpleNamespace(is_arming=True, is_exiting=False, sticky_role=None)
                 state = Mock()
                 state.is_task_cancelled.return_value = False
-                state.pop_continuous_snapshot.return_value = snapshot
-                state.pop_image_snapshot.return_value = image
+                state.continuous_snapshots = {'task': snapshot}
+                state.image_snapshots = {'task': image}
                 state.pop_audio_file.return_value = None
                 state.pop_awaiting_result.return_value = None
                 result = types.SimpleNamespace(result=result_text, role_name='助理', processed=True,
@@ -599,12 +599,12 @@ class ProcessorTests(unittest.IsolatedAsyncioTestCase):
                 for name in ['_report_image_usage', '_update_continuous_state', '_after_output',
                              '_print_task_line']:
                     setattr(processor, name, types.MethodType(namespace[name], processor))
-                message = types.SimpleNamespace(task_id='task', text='十分钟后叫我', is_final=True,
+                message = types.SimpleNamespace(task_id='task', text='十分钟后叫我', is_final=True, recognition_mode='full',
                                                time_complete=stamp()+20, time_submit=stamp(),
                                                time_start=stamp()-5, duration=5)
-                await namespace['_handle_message'](processor, message)
+                await namespace['_handle_final'](processor, message)
                 self.assertEqual(llm.process_and_output.call_args.kwargs['reminder_anchor'], stamp())
-                state.pop_image_snapshot.assert_called_once_with('task')
+                self.assertEqual(state.image_snapshots, {'task': image})  # 统一终局入口负责消费
                 processor.diary.write.assert_called_once_with(message.text, message.time_start, None)
                 state.enter_continuous.assert_called_once_with('助理')
                 # 挂着的图被消耗了，要在终端说一声（不钉措辞）

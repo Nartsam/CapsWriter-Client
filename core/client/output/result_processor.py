@@ -15,7 +15,7 @@ from config_client import ClientConfig as Config
 from core.client.state import console
 from core.client.task_line import DISCONNECTED, aborted_note, format_task_line, no_result_note
 from core.client.vision.image_archive import mark_outcome
-from core.protocol import RecognitionMessage
+from core.protocol import RecognitionMessage, RecognitionControlMessage
 
 from core.client.output.text_output import TextOutput
 from core.client.output.stream_output import (
@@ -80,7 +80,10 @@ class ResultProcessor:
         self._exit_event = asyncio.Event()
         self._loop = asyncio.get_running_loop()  # 保存事件循环引用
         # 流式上屏中的录音（task_id → 状态），见 stream_output.py
-        self._streams: Dict[str, StreamSession] = {}
+        self._streams = self.state.recognition_sessions
+        self.app.result_processor = self
+        self._failures = set()
+        self._output_lock = asyncio.Lock()
 
     @property
     def state(self) -> ClientState:
@@ -292,66 +295,81 @@ class ResultProcessor:
             
 
     async def _handle_message(self, message: Optional[RecognitionMessage]) -> None:
-        """处理接收到的消息"""
         if message is None:
             return
-
-        # 已被手动打断的任务：整条流水线都不执行（热词、角色识别、LLM、上屏、
-        # 日记、录音重命名一个都不做）。非最终结果一并丢弃，否则悬浮提示会在
-        # 「已打断」之后又被分段进度顶回去
+        session = self._streams.get(message.task_id)
+        # 已结束的任务不再登记；未知/重复/迟到帧没有任何输出副作用。
+        if session is None or session.terminal:
+            return
         if self.state.is_task_cancelled(message.task_id):
-            if message.is_final:
-                self.state.release_cancelled_task(message.task_id)
-                self._streams.pop(message.task_id, None)
-                # 打断路径已经做过回滚，这里只是把可能残留的快照清掉（pop 幂等）
-                self.state.pop_continuous_snapshot(message.task_id)
-                self.state.pop_image_snapshot(message.task_id)
-                logger.info(f"丢弃已打断任务的识别结果，任务ID: {message.task_id}")
-                # 录音阶段和等待阶段的打断都在这里打这一行：这里在串行流程里，
-                # 排在前一个任务的全部输出之后（见 core/client/task_line.py）
-                partial = message.task_id in self.state.streamed_task_ids
-                console.print(format_task_line(message.task_id,
-                                               self.state.pop_awaiting_result(message.task_id),
-                                               aborted_note(partial)))
-                console.line()
+            await self._fail_task(message.task_id, '', remote_final=message.phase == 'final')
             return
-
-        # 使用 text 字段（简单拼接结果，用于语音输入）
-        text = message.text
-        original_text = text  # 保存原始识别结果
-        delay = message.time_complete - message.time_submit
-
-        if message.is_final:
-            logger.info(f"收到最终识别结果: {text}, 时延: {delay:.2f}s")
-        else:
-            logger.debug(
-                f"接收到识别结果，文本: {text[:50]}{'...' if len(text) > 50 else ''}, "
-                f"时延: {delay:.2f}s"
-            )
-
-        # 如果非最终结果，继续等待
-        if not message.is_final:
-            # 流式上屏的一句：逐句打字，或在开头喊了角色时攒着等松手
-            if message.delta or message.task_id in self._streams:
-                await self._on_stream_delta(message)
+        if message.status != 'ok':
+            if message.status == 'cancelled':
+                self.state.mark_task_cancelled(message.task_id)
+            await self._fail_task(message.task_id, message.error or '服务端识别失败', remote_final=True)
+            return
+        if (message.phase not in ('partial', 'decision', 'final')
+                or message.recognition_mode not in ('stream', 'full')
+                or message.is_final != (message.phase == 'final')):
+            await self._fail_task(message.task_id, '服务端识别阶段无效')
+            return
+        if session.decision == 'full' and message.recognition_mode == 'stream':
+            return
+        try:
+            if message.phase == 'decision':
+                if not session.revisable or message.recognition_mode != 'stream':
+                    await self._fail_task(message.task_id, '服务端识别决策无效')
+                elif not session.decision:
+                    await self._choose_recognition(message, session, final_candidate=True)
                 return
-            # 非最终结果用于刷新悬浮提示上的处理进度和预览文本。
-            update_recording_indicator_progress(message.duration, text)
+            if message.phase == 'partial':
+                if message.recognition_mode == 'stream':
+                    await self._on_stream_delta(message)
+                else:
+                    update_recording_indicator_progress(message.duration, message.text, message.time_start)
+                return
+        except Exception as error:
+            logger.error('任务 %s 的预览处理失败: %s', message.task_id, error, exc_info=True)
+            await self._fail_task(message.task_id, '本地预览处理失败')
             return
 
-        # 最终结果已返回，后续还要做热词、LLM 和输出处理
-        # 同时关闭打断窗口：从这里开始文本随时可能上屏，已经无法"作废"
+        # 先同步认领终局，之后等待录音落盘也不能重新打开 Esc 的作废窗口。
+        session.terminal = True
         if self.state.pending_task_id == message.task_id:
             self.state.pending_task_id = None
-        show_processing_indicator()
+        try:
+            if session.recorder is not None:
+                await session.recorder._done
+            async with self._output_lock:
+                show_processing_indicator(message.time_start)
+                if message.recognition_mode == 'stream' and session.typed:
+                    await self._finish_stream(message, session, message.time_complete - message.time_submit)
+                else:
+                    await self._handle_final(message, session)
+        except Exception as error:
+            # 本地上屏/归档错误不等于传输断线，也不能作废同连接的其他录音。
+            logger.error('任务 %s 的本地结果处理失败: %s', message.task_id, error, exc_info=True)
+            self.state.rollback_continuous_snapshot(message.task_id)
+            self.state.rollback_image_snapshot(message.task_id)
+            self.state.pop_audio_file(message.task_id)
+            duration = self.state.pop_awaiting_result(message.task_id)
+            async with self._output_lock:
+                if duration is not None:
+                    console.print(format_task_line(message.task_id, duration, '本地结果处理失败'))
+                show_recording_indicator_error('本地结果处理失败', start_time=message.time_start)
+        finally:
+            self.state.pop_continuous_snapshot(message.task_id)
+            self.state.pop_image_snapshot(message.task_id)
+            self._streams.pop(message.task_id, None)
+            self.state.release_cancelled_task(message.task_id)
 
-        # 流式上屏中的录音：前面各句已经打出去了，只剩最后一句。其余情况（没有流式、
-        # 第一句还没判定、改为松手后处理）一律按整段走下面的原流程，text 就是全文
-        stream = self._streams.pop(message.task_id, None)
-        if stream is not None and stream.mode == TYPING:
-            await self._finish_stream(message, stream, delay)
-            return
-
+    async def _handle_final(self, message: RecognitionMessage, session=None) -> None:
+        """权威全文的成功流水线；预览文字不进入这里。"""
+        text = message.text
+        original_text = text
+        delay = message.time_complete - message.time_submit
+        logger.info('收到最终识别结果: %s, 时延: %.2fs', text, delay)
         # 繁体转换
         if Config.traditional_convert:
             try:
@@ -414,22 +432,35 @@ class ResultProcessor:
 
         # 连续对话路由：由说这句话时的快照决定，而不是此刻的全局状态。两者之间隔着
         # 一整个服务端往返，期间用户完全可能已经开始说下一句或切换了状态
-        snapshot = self.state.pop_continuous_snapshot(message.task_id)
+        snapshot = self.state.continuous_snapshots.get(message.task_id)
         forced_role = self._resolve_forced_role(snapshot)
+        forced_content = None
+        locked_missing = False
+        if session is not None and session.role_name:
+            forced_role = self.app.llm.resolve_role(session.role_name)
+            locked_missing = forced_role is None
+            if locked_missing:
+                logger.warning('已锁定角色「%s」已失效，跳过本次请求', session.role_name)
+            else:
+                forced_content = self.app.llm.role_detector.strip_locked_prefix(
+                    text, forced_role, session.role_alias)
 
         # 本次录音绑定的图片。同样只看快照：按下录音键那一刻挂着什么就是什么，
         # 与此刻的全局待挂槽位无关（期间用户可能已经又截了一张）
-        pending_image = self.state.pop_image_snapshot(message.task_id)
+        pending_image = self.state.image_snapshots.get(message.task_id)
 
         # LLM 处理和输出
         llm_result = None
-        if Config.llm_enabled:
+        if locked_missing:
+            print_recognition()
+        elif Config.llm_enabled and message.recognition_mode == 'full':
             try:
                 llm_result = await self.app.llm.process_and_output(
                     text,
                     paste=paste,
                     matched_hotwords=potential_hotwords,  # 传递上下文热词给 LLM
                     forced_role=forced_role,
+                    forced_content=forced_content,
                     image_data=pending_image.data_url if pending_image else None,
                     reminder_anchor=message.time_start + message.duration,
                     on_selection=print_recognition
@@ -443,7 +474,7 @@ class ResultProcessor:
             broadcast_output_udp(text)
 
         # 文本已经完成输出，此时关闭悬浮提示。
-        hide_recording_indicator()
+        hide_recording_indicator(message.time_start)
 
         self._after_output(message, text, llm_result, snapshot, pending_image)
 
@@ -529,82 +560,71 @@ class ResultProcessor:
 
     # ========== 流式上屏 ==========
 
-    async def _on_stream_delta(self, message: RecognitionMessage) -> None:
-        """
-        流式上屏的一句（非最终结果的 delta）
+    def _candidate_text(self, text: str) -> str:
+        text, _ = self._correct_text(text)
+        return self.hotword.get_rule_corrector().substitute(TextOutput.strip_punc(text))
 
-        第一句先判定这次录音还要不要边说边上屏（见 _decide_stream_mode），之后逐句打字。
-        每句单独做繁简、热词和规则替换：跨句的热词与规则匹配不到，规则里的 ^/$ 匹配的是句子边界。
-        """
-        session = self._streams.get(message.task_id)
-        if session is None:
-            session = self._streams[message.task_id] = StreamSession(message.task_id)
-        if self.state.image_snapshots.get(message.task_id) is not None:
-            # 挂图的增量只用于角色预览；未喊角色也必须等松手，避免意外逐句打字。
-            # 此处只读任务快照，图片的消费和打断回滚仍由原来的收尾路径负责。
+    async def _choose_recognition(self, message, session, final_candidate=False) -> None:
+        if session.decision or session.terminal:
+            return
+        text = self._candidate_text(message.text)
+        llm = self.app.llm
+        role, _, alias = llm.role_detector.detect_with_alias(text)
+        if role is not None and role.display_name != RoleConfig.DEFAULT_ROLE_NAME:
+            session.role_name = role.display_name
+            session.role_alias = alias
             session.mode = DEFERRED
-            self._preview_image_role(message)
+            await self._send_decision(session, 'full')
+            update_recording_indicator_stream_note(
+                f'请求将发送给「{session.role_name}」', message.time_start)
+        elif not final_candidate and (self.state.image_snapshots.get(message.task_id) is not None
+                                      or llm.is_role_name_prefix(text)):
             return
-        if session.mode == DEFERRED or not message.delta:
-            return
+        else:
+            await self._send_decision(session, 'stream')
 
-        piece, correction = self._correct_text(message.delta)
+    async def _send_decision(self, session, decision: str) -> bool:
+        if session.decision or session.terminal:
+            return session.decision == decision and not session.terminal
+        session.decision = decision
+        action = 'request_full' if decision == 'full' else 'commit_stream'
+        try:
+            sent = await self.ws.send(RecognitionControlMessage(session.task_id, action), session.connection)
+        except Exception as error:
+            logger.warning('识别决定发送失败: %s', error)
+            sent = False
+        if not sent:
+            await self._fail_task(session.task_id, '识别决定发送失败')
+            return False
+        return not session.terminal and not self.state.is_task_cancelled(session.task_id)
+
+    async def _on_stream_delta(self, message: RecognitionMessage) -> None:
+        session = self._streams[message.task_id]
+        if session.decision == 'full' or not message.delta:
+            return
+        if session.mode == PENDING:
+            session.held += message.delta
+            if session.revisable:
+                await self._choose_recognition(message, session)
+                if session.decision != 'stream' or session.terminal:
+                    return
+            if self.state.is_task_cancelled(message.task_id):
+                return
+            if self.state.image_snapshots.get(message.task_id) is not None:
+                return
+            raw, session.held = session.held, ''
+            session.mode = TYPING
+        else:
+            raw = message.delta
+        piece, correction = self._correct_text(raw)
         piece = self.hotword.get_rule_corrector().substitute(piece)
         if Config.hot:
             session.matches.extend(correction.matchs)
-
-        if session.mode == PENDING:
-            session.held += piece
-            session.mode = self._decide_stream_mode(session.held, message.time_start)
-            if session.mode != TYPING:
-                return
-            piece, session.held = session.held, ''
         await self._type_piece(session, piece)
-
-    def _preview_image_role(self, message: RecognitionMessage) -> None:
-        """按当前累计文字和本句路由预览角色，不调用 LLM 或消费图片。"""
-        llm = getattr(self.app, 'llm', None)
-        if not Config.llm_enabled or llm is None:
-            return
-        snapshot = self.state.continuous_snapshots.get(message.task_id)
-        continuous_mode = snapshot.indicator_mode() if snapshot else ''
-        forced_role = snapshot.sticky_role if continuous_mode == 'active' else None
-        # 预览不使用 _resolve_forced_role：失效角色的退出和提示留到最终结果处理。
-        role = llm.resolve_role(forced_role) if forced_role else None
-        if role is None:
-            # 累计全文按最终处理的顺序纠错，角色名跨分片或热词/规则跨句时仍能匹配。
-            text, _ = self._correct_text(message.text)
-            text = self.hotword.get_rule_corrector().substitute(TextOutput.strip_punc(text))
-            role, _ = llm.detect_role(text)
-        name = (role.display_name or RoleConfig.DEFAULT_ROLE_NAME) if role is not None else ''
-        update_recording_indicator_stream_note(
-            f"请求将发送给「{name}」" if name else '', message.time_start,
-            continuous_mode=continuous_mode)
-
-    def _decide_stream_mode(self, text: str, start_time: float) -> str:
-        """
-        按开头的文字判定流式上屏是否继续
-
-        命中角色（含已启用的默认角色）就整次录音改为松手后处理：角色要拿到整句话，
-        而已经打出去的字收不回来，所以必须在打第一个字之前判定。
-        """
-        llm = getattr(self.app, 'llm', None)
-        if not Config.llm_enabled or llm is None:
-            return TYPING
-        role_config, _ = llm.detect_role(text)
-        if role_config is not None:
-            name = role_config.display_name or RoleConfig.DEFAULT_ROLE_NAME
-            logger.info(f"流式上屏：开头命中角色「{name}」，本次录音改为松手后处理")
-            update_recording_indicator_stream_note(f"请求将发送给「{name}」", start_time)
-            return DEFERRED
-        if llm.is_role_name_prefix(text):
-            logger.info(f"流式上屏：第一句「{text}」可能是角色名的开头，等下一句再判断")
-            return PENDING
-        return TYPING
 
     async def _type_piece(self, session: StreamSession, piece: str) -> None:
         """打出流式上屏的一段；输出方式按此刻的前台程序决定"""
-        if not piece:
+        if not piece or session.terminal or self.state.is_task_cancelled(session.task_id):
             return
         paste = self._paste_for_foreground()
         await self.output.output(piece, paste=paste)
@@ -643,25 +663,65 @@ class ResultProcessor:
 
         self.state.set_output_text(text)
         broadcast_output_udp(text)
-        hide_recording_indicator()
+        hide_recording_indicator(message.time_start)
 
-        snapshot = self.state.pop_continuous_snapshot(message.task_id)
-        pending_image = self.state.pop_image_snapshot(message.task_id)
+        snapshot = self.state.continuous_snapshots.get(message.task_id)
+        pending_image = self.state.image_snapshots.get(message.task_id)
         self._after_output(message, text, None, snapshot, pending_image)
 
+    def fail_task_soon(self, task_id: str, reason: str, quiet: bool = False) -> None:
+        task = asyncio.create_task(self._fail_task(task_id, reason, quiet))
+        self._failures.add(task)
+        task.add_done_callback(self._failures.discard)
+
+    def connection_failed(self, connection, reason: str) -> None:
+        for task_id, session in list(self._streams.items()):
+            if session.connection is connection and not session.terminal:
+                self.fail_task_soon(task_id, reason)
+
+    async def _fail_task(self, task_id: str, reason: str, quiet: bool = False,
+                         remote_final: bool = False) -> None:
+        session = self._streams.get(task_id)
+        if session is None or session.terminal:
+            return
+        session.terminal = True
+        cancelled = self.state.is_task_cancelled(task_id)
+        if self.state.pending_task_id == task_id:
+            self.state.pending_task_id = None
+        if session.owner is not None:
+            session.owner.stop_for_error(task_id)
+        self.state.rollback_continuous_snapshot(task_id)
+        self.state.rollback_image_snapshot(task_id)
+        try:
+            if session.recorder is not None:
+                await session.recorder._done
+                # 本地错误也必须终结服务端缓存；仅发 audio_end 会使 revisable 任务永远等 decision。
+                if not remote_final:
+                    try:
+                        await session.recorder.cancel_remote()
+                    except Exception as error:
+                        logger.info('取消控制发送失败，仍完成本地作废: %s', error)
+                if cancelled:
+                    await session.recorder.delete_recording()
+            self.state.pop_audio_file(task_id)
+            duration = self.state.pop_awaiting_result(task_id)
+            async with self._output_lock:
+                if not quiet:
+                    partial = task_id in self.state.streamed_task_ids
+                    note = aborted_note(partial) if cancelled else reason
+                    console.print(format_task_line(task_id, duration, note))
+                    console.line()
+                    if cancelled:
+                        from core.client.ui import show_cancelled_indicator
+                        show_cancelled_indicator(getattr(Config, 'cancel_recording_key', ''),
+                                                 partial=partial, start_time=session.start_time)
+                    else:
+                        show_recording_indicator_error(reason, start_time=session.start_time)
+        finally:
+            self._streams.pop(task_id, None)
+            self.state.release_cancelled_task(task_id)
+
     def _cleanup(self) -> None:
-        """清理资源"""
-        # 断线后这些录音的最终结果不会再来
-        self._streams.clear()
-        # 还在等结果的任务补打第一行，否则它们在控制台上不留任何痕迹
-        for task_id, duration in self.state.drain_awaiting_results():
-            console.print(format_task_line(task_id, duration,
-                                           no_result_note(self.state, task_id, DISCONNECTED)))
-            console.line()
-        if self.state.websocket is not None:
-            try:
-                if self.state.websocket.closed:
-                    self.state.websocket = None
-                    logger.debug("WebSocket 连接已清理")
-            except Exception:
-                self.state.websocket = None
+        for task_id, session in list(self._streams.items()):
+            if not session.terminal:
+                self.fail_task_soon(task_id, DISCONNECTED)

@@ -109,6 +109,9 @@ class CapsWriterClient:
             return
         self._stopping = True
         logger.info("正在执行 CapsWriterClient 资源释放...")
+        processor = getattr(self, 'result_processor', None)
+        if processor is not None:
+            processor.request_exit()
 
         try:
             # 退出客户端时先隐藏悬浮提示，避免异常退出后窗口残留。

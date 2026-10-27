@@ -22,6 +22,10 @@ class RoleDetector:
         self.role_loader = role_loader
 
     def detect(self, text: str) -> Tuple[Optional[RoleConfig], str]:
+        role, content, _ = self.detect_with_alias(text)
+        return role, content
+
+    def detect_with_alias(self, text: str):
         """
         检测文本是否匹配某个角色前缀
 
@@ -49,16 +53,24 @@ class RoleDetector:
                 if text.startswith(name):
                     remaining_text = text[len(name):]
                     remaining_text = remaining_text.lstrip('：，。,. ')
-                    return role_config, remaining_text
+                    return role_config, remaining_text, name
 
         # 未匹配，使用默认角色
         default_role = self.role_loader.get_default_role()
         if default_role.enabled:
             # logger.debug(f"未匹配到角色前缀，使用默认角色")
-            return default_role, text
+            return default_role, text, ''
 
         # logger.debug("未匹配到角色且默认角色未启用，返回原始文本")
-        return None, text
+        return None, text, ''
+
+    @staticmethod
+    def strip_locked_prefix(text: str, role: RoleConfig, matched_alias: str) -> str:
+        # 先匹配预览时的别名，再匹配该角色的其他有效别名；绝不按旧长度盲目截断。
+        for name in [matched_alias] + list(role.names):
+            if name and text.startswith(name):
+                return text[len(name):].lstrip('：，。,. ')
+        return text
 
     def default_role_enabled(self) -> bool:
         """默认角色是否启用（启用时每句话都会交给它）"""

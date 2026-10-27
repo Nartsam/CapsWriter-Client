@@ -441,35 +441,13 @@ class ShortcutManager:
         return False
 
     def _abort_pending_result(self) -> None:
-        """打断已进入等待识别结果阶段的任务：录音早已结束，只需丢弃结果"""
         task_id = self.state.pending_task_id
-        if not task_id:
+        session = self.state.recognition_sessions.get(task_id)
+        if session is None or session.terminal:
             return
-        # 钩子线程只做派发，实际处理交给线程池，避免低级钩子超时被系统摘掉
-        self._pool.submit(self._finish_pending_abort, task_id)
-
-    def _finish_pending_abort(self, task_id: str) -> None:
-        """等待阶段打断的实际处理，在线程池中执行"""
-        from core.client.ui import show_cancelled_indicator
-
-        try:
-            logger.info(f"手动打断等待中的识别结果，任务ID: {task_id}")
-            self.state.mark_task_cancelled(task_id)
-
-            # 退出连续对话是在松手时落地的，等待阶段打断要把它恢复回去，
-            # 这样「ESC 作废这次输入」在录音阶段和等待阶段的语义完全一致
-            restored = self.state.rollback_continuous_snapshot(task_id)
-            if restored:
-                logger.info(f"打断已撤销本次退出，仍在连续对话中: {restored}")
-            if self.state.rollback_image_snapshot(task_id):
-                logger.info("打断已把图片退回待挂状态")
-
-            show_cancelled_indicator(self._cancel_key, partial=task_id in self.state.streamed_task_ids)
-
-            if self.app.companion.has_connections:
-                self.app.companion.emit_recording_cancel_threadsafe()
-        except Exception as e:
-            logger.error(f"打断等待中的识别结果失败: {e}", exc_info=True)
+        # 在钩子中先锁存取消意图，避免排队期间最终包抢先进入角色流水线。
+        self.state.mark_task_cancelled(task_id)
+        self.app.loop.call_soon_threadsafe(self.app.result_processor.fail_task_soon, task_id, '')
 
     # ========== 按键恢复管理 ==========
 
