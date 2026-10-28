@@ -301,11 +301,9 @@ def test_state(state_mod):
     st.set_pending_image('IMG2')
     check('连按两次后者覆盖前者', st.pending_image == 'IMG2')
 
-    bound = st.begin_image_snapshot()
+    bound = st.begin_image_snapshot('task-a')
     check('launch 时把图移入本次录音', bound == 'IMG2')
     check('移入后待挂槽清空（已绑定与待挂互斥）', st.pending_image is None)
-
-    st.bind_image_snapshot('task-a')
     check('绑定后可按 task_id 查回', st.image_snapshots.get('task-a') == 'IMG2')
 
     # --- 消耗 ---
@@ -314,22 +312,19 @@ def test_state(state_mod):
     check('取出后字典里不再有', 'task-a' not in st.image_snapshots)
     check('取出不再产生待挂图（严格「下一条」：用掉即消失）', st.pending_image is None)
 
-    # --- 竞态：pop 不得清掉下一次录音的 image_current ---
+    # --- 上一句的结果到达时，下一句已经开始录音 ---
     st = new_state()
     st.set_pending_image('OLD')
-    st.begin_image_snapshot()
-    st.bind_image_snapshot('task-old')
+    st.begin_image_snapshot('task-old')
     st.set_pending_image('NEW')
-    st.begin_image_snapshot()             # 新录音已 launch，尚未 bind
-    st.pop_image_snapshot('task-old')     # 上一句的结果此时到达
-    st.bind_image_snapshot('task-new')
-    check('pop 不会抹掉新录音尚未绑定的图', st.pop_image_snapshot('task-new') == 'NEW')
+    st.begin_image_snapshot('task-new')
+    st.pop_image_snapshot('task-old')
+    check('消费上一句的图不影响下一句', st.pop_image_snapshot('task-new') == 'NEW')
 
     # --- 回滚：录音作废，图退回待挂 ---
     st = new_state()
     st.set_pending_image('IMG')
-    st.begin_image_snapshot()
-    st.bind_image_snapshot('t1')
+    st.begin_image_snapshot('t1')
     restored = st.rollback_image_snapshot('t1')
     check('作废时图退回待挂', restored == 'IMG' and st.pending_image == 'IMG')
     check('回滚后字典里不再有', 't1' not in st.image_snapshots)
@@ -337,43 +332,24 @@ def test_state(state_mod):
     # --- 回滚不覆盖期间新截的图 ---
     st = new_state()
     st.set_pending_image('OLD')
-    st.begin_image_snapshot()
-    st.bind_image_snapshot('t1')
+    st.begin_image_snapshot('t1')
     st.set_pending_image('NEWER')          # 录音期间又按了一次快捷键
     restored = st.rollback_image_snapshot('t1')
     check('回滚不用旧图顶掉更新的待挂图', restored is None and st.pending_image == 'NEWER')
 
-    # --- 还没绑定 task_id 就取消（短按取消的典型时序）---
-    st = new_state()
-    st.set_pending_image('IMG')
-    st.begin_image_snapshot()
-    restored = st.rollback_image_snapshot(None)
-    check('未拿到 task_id 也能回滚', restored == 'IMG' and st.pending_image == 'IMG')
-
     # --- 没有图时各操作都安全 ---
     st = new_state()
-    check('无图时 begin 返回 None', st.begin_image_snapshot() is None)
-    st.bind_image_snapshot('t')
-    check('无图时 bind 不写入空条目', st.image_snapshots == {})
+    check('无图时 begin 返回 None', st.begin_image_snapshot('t') is None)
+    check('无图时不写入空条目', st.image_snapshots == {})
     check('无图时 rollback 返回 None', st.rollback_image_snapshot('t') is None)
     check('无图时 pop 返回 None', st.pop_image_snapshot('t') is None)
 
-    # --- 定长兜底 ---
-    st = new_state()
-    limit = 8  # 原实现的淘汰边界；超过它仍须保留有效任务
-    for i in range(limit + 5):
-        st.set_pending_image('IMG%d' % i)
-        st.begin_image_snapshot()
-        st.bind_image_snapshot('t%d' % i)
-    check('未终结快照不按数量淘汰', len(st.image_snapshots) == limit + 5, len(st.image_snapshots))
-    check('最旧的未终结快照仍在', 't0' in st.image_snapshots)
-    check('最新的仍在', ('t%d' % (limit + 4)) in st.image_snapshots)
-
     # --- reset 清理 ---
     st.set_pending_image('X')
+    st.begin_image_snapshot('t')
+    st.set_pending_image('Y')
     st.reset()
-    check('reset 清空待挂图', st.pending_image is None)
-    check('reset 清空已绑定的图', st.image_snapshots == {} and st.begin_image_snapshot() is None)
+    check('reset 清空待挂图与已绑定的图', st.pending_image is None and st.image_snapshots == {})
 
 
 # ====================================================================

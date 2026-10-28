@@ -560,7 +560,7 @@ class ProcessorTests(unittest.IsolatedAsyncioTestCase):
                                      '_print_task_line'}]
         config = types.SimpleNamespace(llm_enabled=True, traditional_convert=False, hot=False, paste=False,
                                        paste_apps=[], save_audio=True)
-        namespace = dict(Optional=Optional, RecognitionMessage=Any, Config=config, RoleConfig=RoleConfig,
+        namespace = dict(Optional=Optional, RecognitionMessage=Any, StreamSession=Any, Config=config, RoleConfig=RoleConfig,
                          console=Mock(), logger=logging.getLogger('reminder-test'),
                          time=importlib.import_module('time'), AudioFileManager=Mock(),
                          TextOutput=types.SimpleNamespace(strip_punc=lambda value: value),
@@ -602,7 +602,7 @@ class ProcessorTests(unittest.IsolatedAsyncioTestCase):
                 message = types.SimpleNamespace(task_id='task', text='十分钟后叫我', is_final=True, recognition_mode='full',
                                                time_complete=stamp()+20, time_submit=stamp(),
                                                time_start=stamp()-5, duration=5)
-                await namespace['_handle_final'](processor, message)
+                await namespace['_handle_final'](processor, message, types.SimpleNamespace(role_name=''))
                 self.assertEqual(llm.process_and_output.call_args.kwargs['reminder_anchor'], stamp())
                 self.assertEqual(state.image_snapshots, {'task': image})  # 统一终局入口负责消费
                 processor.diary.write.assert_called_once_with(message.text, message.time_start, None)

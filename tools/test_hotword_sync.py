@@ -1,12 +1,12 @@
 """热词同步离线验证；只加载标准库模块，不初始化模型或读取用户凭证。"""
 
 import ast
+import asyncio
 import importlib.util
 import json
 import logging
 import os
 from pathlib import Path
-import subprocess
 import sys
 import tempfile
 import types
@@ -35,17 +35,11 @@ def load(name, path):
 
 package('core', ROOT / 'core')
 common = load('core.hotword_sync', ROOT / 'core/hotword_sync.py')
-SERVER = (ROOT / 'core/server/hotword_sync.py').exists()
-if SERVER:
-    package('core.server', ROOT / 'core/server')
-    service = load('core.server.hotword_sync', ROOT / 'core/server/hotword_sync.py')
-    git_module = load('core.server.hotword_git', ROOT / 'core/server/hotword_git.py')
-else:
-    import asyncio
-    package('core.client', ROOT / 'core/client')
-    package('core.client.hotword', ROOT / 'core/client/hotword')
-    sys.modules['websockets'] = types.ModuleType('websockets')
-    service = load('core.client.hotword.sync', ROOT / 'core/client/hotword/sync.py')
+# 服务端的同步测试在服务端仓库的同名文件里
+package('core.client', ROOT / 'core/client')
+package('core.client.hotword', ROOT / 'core/client/hotword')
+sys.modules['websockets'] = types.ModuleType('websockets')
+service = load('core.client.hotword.sync', ROOT / 'core/client/hotword/sync.py')
 
 
 class MergeTests(unittest.TestCase):
@@ -127,113 +121,6 @@ class MergeTests(unittest.TestCase):
             self.assertEqual(path.read_bytes(), '热词\r\n'.encode())
 
 
-@unittest.skipUnless(SERVER, '服务端测试')
-class ServerTests(unittest.TestCase):
-    def setUp(self):
-        self.temp = tempfile.TemporaryDirectory(dir=ROOT / 'logs')
-        self.addCleanup(self.temp.cleanup)
-        self.root = Path(self.temp.name)
-        self.server = service.HotwordSyncServer(self.root, '', self.root / 'missing')
-
-    def exchange(self, text, base=None, name='hot.txt', **kwargs):
-        return self.server.exchange(dict(name=name, text=text, base=base, **kwargs))[0]
-
-    def test_two_clients_and_restart(self):
-        self.exchange('A\n')
-        self.exchange('A\nB\n', 'A\n')
-        answer = self.exchange('A\nC\n', 'A\n')
-        self.assertEqual(answer['text'], 'A\nC\nB\n')
-        again = service.HotwordSyncServer(self.root, '', self.root / 'missing')
-        self.assertEqual(again.state['files']['hot.txt'], answer['text'])
-
-    def test_conflict_does_not_change_active(self):
-        self.exchange('A = a\n', name='hot-rule.txt')
-        self.exchange('A = b\n', 'A = a\n', 'hot-rule.txt')
-        result = self.exchange('A = c\n', 'A = a\n', 'hot-rule.txt')
-        self.assertEqual(result['type'], 'conflict')
-        self.assertEqual(self.server.state['files']['hot-rule.txt'], 'A = b\n')
-        result = self.exchange('A = d\n', result['base'], 'hot-rule.txt')
-        self.assertEqual(result['type'], 'ack')
-
-    def test_failed_persistence_no_ack_or_memory_change(self):
-        self.exchange('A\n')
-        with patch.object(self.server, '_save', side_effect=OSError('disk')):
-            with self.assertRaises(OSError):
-                self.exchange('B\n', 'A\n')
-        self.assertEqual(self.server.state['files']['hot.txt'], 'A\n')
-
-    def test_closing_rejects_changes(self):
-        self.server.close()
-        with self.assertRaises(ValueError):
-            self.exchange('B\n')
-
-    def test_no_arbitrary_filename(self):
-        with self.assertRaises(ValueError):
-            self.exchange('x', name='../config_server.py')
-
-    def test_remote_pending_resolved_by_client(self):
-        self.exchange('A = local\n', name='hot-rule.txt')
-        self.server.state['pending']['hot-rule.txt'] = {
-            'base': 'A = old\n', 'remote': 'A = remote\n', 'token': 'token'}
-        result = self.exchange('A = local\n', name='hot-rule.txt')
-        self.assertEqual(result['type'], 'conflict')
-        result = self.exchange('A = chosen\n', result['base'], 'hot-rule.txt', resolve=result['resolve'])
-        self.assertEqual(result['type'], 'ack')
-        self.assertFalse(self.server.state['pending'])
-
-    def test_local_conflict_cannot_resolve_unseen_git_conflict(self):
-        self.exchange('A = server\n', name='hot-rule.txt')
-        self.server.state['pending']['hot-rule.txt'] = {
-            'base': 'A = old\n', 'remote': 'A = git\n', 'token': 'git-token'}
-        result = self.exchange('A = client\n', 'A = old\n', 'hot-rule.txt')
-        self.assertEqual(result['resolve'], '')
-        result = self.exchange('A = chosen\n', result['base'], 'hot-rule.txt', resolve='')
-        self.assertEqual(result['type'], 'conflict')
-        self.assertIn('A = git', result['text'])
-        self.assertEqual(result['resolve'], 'git-token')
-
-    def test_edit_server_words_during_fetch(self):
-        server = self.server
-        server.repository = 'test/repo'
-        class Remote:
-            parent = 'abc'
-
-            def fetch(self):
-                common.atomic_write(server.root / 'hot-server.txt', 'new-word\n')
-                return {name: '' for name in common.FILES}
-
-            def push(self, files):
-                return True
-
-        with patch.object(git_module, 'HotwordGit', return_value=Remote()):
-            server.sync_remote()
-        self.assertEqual(common.read_text(server.root / 'hot-server.txt'), 'new-word\n')
-
-    def test_real_git_two_servers_offline_and_no_empty_commit(self):
-        bare = self.root / 'remote.git'
-        subprocess.run(['git', 'init', '--bare', '--initial-branch=main', str(bare)],
-                       check=True, capture_output=True)
-        first = service.HotwordSyncServer(self.root / 'first', str(bare), self.root / 'missing')
-        second = service.HotwordSyncServer(self.root / 'second', str(bare), self.root / 'missing')
-        first.exchange({'name': 'hot.txt', 'text': 'A\n', 'base': None})
-        first.sync_remote()
-        second.sync_remote()
-        first.exchange({'name': 'hot.txt', 'text': 'A\nB\n', 'base': 'A\n'})
-        second.exchange({'name': 'hot.txt', 'text': 'A\nC\n', 'base': 'A\n'})
-        second.sync_remote()
-        first.sync_remote()
-        second.sync_remote()
-        self.assertEqual(set(first.state['files']['hot.txt'].split()), {'A', 'B', 'C'})
-        self.assertEqual(second.state['files']['hot.txt'], first.state['files']['hot.txt'])
-        def head():
-            return subprocess.run(['git', '-C', str(bare), 'rev-parse', 'HEAD'],
-                                  check=True, capture_output=True).stdout
-        before = head()
-        first.sync_remote()
-        self.assertEqual(head(), before)
-
-
-@unittest.skipIf(SERVER, '客户端测试')
 class ClientTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(dir=ROOT / 'logs')

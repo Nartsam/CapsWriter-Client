@@ -339,22 +339,28 @@ class WebSocketManager:
         return timeout
 
     def _start_writer(self, connection) -> None:
+        """每条识别连接一个发送队列和唯一的 writer：音频、结束包与控制消息严格按入队顺序发出"""
         self._send_queue = asyncio.Queue()
         self._writer_connection = connection
         self._writer = asyncio.create_task(self._write_messages(connection, self._send_queue))
 
-    def enqueue(self, message, connection=None):
-        """事件循环内同步入队；Future 在实际发送结束后才完成，断线不重放。"""
+    def enqueue(self, message, connection=None) -> asyncio.Future:
+        """
+        在事件循环内同步入队，返回发送结果的 Future（True 已发出 / False 未发出）
+
+        Future 在 websocket.send 真正完成或失败后才结算，不是入队即成功。connection 是
+        消息所属的连接（缺省为当前连接）；它已断开时直接返回 False，断线后不在新连接上重放。
+        """
         future = asyncio.get_running_loop().create_future()
         expected = connection if connection is not None else self.state.websocket
-        if (not self.is_connected or expected is not self._writer_connection
-                or self._send_queue is None):
+        if not self.is_connected or expected is not self._writer_connection:
             future.set_result(False)
             return future
         self._send_queue.put_nowait((message, future))
         return future
 
     async def send(self, message, connection=None) -> bool:
+        """入队并等待实际发送结果"""
         return await self.enqueue(message, connection)
 
     async def _write_messages(self, connection, queue) -> None:
@@ -364,8 +370,7 @@ class WebSocketManager:
                 message, current = await queue.get()
                 try:
                     await connection.send(message.to_json())
-                    if not current.done():
-                        current.set_result(True)
+                    current.set_result(True)
                 finally:
                     queue.task_done()
                 current = None
@@ -381,14 +386,19 @@ class WebSocketManager:
 
     @staticmethod
     def _drain_writer(queue) -> None:
+        """未发出的消息一律按失败结算，不留到重连后重放"""
         while not queue.empty():
             _, future = queue.get_nowait()
-            if not future.done():
-                future.set_result(False)
+            future.set_result(False)
             queue.task_done()
 
     def _disconnect(self, connection, reason: str) -> None:
-        """只结算原连接；LLM 阻塞接收循环时，发送侧仍能及时终结等待任务。"""
+        """
+        结算一条识别连接的断开：停 writer、作废未发出的消息、收尾这条连接上的录音
+
+        发送失败、接收失败、重连前与退出时都会调用，只认当前 writer 绑定的那条连接，所以可以
+        重复调用。发送侧也会触发它：上一句的 LLM 回复阻塞接收循环时，断线照样能及时收尾。
+        """
         if connection is not self._writer_connection:
             return
         self._writer_connection = None
@@ -396,8 +406,8 @@ class WebSocketManager:
             self.state.websocket = None
         if self._writer is not None and self._writer is not asyncio.current_task():
             self._writer.cancel()
-        if self._send_queue is not None:
-            self._drain_writer(self._send_queue)
+        self._drain_writer(self._send_queue)
+        # 文件转录模式没有结果处理器
         processor = getattr(self.app, 'result_processor', None)
         if processor is not None:
             processor.connection_failed(connection, reason)

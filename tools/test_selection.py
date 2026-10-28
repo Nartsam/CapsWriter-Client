@@ -744,7 +744,7 @@ class ConsoleTests(unittest.IsolatedAsyncioTestCase):
         console = Mock()
         config = types.SimpleNamespace(llm_enabled=True, traditional_convert=False, hot=False,
                                        paste=False, paste_apps=[], save_audio=False)
-        namespace = dict(Optional=Optional, Config=config, RecognitionMessage=object,
+        namespace = dict(Optional=Optional, Config=config, RecognitionMessage=object, StreamSession=object,
             console=console, logger=logging.getLogger('selection-test'), time=time,
             TextOutput=types.SimpleNamespace(strip_punc=lambda text: text),
             show_processing_indicator=Mock(), hide_recording_indicator=Mock(),
@@ -779,11 +779,12 @@ class ConsoleTests(unittest.IsolatedAsyncioTestCase):
         processor._print_task_line = lambda *args: namespace['_print_task_line'](processor, *args)
         message = types.SimpleNamespace(task_id='test', is_final=True, recognition_mode='full', text='识别文字',
                     time_complete=10, time_submit=9, time_start=5, duration=4)
+        session = types.SimpleNamespace(role_name='')
         if failure:
             with self.assertRaisesRegex(RuntimeError, 'routing failure'):
-                await namespace['_handle_final'](processor, message)
+                await namespace['_handle_final'](processor, message, session)
         else:
-            await namespace['_handle_final'](processor, message)
+            await namespace['_handle_final'](processor, message, session)
         # 按内容认行，不按「识别结果：」「选中文本：」这类标签措辞
         calls = console.print.call_args_list
         recognition = [i for i, call in enumerate(calls) if '识别文字' in str(call.args[0])]

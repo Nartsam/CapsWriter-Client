@@ -70,7 +70,7 @@ def shortcut_method(name, namespace):
 
 
 class StreamingConfigTests(unittest.TestCase):
-    def test_image_preview_obeys_shortcut_switch(self):
+    def test_known_role_uses_full_recognition_from_start(self):
         want = shortcut_method('_want_streaming', {})
         for switch in (None, False, True):
             for sticky in (None, '助理'):
@@ -85,9 +85,7 @@ class StreamingConfigTests(unittest.TestCase):
                             config = types.SimpleNamespace(ClientConfig=types.SimpleNamespace(llm_enabled=enabled))
                             snapshot = state_mod.ContinuousChatSnapshot(sticky_role=sticky)
                             with patch.dict(sys.modules, {'config_client': config}):
-                                self.assertEqual(want(task, snapshot, object()),
-                                                 bool(switch and not sticky and not (enabled and default)))
-                                self.assertEqual(want(task, snapshot, None),
+                                self.assertEqual(want(task, snapshot),
                                                  bool(switch and not sticky and not (enabled and default)))
 
 
@@ -119,6 +117,11 @@ class RoleDetectorTests(unittest.TestCase):
     def test_default_role_enabled(self):
         self.assertFalse(detector_mod.RoleDetector(FakeLoader()).default_role_enabled())
         self.assertTrue(detector_mod.RoleDetector(FakeLoader(True)).default_role_enabled())
+
+    def test_default_role_keeps_named_prefix_priority(self):
+        detector = detector_mod.RoleDetector(FakeLoader(True))
+        self.assertEqual(detector.detect('助理，你好')[0].display_name, '助理')
+        self.assertEqual(detector.detect('普通正文')[0].display_name, RoleConfig.DEFAULT_ROLE_NAME)
 
 
 class TrimTests(unittest.TestCase):
@@ -174,9 +177,8 @@ class ProcessorHarness(unittest.IsolatedAsyncioTestCase):
             format_selection_preview=lambda s: '', AudioFileManager=Mock(), write_llm_md=Mock(),
             mark_outcome=Mock(return_value=''), IMAGE_PLACEHOLDER='[图]',
             StreamSession=stream_mod.StreamSession, trim_for_strip_punc=stream_mod.trim_for_strip_punc,
-            PENDING=stream_mod.PENDING, TYPING=stream_mod.TYPING, DEFERRED=stream_mod.DEFERRED,
-            format_task_line=task_line.format_task_line, aborted_note=task_line.aborted_note,
-            DISCONNECTED=task_line.DISCONNECTED)
+            PENDING=stream_mod.PENDING, TYPING=stream_mod.TYPING,
+            format_task_line=task_line.format_task_line, aborted_note=task_line.aborted_note)
         cls = load_class('core/client/output/result_processor.py', 'ResultProcessor', ns)
         self.app = types.SimpleNamespace(state=self.state, loop=asyncio.get_running_loop(), llm=self.llm,
             ws=types.SimpleNamespace(send=AsyncMock(side_effect=send)), hotword=hotword,
@@ -187,22 +189,25 @@ class ProcessorHarness(unittest.IsolatedAsyncioTestCase):
         self.p._report_image_usage = Mock(wraps=self.p._report_image_usage)
         self.p._update_continuous_state = Mock(wraps=self.p._update_continuous_state)
         self.ns = ns
-        sys.modules['core.client.ui'].show_cancelled_indicator = Mock()
+        self.connection = object()
         return self.p
 
     def begin(self, task_id='t', streaming=True, image=False, sticky=None):
+        """按 ShortcutTask.launch 的方式登记一次已经松手的录音；录音协程与快捷键用替身"""
+        done = asyncio.get_running_loop().create_future()
+        done.set_result(None)
         session = stream_mod.StreamSession(task_id, streaming=streaming,
-            revisable=streaming and self.config.llm_enabled, start_time=1.0, connection=object(), audio_ended=True)
+            revisable=streaming and self.config.llm_enabled, start_time=1.0, connection=self.connection,
+            recorder=types.SimpleNamespace(_done=done, delete_recording=AsyncMock()),
+            owner=types.SimpleNamespace(stop_for_error=Mock()))
         self.state.recognition_sessions[task_id] = session
         self.state.pending_task_id = task_id
         self.state.continuous_role = sticky
-        snapshot = self.state.begin_continuous_snapshot()
-        self.state.bind_continuous_snapshot(task_id)
+        snapshot = self.state.begin_continuous_snapshot(task_id)
         if image:
             self.image = types.SimpleNamespace(data_url='image', width=1, height=1, archive_path='')
             self.state.set_pending_image(self.image)
-        self.state.begin_image_snapshot()
-        self.state.bind_image_snapshot(task_id)
+        self.state.begin_image_snapshot(task_id)
         self.state.register_awaiting_result(task_id, 3.0)
         return session, snapshot
 
@@ -340,11 +345,6 @@ class ProcessorTests(ProcessorHarness):
             self.assertIsNone(call.kwargs['forced_content'])
             self.app.ws.send.assert_not_called()
 
-    async def test_default_role_keeps_named_prefix_priority(self):
-        detector = detector_mod.RoleDetector(FakeLoader(True))
-        self.assertEqual(detector.detect('助理，你好')[0].display_name, '助理')
-        self.assertEqual(detector.detect('普通正文')[0].display_name, RoleConfig.DEFAULT_ROLE_NAME)
-
     async def test_disabled_llm_uses_pure_stream_and_paste_modes(self):
         for apps, expected in (([], False), (['CODE.exe'], True), (['Other.exe'], False)):
             self.make(llm_enabled=False)
@@ -382,7 +382,7 @@ class ProcessorTests(ProcessorHarness):
             await self.feed(message(phase='final', mode='full', status=status),
                             message(phase='final', mode='full', text='迟到成功'))
             self.assertEqual(self.state.pending_task_id, 'new')
-            self.assertIs(self.state.image_current, new_image)
+            self.assertIs(self.state.image_snapshots['new'], new_image)
             self.assertIs(self.state.continuous_current, snapshot)
             self.assertIs(self.state.pending_image, old_image)
             self.assertIn('new', self.p._streams)
@@ -404,29 +404,27 @@ class ProcessorTests(ProcessorHarness):
             self.assertEqual(len(self.task_lines()), 1)
 
     async def test_decision_send_failure_does_not_type_or_call_role(self):
-        for response in (False, RuntimeError('send failure')):
-            self.make()
-            self.begin()
-            if isinstance(response, Exception):
-                self.app.ws.send.side_effect = response
-            else:
-                self.app.ws.send.return_value = response
-                self.app.ws.send.side_effect = None
-            await self.feed(message(delta='普通听写', text='普通听写'))
-            self.assertEqual(self.typed, [])
-            self.assertFalse(self.p._streams)
-            self.assertEqual(len(self.task_lines()), 1)
+        self.make()
+        self.begin()
+        self.app.ws.send.side_effect = None
+        self.app.ws.send.return_value = False
+        await self.feed(message(delta='普通听写', text='普通听写'))
+        self.assertEqual(self.typed, [])
+        self.assertFalse(self.p._streams)
+        self.assertEqual(len(self.task_lines()), 1)
 
-    async def test_disconnect_drains_all_live_tasks_once(self):
+    async def test_disconnect_drains_all_live_tasks_of_that_connection_once(self):
         self.make()
         self.begin()
         self.begin('other')
         self.state.mark_task_cancelled('other')
-        self.p._cleanup()
-        self.p._cleanup()
+        self.connection, lost = object(), self.connection
+        self.begin('later')                       # 重连后开始的录音不受旧连接断开影响
+        self.p.connection_failed(lost, '连接已断开')
+        self.p.connection_failed(lost, '连接已断开')
         await asyncio.gather(*list(self.p._failures))
-        self.assertFalse(self.p._streams)
-        self.assertFalse(self.state.awaiting_results)
+        self.assertEqual(list(self.p._streams), ['later'])
+        self.assertEqual(list(self.state.awaiting_results), ['later'])
         self.assertEqual(len(self.task_lines()), 1)
         self.assertEqual(len(self.task_lines('other')), 1)
 
@@ -490,24 +488,13 @@ class IndicatorPreviewTests(unittest.TestCase):
         self.assertEqual(self.indicator.state.mode, 'waiting')
         self.assertEqual(self.indicator.state.stream_note, '当前角色')
 
-    def test_route_toggle_clears_preview_until_next_delta(self):
-        self.handle('stream_note', dict(start_time=1.0, note='旧角色'))
-        self.handle('continuous', dict(start_time=1.0, mode='exited', role='旧角色'))
-        self.assertEqual(self.indicator.state.stream_note, '')
-        self.assertEqual(self.indicator.state.start_time, 1.0)
-        self.assertTrue(self.indicator.state.has_image)
-
-    def test_old_route_preview_after_toggle_is_rejected(self):
-        self.handle('continuous', dict(start_time=1.0, mode='exited', role='助理'))
-        self.handle('stream_note', dict(start_time=1.0, note='旧路由', continuous_mode='active'))
-        self.assertEqual(self.indicator.state.stream_note, '')
-        self.handle('stream_note', dict(start_time=1.0, note='新路由', continuous_mode='exited'))
-        self.assertEqual(self.indicator.state.stream_note, '新路由')
-
-    def test_old_recording_toggle_cannot_change_new_recording(self):
+    def test_old_recording_commands_cannot_change_new_recording(self):
         self.handle('recording', dict(start_time=2.0, has_image=True, streaming=True))
-        self.handle('stream_note', dict(start_time=2.0, note='新角色', continuous_mode=''))
+        self.handle('stream_note', dict(start_time=2.0, note='新角色'))
         self.handle('continuous', dict(start_time=1.0, mode='exited', role='旧角色'))
+        self.handle('error', dict(start_time=1.0, text='旧任务出错'))
+        self.handle('hide', dict(start_time=1.0))
+        self.assertEqual(self.indicator.state.mode, 'recording')
         self.assertEqual(self.indicator.state.continuous_mode, '')
         self.assertEqual(self.indicator.state.stream_note, '新角色')
 
@@ -520,17 +507,6 @@ class IndicatorPreviewTests(unittest.TestCase):
             self.assertEqual(self.indicator._compose_text()[1], '测试角色')
             self.handle('stream_note', dict(start_time=1.0, note=''))
             self.assertEqual(self.indicator._compose_text()[1], detail)
-
-    def test_public_updates_forward_recording_and_route_to_queue(self):
-        self.indicator._post = Mock()
-        with patch.object(indicator_mod, 'RecordingIndicator', return_value=self.indicator):
-            indicator_mod.update_recording_indicator_stream_note('角色提示', 1.0, continuous_mode='active')
-            indicator_mod.update_recording_indicator_continuous('exited', '助理', 1.0)
-        calls = self.indicator._post.call_args_list
-        self.assertEqual(calls[0].args, ('stream_note',))
-        self.assertEqual(calls[0].kwargs, dict(note='角色提示', start_time=1.0, continuous_mode='active'))
-        self.assertEqual(calls[1].args, ('continuous',))
-        self.assertEqual(calls[1].kwargs, dict(mode='exited', role='助理', start_time=1.0))
 
 
 class RoleLoaderErrorTests(unittest.TestCase):

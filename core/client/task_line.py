@@ -4,9 +4,11 @@
 
 形如 `任务标识：…  录音时长：3.21s  转录时延：0.45s  热词时延：0.01s`，下面接识别结果等缩进行。
 
-结果处理器统一打印任务行。成功终局沿接收循环串行处理，失败收尾与成功输出共用
-输出锁，避免插入上一轮 LLM 回复中间。录音协程仅登记时长，不打印。
-用户取消、本地失败与断线均由按任务 ID 的唯一收尾认领；旧回包不再重复打印。
+一个任务的全部终端输出排在一起，不和别的任务交错。这一行只在结果处理器里打印：成功终局
+沿接收循环串行处理（接收循环要等整条流水线、含 LLM 回复走完才读下一条）；打断、出错、
+断线由 ResultProcessor._fail_task 在循环之外收尾，与成功输出共用一把输出锁。录音协程
+只登记录音时长（ClientState.register_awaiting_result），不打印——松手时就打的话，等上一句
+角色回复期间说的下一句会插进上一句的输出中间。每个任务只有一个收尾认领者，所以只打一次。
 """
 
 from typing import Optional
@@ -15,7 +17,6 @@ ABORTED = '已手动打断，识别结果已丢弃'
 ABORTED_PARTIAL = '已手动打断，已上屏的文字保留，其余丢弃'
 NOT_CONNECTED = '服务端未连接，无法发送'
 SEND_FAILED = '音频发送失败，未收到识别结果'
-DISCONNECTED = '连接已断开，未收到识别结果'
 
 
 def format_task_line(task_id: str, duration: Optional[float], *items: str) -> str:
@@ -36,10 +37,3 @@ def format_task_line(task_id: str, duration: Optional[float], *items: str) -> st
 def aborted_note(partial: bool) -> str:
     """被打断任务的说明；partial 表示流式上屏已经打出过文字（打出去的收不回来）"""
     return ABORTED_PARTIAL if partial else ABORTED
-
-
-def no_result_note(state, task_id: str, reason: str) -> str:
-    """等不到结果时的说明：已被打断的任务如实说打断，其余写原因"""
-    if state.is_task_cancelled(task_id):
-        return aborted_note(task_id in state.streamed_task_ids)
-    return reason

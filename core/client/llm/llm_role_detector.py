@@ -10,6 +10,9 @@ from .llm_role_config import RoleConfig
 from .llm_interfaces import IRoleLoader
 from . import logger
 
+# 角色名与正文之间的分隔符，去前缀时一并去掉
+_SEPARATORS = '：，。,. '
+
 
 class RoleDetector:
     """角色检测器 - 负责从输入文本中检测角色"""
@@ -22,10 +25,6 @@ class RoleDetector:
         self.role_loader = role_loader
 
     def detect(self, text: str) -> Tuple[Optional[RoleConfig], str]:
-        role, content, _ = self.detect_with_alias(text)
-        return role, content
-
-    def detect_with_alias(self, text: str):
         """
         检测文本是否匹配某个角色前缀
 
@@ -33,10 +32,14 @@ class RoleDetector:
             text: 输入文本
 
         Returns:
-            (role_config, content) - role_config 是 RoleConfig 对象，
-            content 是去除前缀后的文本
+            (role_config, content) - role_config 是 RoleConfig 对象（具名角色优先，
+            都不匹配时是启用中的默认角色，否则 None），content 是去除前缀后的文本
         """
-        # logger.debug(f"检测角色，输入文本: {text[:50]}...")
+        role, content, _ = self.detect_with_alias(text)
+        return role, content
+
+    def detect_with_alias(self, text: str) -> Tuple[Optional[RoleConfig], str, str]:
+        """同 detect，另返回命中的触发名（显示名或别名；默认角色与未命中时为空串）"""
 
         for role_name, role_config in self.role_loader.get_roles().items():
             if role_name in ['默认', 'default', '']:
@@ -51,9 +54,7 @@ class RoleDetector:
                 if not name:
                     continue
                 if text.startswith(name):
-                    remaining_text = text[len(name):]
-                    remaining_text = remaining_text.lstrip('：，。,. ')
-                    return role_config, remaining_text, name
+                    return role_config, text[len(name):].lstrip(_SEPARATORS), name
 
         # 未匹配，使用默认角色
         default_role = self.role_loader.get_default_role()
@@ -66,10 +67,15 @@ class RoleDetector:
 
     @staticmethod
     def strip_locked_prefix(text: str, role: RoleConfig, matched_alias: str) -> str:
-        # 先匹配预览时的别名，再匹配该角色的其他有效别名；绝不按旧长度盲目截断。
+        """
+        从整段重识别的全文里去掉已锁定角色的触发名
+
+        先试流式预览时命中的那个，再试该角色的其他名字；都对不上（重识别改了触发词的写法）
+        就保留全文交给该角色，不按预览时的长度截断，以免切掉正文。
+        """
         for name in [matched_alias] + list(role.names):
             if name and text.startswith(name):
-                return text[len(name):].lstrip('：，。,. ')
+                return text[len(name):].lstrip(_SEPARATORS)
         return text
 
     def default_role_enabled(self) -> bool:
@@ -83,7 +89,7 @@ class RoleDetector:
         流式上屏按停顿切句，第一句可能恰好停在角色名中间。此时还不能断定有没有喊角色，
         要等下一句接上再检测。
         """
-        text = text.strip('：，。,. ')
+        text = text.strip(_SEPARATORS)
         if not text:
             return False
         for role_name, role_config in self.role_loader.get_roles().items():

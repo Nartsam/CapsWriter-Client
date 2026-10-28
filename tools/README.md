@@ -29,11 +29,10 @@ python tools/run_tests.py
 | `test_history_payload.py` | 对话历史的上行载荷：不带 `timestamp`、不交出活引用、assistant 保留状态标签、旧图降级 |
 | `test_llm_memory.py` | 角色记忆落盘：保存与读回、图片落盘为占位符、容量调小后读回裁剪、损坏文件改名保留、空回复不写入、按 `.py` 文件名区分（改显示名不丢）、热重载沿用同一对象、清除记忆删全部文件、角色表的恢复提示（无提示时行与以前逐字相同）、显示名重复告警。在 `tools/` 下的临时目录里读写，跑完删除 |
 | `test_selection.py` | 选区捕获：默认不发键/不碰剪贴板、回退条件、焦点与超时、Scintilla 范围/编码/标量消息边界、历史去重预览、typing/toast/openmate 单次快照转发、终端输出顺序；角色空白/纯标点正文在读取选区和请求分发前拦截；所有输入与外部接口均为桩 |
-| `test_stream_output.py` | 角色请求整段识别的结果路由：角色锁定、decision 不上屏、普通听写尾段、图片/连续对话、失效角色、取消/错误与重复终局；指示器按录音归属拒绝旧命令，角色加载错误不泄露凭证 |
-| `test_hotword_sync.py` | 热词三方合并、删除与别名去重、冲突确认/恢复、保存时序及替换事件；不访问远端凭证 |
-| `test_task_line.py` | 任务标识、挂图归档文件名和任务行格式；录音生命周期及失败任务行移至 `test_recognition_flow.py` |
-| `test_recognition_flow.py` | 真实类的音频完整性、提前绑定、连续录音、结束/取消顺序、错误保留和取消删除文件、writer 队列与断线 Future、协议字段和文件转录错误终局；全程用内存与仓库内临时文件 |
-| `test_recognition_socket.py` | 独立回环 WebSocket 合同测试：固定音频、固定候选与全文，验证角色/图片、短录音 decision、full 期间取消和同连接连续录音；不运行真实 ASR 或 LLM，不进零依赖流水线。需在仓库内虚拟环境安装 `websockets==13.1` 后运行 |
+| `test_stream_output.py` | 流式上屏与角色请求整段识别的结果路由：何时请求流式、角色锁定、decision 不上屏、普通听写尾段、图片/连续对话、失效角色、取消/错误/断线与重复终局，每任务一行任务行；指示器按录音归属拒绝旧命令；另含角色文件导入失败的日志（出自 secrets.py 时不记异常信息）。ResultProcessor 的真实代码绑到桩对象上运行 |
+| `test_hotword_sync.py` | 热词三方合并、删除与别名去重、冲突确认/恢复、保存时序及替换事件；不访问远端凭证。服务端的同步测试在服务端仓库的同名文件里 |
+| `test_task_line.py` | 任务标识（后缀是创建时间、前 8 位各不相同、带它的挂图归档仍会被清理）；任务行的打印时机见 `test_recognition_flow.py` |
+| `test_recognition_flow.py` | 录音到发送的真实代码（ShortcutTask、AudioRecorder、WebSocketManager 的发送队列）：音频不丢块、task_id 与快照在 launch 时绑定、快速连说与跨快捷键不串句、结束包与取消的顺序、出错保留与打断删除录音、发送失败与断线结算、协议字段、文件转录的错误终局；网络与文件用内存替身和 `tools/` 下的临时目录。两端联调的真实协议测试在服务端仓库（`smoke_test_revisable.py`） |
 | `test_shortcut_keys.py` | 快捷键钩子：前台进程让键的完整按下/连发/松开序列、跨窗口归属、查询失败、鼠标侧键、单击录音收尾、放行不补发、空/缺项配置、Win32 前台查询失败与焦点变化；另覆盖打断键连发和 RayLink 同族修饰键同步（序列取自 `probe_keys.py` 实录）。真实过滤函数、事件处理器与 `abort` 绑到桩对象上运行；Win32 查询使用替身，不访问用户桌面 |
 | `test_selection_native.py` | 原生 Windows 冒烟：自有隐藏 Edit 真实 UIA 读取，加自有 Scintilla 协议窗口验证只读 Win32 消息链路；后者不是真实 Scintilla 库。覆盖 Unicode、长度上限、空光标和剪贴板序号不变；仅替换焦点定位，无键盘输入或剪贴板写入。需 Windows 会话，不进流水线，不能替代 Notepad4 / Windows Terminal/TUI 验收 |
 | `probe_selection.py` | 只读诊断真实前台 UIA 父链、控件类型、进程号与选区长度；不打印选区正文，不发送输入或读写剪贴板。`--wait 10` 留出手动选择时间，`--depth 16` 可复现旧上限，`--all-patterns` 检查各祖先的选区长度（该模式最后的 status 不代表捕获结果）；`--samples 23 --interval 2` 可连续观察焦点/选区变化，控件 Name 仅按编辑器/终端标签分类，不输出原文。需要用户桌面访问，沙箱隔离桌面可能返回 HWND=0 |

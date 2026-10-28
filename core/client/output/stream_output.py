@@ -2,41 +2,40 @@
 """
 单次麦克风录音的识别与上屏状态。
 
-launch 同步预留 task_id、路由和连接；音频结束后任务仍可等待客户端决定。
-revisable 任务开头确认角色后 request_full，普通听写则 commit_stream 后逐句打字。
-挂图未确定角色时保持待定、不上屏；decision 只是候选，只有 final 才消费快照与归档。
-阶段和决定在 asyncio 线程更新，键盘钩子只锁存现有取消意图与采集身份。
+launch 同步预留 task_id、路由和连接。开启流式与 LLM 的录音是 revisable：服务端保留原始
+音频，由客户端在开头确认角色后 request_full（用整段普通识别的结果请求角色），或确定是
+普通听写后 commit_stream 再逐句上屏。音频结束不等于任务结束：没决定的任务会收到一条
+decision（流式候选全文），据此再做一次决定；decision 不上屏、不消费快照。
 """
 
 from dataclasses import dataclass, field
 from typing import Any, List
 
-# pending：第一句还没判定；typing：逐句上屏；deferred：改为松手后按原流程处理
-PENDING, TYPING, DEFERRED = 'pending', 'typing', 'deferred'
+# pending：还没开始逐句上屏（角色未定或挂图）；typing：逐句上屏中
+PENDING, TYPING = 'pending', 'typing'
 
 
 @dataclass
 class StreamSession:
-    """一次麦克风录音的识别与上屏状态；launch 预留，唯一终局后释放。"""
+    """一次麦克风录音的识别与上屏状态；launch 登记，唯一终局后释放。"""
 
     task_id: str
     mode: str = PENDING
-    held: str = ''              # pending 期间攒下、还没上屏的文字（已做繁简、热词与规则替换）
+    held: str = ''              # pending 期间攒下、还没上屏的原始增量
     typed: str = ''             # 已上屏的文字
     pieces: int = 0             # 已上屏的段数
     matches: List[tuple] = field(default_factory=list)  # 各段的热词完全匹配，最终打印用
     streaming: bool = False
     revisable: bool = False
     start_time: float = 0.0
-    connection: Any = None
+    connection: Any = None      # launch 时的识别连接；断线重连后不改投新连接
     recorder: Any = None
-    owner: Any = None
-    decision: str = ''          # 未决 / stream / full；决定只在 asyncio 线程更新
-    role_name: str = ''
+    owner: Any = None           # 发起录音的 ShortcutTask，服务端报错时据此停止采集
+    decision: str = ''          # '' 未决 / 'stream' / 'full'；只在 asyncio 线程更新
+    role_name: str = ''         # 预览锁定的角色显示名及当时命中的触发别名
     role_alias: str = ''
-    audio_ended: bool = False
-    sent_audio: bool = False
-    terminal: bool = False      # 在任何 await 之前认领终局
+    sent_audio: bool = False    # 是否发过音频：短按没发过，不创建服务端任务、也不用发取消
+    terminal: bool = False      # 终局已被认领；认领与检查之间不得有 await
 
 
 def trim_for_strip_punc(typed: str, piece: str, stripped_full: str) -> str:

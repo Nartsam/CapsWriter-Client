@@ -81,7 +81,8 @@ class AudioStreamManager:
         
         当音频流接收到新数据时调用，将数据放入异步队列中。
         """
-        # 身份读取和入队与 begin/finish 共用短锁，结束包不能越过已采集的尾块。
+        # 读取采集身份并入队，与 launch/finish 共用短锁：结束标记不会越过已采集的尾块，
+        # 松手后才到的块也不会被记到下一次录音名下
         with self.state.recording_lock:
             task_id = self.state.recording_task_id
             if not self.state.recording or task_id is None:

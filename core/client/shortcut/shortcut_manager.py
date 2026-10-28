@@ -441,12 +441,21 @@ class ShortcutManager:
         return False
 
     def _abort_pending_result(self) -> None:
+        """打断已进入等待识别结果阶段的任务：录音早已结束，只需作废结果"""
         task_id = self.state.pending_task_id
         session = self.state.recognition_sessions.get(task_id)
+        # 事件循环可能刚认领了终局、还没来得及清 pending_task_id
         if session is None or session.terminal:
             return
-        # 在钩子中先锁存取消意图，避免排队期间最终包抢先进入角色流水线。
+        logger.info(f"手动打断等待中的识别结果，任务ID: {task_id}")
+        # 钩子里先锁存取消意图，排队期间到达的最终包就不会进入角色流水线；收尾（回滚快照、
+        # 通知服务端取消、删除录音、打印任务行）在事件循环里做
         self.state.mark_task_cancelled(task_id)
+        from core.client.ui import show_cancelled_indicator
+        show_cancelled_indicator(self._cancel_key, partial=task_id in self.state.streamed_task_ids,
+                                 start_time=session.start_time)
+        if self.app.companion.has_connections:
+            self.app.companion.emit_recording_cancel_threadsafe()
         self.app.loop.call_soon_threadsafe(self.app.result_processor.fail_task_soon, task_id, '')
 
     # ========== 按键恢复管理 ==========

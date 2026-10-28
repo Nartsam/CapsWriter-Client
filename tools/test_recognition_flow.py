@@ -9,6 +9,7 @@ import json
 import logging
 from pathlib import Path
 from subprocess import Popen
+import sys
 import tempfile
 from threading import Event
 import time
@@ -16,7 +17,8 @@ import types
 import unittest
 from unittest.mock import AsyncMock, Mock, patch
 
-import test_stream_output as support
+sys.dont_write_bytecode = True     # 下面导入同目录的测试模块，不能在 tools/ 下留 __pycache__
+import test_stream_output as support  # noqa: E402
 
 ROOT = support.ROOT
 
@@ -103,8 +105,8 @@ class IOHarness(support.ProcessorHarness):
 
         ns = dict(asyncio=asyncio, base64=base64, Config=self.config, Path=Path, Popen=Popen,
             logger=logging.getLogger('recognition-io'), AudioFileManager=FileManager,
-            AudioMessage=support.protocol.AudioMessage,
-            RecognitionControlMessage=support.protocol.RecognitionControlMessage, to_thread=in_thread,
+            AudioMessage=support.protocol.AudioMessage, to_thread=in_thread,
+            NOT_CONNECTED=support.task_line.NOT_CONNECTED, SEND_FAILED=support.task_line.SEND_FAILED,
             np=types.SimpleNamespace(concatenate=lambda blocks: PCM(v for b in blocks for v in b.samples),
                                      mean=lambda data, axis: data))
         self.recorder_class = support.load_class('core/client/audio/recorder.py', 'AudioRecorder', ns)
@@ -418,6 +420,23 @@ class RecorderTests(IOHarness):
         self.assertIsNone(second.recorder)
         first.cancel()
         await self.settle()
+
+    async def test_cancel_without_own_recording_keeps_previous_sentence(self):
+        # 单击模式下另一个快捷键正在录音时按下本键：launch 不开始录音，随后的 cancel()
+        # 不能作废本键上一句（它还在等结果，recorder 引用也还是它的）
+        await self.make_io()
+        task, other = self.shortcut(), self.shortcut()
+        task.launch()
+        self.audio(task.recorder.task_id, 1, task.recording_start_time + 1)
+        task.finish()
+        waiting = task.recorder.task_id
+        other.launch()
+        task.launch()
+        task.cancel()
+        await self.settle()
+        self.assertIn(waiting, self.state.recognition_sessions)
+        self.assertFalse(self.state.is_task_cancelled(waiting))
+        self.assertTrue(other.is_recording)
 
     async def test_audio_callback_is_ordered_before_finish(self):
         await self.make_io()
