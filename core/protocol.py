@@ -7,9 +7,15 @@
 """
 
 from __future__ import annotations
-from dataclasses import dataclass, field, asdict
-from typing import List, Literal, Optional
+from dataclasses import dataclass, field, asdict, fields
+from typing import List, Literal
 import json
+
+
+def _from_dict(cls, data: dict):
+    """按字段名取值：默认值只写在字段定义里，对端新增的未知字段忽略"""
+    known = {f.name for f in fields(cls) if f.init}
+    return cls(**{key: value for key, value in data.items() if key in known})
 
 
 @dataclass
@@ -49,19 +55,7 @@ class AudioMessage:
     @classmethod
     def from_dict(cls, data: dict) -> AudioMessage:
         """从字典创建实例"""
-        return cls(
-            task_id=data['task_id'],
-            source=data['source'],
-            data=data['data'],
-            is_final=data['is_final'],
-            time_start=data['time_start'],
-            seg_duration=data.get('seg_duration', 15.0),
-            seg_overlap=data.get('seg_overlap', 2.0),
-            context=data.get('context', ''),
-            language=data.get('language', 'auto'),
-            streaming=data.get('streaming', False),
-            revisable=data.get('revisable', False),
-        )
+        return _from_dict(cls, data)
 
 
 @dataclass
@@ -80,7 +74,7 @@ class RecognitionControlMessage:
             raise ValueError('未知控制消息类型')
         if data['action'] not in ('commit_stream', 'request_full', 'cancel'):
             raise ValueError('未知识别控制动作')
-        return cls(task_id=data['task_id'], action=data['action'])
+        return _from_dict(cls, data)
 
 
 @dataclass
@@ -142,20 +136,4 @@ class RecognitionMessage:
     @classmethod
     def from_dict(cls, data: dict) -> RecognitionMessage:
         """从字典创建实例"""
-        return cls(
-            task_id=data['task_id'],
-            is_final=data['is_final'],
-            duration=data['duration'],
-            time_start=data['time_start'],
-            time_submit=data['time_submit'],
-            time_complete=data['time_complete'],
-            text=data['text'],
-            text_accu=data.get('text_accu', ''),
-            tokens=data.get('tokens', []),
-            timestamps=data.get('timestamps', []),
-            delta=data.get('delta', ''),
-            phase=data.get('phase', 'partial'),
-            recognition_mode=data.get('recognition_mode', 'full'),
-            status=data.get('status', 'ok'),
-            error=data.get('error', ''),
-        )
+        return _from_dict(cls, data)
